@@ -82,6 +82,8 @@ typedef enum {
 } esp32_result_code_t;
 
 typedef enum {
+    ESP32_NACK_CRC_FAIL = 1,
+    ESP32_NACK_BAD_LENGTH = 2,
     ESP32_NACK_SESSION_MISMATCH = 6,
 } esp32_nack_reason_t;
 
@@ -283,6 +285,13 @@ static SemaphoreHandle_t s_spi_mutex = NULL;
 static uint32_t s_last_nack_ref_seq = 0U;
 static uint16_t s_last_nack_reason = 0U;
 static uint8_t s_session_mismatch_seen = 0U;
+static uint8_t s_pending_server_reset = 0U;
+static uint8_t s_pending_server_report_mode_valid = 0U;
+static uint8_t s_pending_server_report_full = 0U;
+static uint8_t s_pending_server_downsample_valid = 0U;
+static uint32_t s_pending_server_downsample_step = 0U;
+static uint8_t s_pending_server_upload_valid = 0U;
+static uint32_t s_pending_server_upload_points = 0U;
 
 static uint16_t crc16_le_update(uint16_t crc, const uint8_t *data, uint32_t len)
 {
@@ -744,6 +753,28 @@ static void update_status_from_event(const esp32_event_payload_t *event)
         s_status.last_frame_id = event->value1;
         copy_fixed_text(s_status.last_error, sizeof(s_status.last_error), event->text, sizeof(event->text));
         break;
+    case ESP32_EVENT_SERVER_COMMAND:
+    {
+        char text[65];
+        copy_fixed_text(text, sizeof(text), event->text, sizeof(event->text));
+        copy_text(s_status.last_error, sizeof(s_status.last_error), text);
+        if (strcmp(text, "reset") == 0) {
+            s_pending_server_reset = 1U;
+        } else if (strcmp(text, "report_mode") == 0) {
+            s_pending_server_report_mode_valid = 1U;
+            s_pending_server_report_full = (event->value0 != 0U) ? 1U : 0U;
+            s_status.report_mode = s_pending_server_report_full;
+        } else if (strcmp(text, "downsample_step") == 0) {
+            s_pending_server_downsample_valid = 1U;
+            s_pending_server_downsample_step = event->value0;
+            s_status.downsample_step = event->value0;
+        } else if (strcmp(text, "upload_points") == 0) {
+            s_pending_server_upload_valid = 1U;
+            s_pending_server_upload_points = event->value0;
+            s_status.upload_points = event->value0;
+        }
+        break;
+    }
     case ESP32_EVENT_ERROR:
         copy_fixed_text(s_status.last_error, sizeof(s_status.last_error), event->text, sizeof(event->text));
         break;
@@ -1122,6 +1153,41 @@ bool ESP32_SPI_EnsureReady(uint32_t timeout_ms)
     return true;
 }
 
+static bool last_failure_was_session_mismatch(void)
+{
+    return (s_session_mismatch_seen != 0U) ||
+           (s_last_nack_reason == ESP32_NACK_SESSION_MISMATCH);
+}
+
+static bool recover_session_mismatch(const char *op_name)
+{
+    printf("[ESP32SPI] recover session mismatch before retry op=%s\r\n",
+           op_name ? op_name : "unknown");
+    reset_link_state();
+    return ESP32_SPI_EnsureReady(ESP32_SPI_DEFAULT_TIMEOUT_MS);
+}
+
+static bool request_wait_response_session_retry(uint8_t request_type,
+                                                const void *payload,
+                                                uint16_t payload_len,
+                                                uint8_t response_type,
+                                                uint32_t timeout_ms)
+{
+    if (request_wait_response(request_type, payload, payload_len, response_type, timeout_ms)) {
+        return true;
+    }
+
+    if (!last_failure_was_session_mismatch()) {
+        return false;
+    }
+
+    if (!recover_session_mismatch(msg_name(request_type))) {
+        return false;
+    }
+
+    return request_wait_response(request_type, payload, payload_len, response_type, timeout_ms);
+}
+
 bool ESP32_SPI_ApplyDeviceConfig(const char *ssid,
                                  const char *password,
                                  const char *server_host,
@@ -1151,11 +1217,11 @@ bool ESP32_SPI_ApplyDeviceConfig(const char *ssid,
            (unsigned int)payload.server_port,
            payload.node_id);
 
-    return request_wait_response(ESP32_MSG_SET_DEVICE_CONFIG_REQ,
-                                 &payload,
-                                 (uint16_t)sizeof(payload),
-                                 ESP32_MSG_SET_DEVICE_CONFIG_RESP,
-                                 8000U);
+    return request_wait_response_session_retry(ESP32_MSG_SET_DEVICE_CONFIG_REQ,
+                                               &payload,
+                                               (uint16_t)sizeof(payload),
+                                               ESP32_MSG_SET_DEVICE_CONFIG_RESP,
+                                               8000U);
 }
 
 bool ESP32_SPI_ApplyCommParams(uint32_t heartbeat_ms,
@@ -1192,11 +1258,11 @@ bool ESP32_SPI_ApplyCommParams(uint32_t heartbeat_ms,
            (unsigned long)downsample_step,
            (unsigned long)upload_points);
 
-    return request_wait_response(ESP32_MSG_SET_COMM_PARAMS_REQ,
-                                 &payload,
-                                 (uint16_t)sizeof(payload),
-                                 ESP32_MSG_SET_COMM_PARAMS_RESP,
-                                 5000U);
+    return request_wait_response_session_retry(ESP32_MSG_SET_COMM_PARAMS_REQ,
+                                               &payload,
+                                               (uint16_t)sizeof(payload),
+                                               ESP32_MSG_SET_COMM_PARAMS_RESP,
+                                               5000U);
 }
 
 bool ESP32_SPI_QueryStatus(esp32_spi_status_t *out_status, uint32_t timeout_ms)
@@ -1205,7 +1271,11 @@ bool ESP32_SPI_QueryStatus(esp32_spi_status_t *out_status, uint32_t timeout_ms)
         return false;
     }
     if (!query_status_internal(timeout_ms == 0U ? 1000U : timeout_ms)) {
-        return false;
+        if (!last_failure_was_session_mismatch() ||
+            !recover_session_mismatch("QUERY_STATUS_REQ") ||
+            !query_status_internal(timeout_ms == 0U ? 1000U : timeout_ms)) {
+            return false;
+        }
     }
     if (out_status != NULL) {
         *out_status = s_status;
@@ -1243,6 +1313,48 @@ uint16_t ESP32_SPI_GetLastNackReason(void)
     return s_last_nack_reason;
 }
 
+bool ESP32_SPI_ConsumeServerCommand(uint8_t *out_reset,
+                                    uint8_t *out_has_report_mode,
+                                    uint8_t *out_report_full,
+                                    uint8_t *out_has_downsample_step,
+                                    uint32_t *out_downsample_step,
+                                    uint8_t *out_has_upload_points,
+                                    uint32_t *out_upload_points)
+{
+    uint8_t has_any = (s_pending_server_reset ||
+                       s_pending_server_report_mode_valid ||
+                       s_pending_server_downsample_valid ||
+                       s_pending_server_upload_valid) ? 1U : 0U;
+
+    if (out_reset != NULL) {
+        *out_reset = s_pending_server_reset;
+    }
+    if (out_has_report_mode != NULL) {
+        *out_has_report_mode = s_pending_server_report_mode_valid;
+    }
+    if (out_report_full != NULL) {
+        *out_report_full = s_pending_server_report_full;
+    }
+    if (out_has_downsample_step != NULL) {
+        *out_has_downsample_step = s_pending_server_downsample_valid;
+    }
+    if (out_downsample_step != NULL) {
+        *out_downsample_step = s_pending_server_downsample_step;
+    }
+    if (out_has_upload_points != NULL) {
+        *out_has_upload_points = s_pending_server_upload_valid;
+    }
+    if (out_upload_points != NULL) {
+        *out_upload_points = s_pending_server_upload_points;
+    }
+
+    s_pending_server_reset = 0U;
+    s_pending_server_report_mode_valid = 0U;
+    s_pending_server_downsample_valid = 0U;
+    s_pending_server_upload_valid = 0U;
+    return has_any != 0U;
+}
+
 bool ESP32_SPI_GetTxResult(uint32_t ref_seq,
                            int32_t *out_http_status,
                            int32_t *out_result_code,
@@ -1272,7 +1384,7 @@ bool ESP32_SPI_ConnectWifi(uint32_t timeout_ms)
     }
 
     s_wifi_failed_seen = 0U;
-    if (!request_wait_response(ESP32_MSG_CONNECT_REQ, NULL, 0U, ESP32_MSG_CONNECT_RESP, 3000U)) {
+    if (!request_wait_response_session_retry(ESP32_MSG_CONNECT_REQ, NULL, 0U, ESP32_MSG_CONNECT_RESP, 3000U)) {
         return false;
     }
 
@@ -1306,7 +1418,7 @@ bool ESP32_SPI_CloudConnect(uint32_t timeout_ms)
     if (!ESP32_SPI_EnsureReady(ESP32_SPI_DEFAULT_TIMEOUT_MS)) {
         return false;
     }
-    if (!request_wait_response(ESP32_MSG_CLOUD_CONNECT_REQ, NULL, 0U, ESP32_MSG_CLOUD_CONNECT_RESP, 3000U)) {
+    if (!request_wait_response_session_retry(ESP32_MSG_CLOUD_CONNECT_REQ, NULL, 0U, ESP32_MSG_CLOUD_CONNECT_RESP, 3000U)) {
         (void)query_status_internal(500U);
         return false;
     }
@@ -1324,7 +1436,7 @@ bool ESP32_SPI_RegisterNode(uint32_t timeout_ms)
 
     s_register_event_seen = 0U;
     s_register_result = ESP32_SPI_RESULT_PENDING;
-    if (!request_wait_response(ESP32_MSG_REGISTER_REQ, NULL, 0U, ESP32_MSG_REGISTER_RESP, 3000U)) {
+    if (!request_wait_response_session_retry(ESP32_MSG_REGISTER_REQ, NULL, 0U, ESP32_MSG_REGISTER_RESP, 3000U)) {
         (void)query_status_internal(500U);
         return false;
     }
@@ -1365,11 +1477,11 @@ bool ESP32_SPI_StartReport(uint8_t report_mode, uint32_t timeout_ms)
     memset(&payload, 0, sizeof(payload));
     payload.report_mode = report_mode ? 1U : 0U;
 
-    if (!request_wait_response(ESP32_MSG_START_REPORT_REQ,
-                               &payload,
-                               (uint16_t)sizeof(payload),
-                               ESP32_MSG_START_REPORT_RESP,
-                               3000U)) {
+    if (!request_wait_response_session_retry(ESP32_MSG_START_REPORT_REQ,
+                                             &payload,
+                                             (uint16_t)sizeof(payload),
+                                             ESP32_MSG_START_REPORT_RESP,
+                                             3000U)) {
         (void)query_status_internal(500U);
         return false;
     }
@@ -1383,7 +1495,7 @@ bool ESP32_SPI_StopReport(uint32_t timeout_ms)
     if (!ESP32_SPI_EnsureReady(ESP32_SPI_DEFAULT_TIMEOUT_MS)) {
         return false;
     }
-    if (!request_wait_response(ESP32_MSG_STOP_REPORT_REQ, NULL, 0U, ESP32_MSG_STOP_REPORT_RESP, 3000U)) {
+    if (!request_wait_response_session_retry(ESP32_MSG_STOP_REPORT_REQ, NULL, 0U, ESP32_MSG_STOP_REPORT_RESP, 3000U)) {
         (void)query_status_internal(500U);
         return false;
     }
@@ -1535,6 +1647,28 @@ static bool wait_report_packet_accepted(uint32_t frame_id, uint32_t ref_seq, uin
     return false;
 }
 
+static bool report_nack_is_retryable(uint32_t ref_seq)
+{
+    if (s_last_nack_ref_seq != ref_seq) {
+        return true;
+    }
+    return (s_last_nack_reason == ESP32_NACK_CRC_FAIL ||
+            s_last_nack_reason == ESP32_NACK_BAD_LENGTH);
+}
+
+static void log_report_accept_retry(const char *label,
+                                    uint32_t frame_id,
+                                    uint32_t ref_seq,
+                                    uint8_t attempt)
+{
+    printf("[ESP32SPI] full %s accepted retry frame=%lu ref=%lu reason=%u attempt=%u\r\n",
+           label ? label : "packet",
+           (unsigned long)frame_id,
+           (unsigned long)ref_seq,
+           (unsigned int)((s_last_nack_ref_seq == ref_seq) ? s_last_nack_reason : 0U),
+           (unsigned int)(attempt + 1U));
+}
+
 static bool send_report_packet_wait(uint8_t msg_type,
                                     const void *payload,
                                     uint16_t payload_len,
@@ -1543,24 +1677,49 @@ static bool send_report_packet_wait(uint8_t msg_type,
                                     const char *label)
 {
     uint32_t ref_seq;
+    uint32_t recover_timeout = (timeout_ms < 150U) ? timeout_ms : 150U;
 
-    s_last_tx_accepted_ref_seq = 0U;
-    s_last_tx_result_ref_seq = 0U;
-    s_last_tx_result_code = ESP32_SPI_RESULT_PENDING;
-    s_last_tx_result_http_status = 0;
-    s_last_tx_result_frame_id = 0U;
-    s_last_nack_ref_seq = 0U;
-    s_last_nack_reason = 0U;
+    for (uint8_t attempt = 0U; attempt < 3U; attempt++) {
+        s_last_tx_accepted_ref_seq = 0U;
+        s_last_tx_result_ref_seq = 0U;
+        s_last_tx_result_code = ESP32_SPI_RESULT_PENDING;
+        s_last_tx_result_http_status = 0;
+        s_last_tx_result_frame_id = 0U;
+        s_last_nack_ref_seq = 0U;
+        s_last_nack_reason = 0U;
 
-    if (!transact_and_handle_payload(msg_type, payload, payload_len, NULL)) {
-        return false;
+        if (transact_and_handle_payload(msg_type, payload, payload_len, NULL)) {
+            ref_seq = s_last_tx_seq;
+            if (wait_report_packet_accepted(frame_id, ref_seq, timeout_ms, label)) {
+                if (msg_type == ESP32_MSG_REPORT_FULL_END) {
+                    s_last_report_full_end_ref_seq = ref_seq;
+                }
+                return true;
+            }
+            if (!report_nack_is_retryable(ref_seq)) {
+                return false;
+            }
+            if (attempt + 1U < 3U) {
+                log_report_accept_retry(label, frame_id, ref_seq, attempt);
+                continue;
+            }
+            return false;
+        }
+
+        ref_seq = s_last_tx_seq;
+        if (ref_seq != 0U && recover_timeout != 0U &&
+            wait_report_packet_accepted(frame_id, ref_seq, recover_timeout, label)) {
+            if (msg_type == ESP32_MSG_REPORT_FULL_END) {
+                s_last_report_full_end_ref_seq = ref_seq;
+            }
+            return true;
+        }
+        printf("[ESP32SPI] full %s transaction retry frame=%lu attempt=%u\r\n",
+               label ? label : "packet",
+               (unsigned long)frame_id,
+               (unsigned int)(attempt + 1U));
     }
-
-    ref_seq = s_last_tx_seq;
-    if (msg_type == ESP32_MSG_REPORT_FULL_END) {
-        s_last_report_full_end_ref_seq = ref_seq;
-    }
-    return wait_report_packet_accepted(frame_id, ref_seq, timeout_ms, label);
+    return false;
 }
 
 static bool send_report_built_packet_wait(uint8_t msg_type,
@@ -1572,21 +1731,43 @@ static bool send_report_built_packet_wait(uint8_t msg_type,
                                           const char *label)
 {
     uint32_t ref_seq;
+    uint32_t recover_timeout = (timeout_ms < 150U) ? timeout_ms : 150U;
 
-    s_last_tx_accepted_ref_seq = 0U;
-    s_last_tx_result_ref_seq = 0U;
-    s_last_tx_result_code = ESP32_SPI_RESULT_PENDING;
-    s_last_tx_result_http_status = 0;
-    s_last_tx_result_frame_id = 0U;
-    s_last_nack_ref_seq = 0U;
-    s_last_nack_reason = 0U;
+    for (uint8_t attempt = 0U; attempt < 3U; attempt++) {
+        s_last_tx_accepted_ref_seq = 0U;
+        s_last_tx_result_ref_seq = 0U;
+        s_last_tx_result_code = ESP32_SPI_RESULT_PENDING;
+        s_last_tx_result_http_status = 0;
+        s_last_tx_result_frame_id = 0U;
+        s_last_nack_ref_seq = 0U;
+        s_last_nack_reason = 0U;
 
-    if (!transact_and_handle_built_payload(msg_type, payload_len, builder, builder_ctx, NULL)) {
-        return false;
+        if (transact_and_handle_built_payload(msg_type, payload_len, builder, builder_ctx, NULL)) {
+            ref_seq = s_last_tx_seq;
+            if (wait_report_packet_accepted(frame_id, ref_seq, timeout_ms, label)) {
+                return true;
+            }
+            if (!report_nack_is_retryable(ref_seq)) {
+                return false;
+            }
+            if (attempt + 1U < 3U) {
+                log_report_accept_retry(label, frame_id, ref_seq, attempt);
+                continue;
+            }
+            return false;
+        }
+
+        ref_seq = s_last_tx_seq;
+        if (ref_seq != 0U && recover_timeout != 0U &&
+            wait_report_packet_accepted(frame_id, ref_seq, recover_timeout, label)) {
+            return true;
+        }
+        printf("[ESP32SPI] full %s transaction retry frame=%lu attempt=%u\r\n",
+               label ? label : "packet",
+               (unsigned long)frame_id,
+               (unsigned int)(attempt + 1U));
     }
-
-    ref_seq = s_last_tx_seq;
-    return wait_report_packet_accepted(frame_id, ref_seq, timeout_ms, label);
+    return false;
 }
 
 typedef struct {

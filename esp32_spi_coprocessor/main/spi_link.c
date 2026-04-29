@@ -16,8 +16,8 @@
 
 static const char *TAG = "spi_link";
 
-#define SPI_LINK_QUEUE_LENGTH 32
-#define SPI_LINK_TASK_STACK 6144
+#define SPI_LINK_QUEUE_LENGTH 8
+#define SPI_LINK_TASK_STACK 8192
 #define SPI_LINK_TASK_PRIORITY 9
 
 static QueueHandle_t s_tx_queue;

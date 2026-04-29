@@ -1,12 +1,25 @@
 #include "report_codec.h"
 
+#include <errno.h>
 #include <inttypes.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+#include "esp_heap_caps.h"
+#include "esp_log.h"
+#include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
 #include "cJSON.h"
+
+static const char *TAG = "report_codec";
+
+#define REPORT_HTTP_WRITE_FAST_RETRY_MAX 3U
+#define REPORT_HTTP_WRITE_FAST_RETRY_WINDOW_MS 100LL
+#define REPORT_HTTP_WRITE_RETRY_DELAY_MS 20U
 
 typedef enum {
     BUILDER_MODE_COUNT = 0,
@@ -21,6 +34,7 @@ typedef struct {
     size_t total_len;
     bool failed;
     esp_http_client_handle_t client;
+    int64_t deadline_us;
 } json_builder_t;
 
 typedef struct {
@@ -60,33 +74,99 @@ static void builder_init_count(json_builder_t *builder)
 static void builder_init_stream(json_builder_t *builder,
                                 char *buffer,
                                 size_t capacity,
-                                esp_http_client_handle_t client)
+                                esp_http_client_handle_t client,
+                                uint32_t total_budget_ms)
 {
     memset(builder, 0, sizeof(*builder));
     builder->mode = BUILDER_MODE_STREAM;
     builder->buf = buffer;
     builder->cap = capacity;
     builder->client = client;
+    if (total_budget_ms > 0U) {
+        builder->deadline_us = esp_timer_get_time() + ((int64_t) total_budget_ms * 1000LL);
+    }
     if (builder->cap > 0U) {
         builder->buf[0] = '\0';
     }
 }
 
+static bool builder_deadline_expired(json_builder_t *builder)
+{
+    if (builder == NULL || builder->deadline_us <= 0) {
+        return false;
+    }
+    if (esp_timer_get_time() < builder->deadline_us) {
+        return false;
+    }
+    builder->failed = true;
+    ESP_LOGW(TAG,
+             "stream heartbeat json budget expired total=%u pending=%u heap=%u min=%u largest=%u",
+             (unsigned int) builder->total_len,
+             (unsigned int) builder->len,
+             (unsigned int) heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+             (unsigned int) heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+             (unsigned int) heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    return true;
+}
+
 static bool builder_flush(json_builder_t *builder)
 {
     size_t offset = 0;
+    uint32_t retry_count = 0;
 
     if (builder->mode != BUILDER_MODE_STREAM || builder->len == 0U) {
         return true;
     }
 
     while (offset < builder->len) {
-        int written = esp_http_client_write(builder->client, builder->buf + offset, (int) (builder->len - offset));
-        if (written <= 0) {
-            builder->failed = true;
+        if (builder_deadline_expired(builder)) {
             return false;
         }
+        int64_t write_start_us = esp_timer_get_time();
+        int written = esp_http_client_write(builder->client, builder->buf + offset, (int) (builder->len - offset));
+        int64_t write_ms = (esp_timer_get_time() - write_start_us) / 1000LL;
+        if (written <= 0) {
+            const int saved_errno = errno;
+            bool fast_retry_allowed = (write_ms <= REPORT_HTTP_WRITE_FAST_RETRY_WINDOW_MS) &&
+                                      (retry_count < REPORT_HTTP_WRITE_FAST_RETRY_MAX);
+
+            ESP_LOGW(TAG,
+                     "http_write backpressure ret=%d errno=%d offset=%u len=%u write_ms=%lld retry=%u/%u heap=%u min=%u largest=%u",
+                     written,
+                     saved_errno,
+                     (unsigned int) offset,
+                     (unsigned int) builder->len,
+                     (long long) write_ms,
+                     (unsigned int) retry_count,
+                     (unsigned int) REPORT_HTTP_WRITE_FAST_RETRY_MAX,
+                     (unsigned int) heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                     (unsigned int) heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                     (unsigned int) heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+
+            if (!fast_retry_allowed) {
+                ESP_LOGE(TAG,
+                         "http_write failed ret=%d errno=%d offset=%u len=%u write_ms=%lld heap=%u min=%u largest=%u",
+                         written,
+                         saved_errno,
+                         (unsigned int) offset,
+                         (unsigned int) builder->len,
+                         (long long) write_ms,
+                         (unsigned int) heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                         (unsigned int) heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                         (unsigned int) heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+                builder->failed = true;
+                return false;
+            }
+
+            ++retry_count;
+            vTaskDelay(pdMS_TO_TICKS(REPORT_HTTP_WRITE_RETRY_DELAY_MS));
+            continue;
+        }
         offset += (size_t) written;
+        retry_count = 0;
+        if (builder_deadline_expired(builder)) {
+            return false;
+        }
     }
 
     builder->len = 0U;
@@ -102,7 +182,7 @@ static void builder_append(json_builder_t *builder, const char *fmt, ...)
     va_list copy;
     int required;
 
-    if (builder->failed) {
+    if (builder->failed || builder_deadline_expired(builder)) {
         return;
     }
 
@@ -355,7 +435,8 @@ esp_err_t report_codec_stream_heartbeat_json(const app_config_snapshot_t *config
                                              const report_frame_t *frame,
                                              char *scratch,
                                              size_t scratch_len,
-                                             esp_http_client_handle_t client)
+                                             esp_http_client_handle_t client,
+                                             uint32_t total_budget_ms)
 {
     json_builder_t builder;
 
@@ -363,7 +444,7 @@ esp_err_t report_codec_stream_heartbeat_json(const app_config_snapshot_t *config
         return ESP_ERR_INVALID_ARG;
     }
 
-    builder_init_stream(&builder, scratch, scratch_len, client);
+    builder_init_stream(&builder, scratch, scratch_len, client, total_budget_ms);
     return emit_heartbeat_json(&builder, config, frame) ? ESP_OK : ESP_FAIL;
 }
 

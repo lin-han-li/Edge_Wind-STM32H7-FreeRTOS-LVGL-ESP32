@@ -88,9 +88,12 @@ _last_emit_status_ts = {}   # {node_id: ts}
 _last_emit_monitor_ts = {}  # {node_id: ts}
 # 节流：按节点减少数据库写入频率（避免高频心跳导致频繁落库）
 _last_db_heartbeat_ts = {}  # {node_id: ts}
+_last_active_db_rehydrate_ts = 0.0
 
 # 默认每个节点最多每 N 秒写一次 Device.last_heartbeat（可通过环境变量调节）
 DEVICE_DB_UPDATE_INTERVAL_SEC = max(1.0, _env_float("EDGEWIND_DEVICE_DB_UPDATE_SEC", 5))
+# active_nodes is per-process under multi-worker deployment; periodically rehydrate from DB.
+ACTIVE_DB_REHYDRATE_INTERVAL_SEC = max(0.5, _env_float("EDGEWIND_ACTIVE_DB_REHYDRATE_SEC", 2))
 
 # 心跳性能诊断：仅在“慢请求”时打印耗时分解（避免刷屏）
 HB_SLOW_MS = max(1.0, _env_float("EDGEWIND_HEARTBEAT_SLOW_MS", 80))
@@ -296,6 +299,75 @@ def _get_report_mode(node_id: str | None) -> str:
     return mode if mode in ('summary', 'full') else DEFAULT_REPORT_MODE
 
 
+
+
+def _rehydrate_active_nodes_from_db(current_time: float | None = None, force: bool = False) -> list[str]:
+    """
+    Rebuild this worker's in-memory active_nodes from Device.last_heartbeat.
+
+    In gunicorn/eventlet multi-worker deployment, device heartbeats and browser polling
+    may hit different workers. active_nodes is local memory, but Device.last_heartbeat
+    is shared through the database, so it is the fallback source of online truth.
+    """
+    global _last_active_db_rehydrate_ts
+
+    now_ts = time.time() if current_time is None else float(current_time)
+    if (not force) and (now_ts - _last_active_db_rehydrate_ts < ACTIVE_DB_REHYDRATE_INTERVAL_SEC):
+        return []
+    _last_active_db_rehydrate_ts = now_ts
+
+    try:
+        cutoff = datetime.utcnow() - timedelta(seconds=NODE_TIMEOUT)
+        recent_devices = Device.query.filter(
+            Device.last_heartbeat != None,  # noqa: E711
+            Device.last_heartbeat >= cutoff,
+        ).all()
+    except Exception as exc:
+        logger.warning(f"[active_nodes] DB rehydrate failed: {exc}")
+        return []
+
+    added: list[str] = []
+    for device in recent_devices:
+        node_id = _normalize_node_id(getattr(device, 'device_id', None))
+        if not node_id:
+            continue
+
+        node_info = active_nodes.get(node_id) or {}
+        if node_info and (now_ts - node_info.get('timestamp', 0) <= NODE_TIMEOUT):
+            continue
+
+        fault_code = (getattr(device, 'fault_code', None) or 'E00').strip() or 'E00'
+        status = getattr(device, 'status', None) or ('faulty' if fault_code != 'E00' else 'online')
+        cached = _last_processed_cache.get(node_id)
+        data = dict(cached) if isinstance(cached, dict) else {}
+        data.update({
+            'node_id': node_id,
+            'device_id': node_id,
+            'status': status,
+            'fault_code': fault_code,
+            'location': getattr(device, 'location', None),
+            'hw_version': getattr(device, 'hw_version', None),
+            'report_mode': _get_report_mode(node_id),
+        })
+        pending_step = node_downsample_commands.get(node_id)
+        if pending_step is not None:
+            data['downsample_step'] = int(pending_step)
+        pending_points = node_upload_points_commands.get(node_id)
+        if pending_points is not None:
+            data['upload_points'] = int(pending_points)
+
+        if node_id not in active_nodes:
+            added.append(node_id)
+        active_nodes[node_id] = {
+            'timestamp': now_ts,
+            'status': status,
+            'fault_code': fault_code,
+            'data': data,
+        }
+
+    if added:
+        logger.info(f"[active_nodes] rehydrated from DB: {added}")
+    return added
 def _parse_downsample_step(value) -> int | None:
     """解析并校验 downsample_step（仅接受 1..64 的整数）。"""
     if value is None or isinstance(value, bool):
@@ -1222,7 +1294,15 @@ def get_active_nodes():
     try:
         current_time = time.time()
         include_series = str(request.args.get('include_series', '')).strip().lower() in ('1', 'true', 'yes', 'on')
+        rehydrated_nodes = _rehydrate_active_nodes_from_db(current_time)
         expired_nodes = []
+
+        if rehydrated_nodes:
+            try:
+                if socketio_instance:
+                    socketio_instance.emit('nodes_changed', {'added': list(rehydrated_nodes), 'removed': []}, namespace='/')
+            except Exception:
+                pass
         
         # 清理超时节点
         for node_id, node_info in list(active_nodes.items()):
@@ -1947,6 +2027,7 @@ def get_devices():
 
         # 计算当前“实时在线”节点集合（NODE_TIMEOUT 秒内有心跳）
         current_time = time.time()
+        _rehydrate_active_nodes_from_db(current_time)
         realtime_online_ids = {
             node_id for node_id, info in list(active_nodes.items())
             if current_time - info.get('timestamp', 0) <= NODE_TIMEOUT
@@ -2002,6 +2083,7 @@ def get_dashboard_stats():
     try:
         # 基于 active_nodes 统计在线/离线/故障
         current_time = time.time()
+        _rehydrate_active_nodes_from_db(current_time)
         total_nodes = 0
         online_nodes = 0
         faulty_nodes = 0
@@ -2367,6 +2449,7 @@ def admin_system_info():
 
         # 3) 活跃节点（NODE_TIMEOUT 秒内有心跳）
         current_time = time.time()
+        _rehydrate_active_nodes_from_db(current_time)
         active_node_ids = [
             node_id for node_id, info in list(active_nodes.items())
             if current_time - info.get('timestamp', 0) <= NODE_TIMEOUT
@@ -2706,6 +2789,7 @@ def get_history_nodes():
         
         # 获取当前在线的节点列表
         current_time = time.time()
+        _rehydrate_active_nodes_from_db(current_time)
         online_node_ids = set()
         for node_id, node_info in active_nodes.items():
             if current_time - node_info['timestamp'] <= NODE_TIMEOUT:

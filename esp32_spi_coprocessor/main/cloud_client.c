@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include "esp_err.h"
+#include "esp_heap_caps.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -28,6 +29,12 @@ static const char *TAG = "cloud_client";
 #define CLOUD_LOOP_POLL_MS 200
 #define CLOUD_SUBMIT_QUEUE_TIMEOUT_MS 20
 #define CLOUD_SUMMARY_COALESCE_THRESHOLD 4
+#define CLOUD_FULL_HTTP_TIMEOUT_MS 3000U
+#define CLOUD_FULL_HTTP_TOTAL_BUDGET_MS 6000U
+#define CLOUD_REPORT_REREGISTER_FAIL_STREAK 3U
+#define CLOUD_REPORT_WIFI_RECOVER_FAIL_STREAK 3U
+#define CLOUD_REPORT_WIFI_RECOVER_COOLDOWN_MS 45000U
+#define CLOUD_REPORT_WIFI_RECONNECT_SETTLE_MS 500U
 
 typedef enum {
     CLOUD_MSG_APPLY_SNAPSHOT = 1,
@@ -55,6 +62,8 @@ static cloud_client_event_cb_t s_callback;
 static void *s_callback_ctx;
 static bool s_registered;
 static int64_t s_last_request_us;
+static uint32_t s_report_transport_fail_streak;
+static int64_t s_last_wifi_recover_us;
 
 static void post_event(cloud_client_event_id_t id,
                        esp_err_t error,
@@ -131,6 +140,11 @@ static void touch_request_timestamp(void)
     s_last_request_us = esp_timer_get_time();
 }
 
+static void clear_request_timestamp(void)
+{
+    s_last_request_us = 0;
+}
+
 static void apply_request_interval(const app_config_snapshot_t *snapshot)
 {
     int64_t now_us;
@@ -162,7 +176,7 @@ static esp_err_t post_register_request(const app_config_snapshot_t *snapshot)
         .timeout_ms = (int) snapshot->comm.http_timeout_ms,
         .buffer_size = 1024,
         .buffer_size_tx = 1024,
-        .keep_alive_enable = true,
+        .keep_alive_enable = false,
     };
     esp_http_client_handle_t client;
 
@@ -213,9 +227,107 @@ static esp_err_t post_register_request(const app_config_snapshot_t *snapshot)
         s_registered = false;
         post_event(CLOUD_CLIENT_EVENT_REGISTER_RESULT, err, 0, 0, 0, NULL, detail);
     }
+    esp_http_client_close(client);
     esp_http_client_cleanup(client);
     free(body);
     return err;
+}
+
+static uint32_t report_request_timeout_ms(const app_config_snapshot_t *snapshot, const report_frame_t *frame)
+{
+    uint32_t timeout_ms = snapshot != NULL ? snapshot->comm.http_timeout_ms : 0U;
+
+    if (frame != NULL && frame->mode == REPORT_MODE_FULL) {
+        /* Full snapshots are best-effort streaming frames.  A stalled TCP write
+         * must not block the whole upload pipeline for 8-10 seconds; drop the
+         * stale full frame and let STM32 send a newer snapshot instead. */
+        if (timeout_ms == 0U || timeout_ms > CLOUD_FULL_HTTP_TIMEOUT_MS) {
+            timeout_ms = CLOUD_FULL_HTTP_TIMEOUT_MS;
+        }
+        return timeout_ms;
+    }
+
+    if (timeout_ms == 0U) {
+        timeout_ms = CLOUD_FULL_HTTP_TIMEOUT_MS;
+    }
+    return timeout_ms;
+}
+
+static void log_report_request_result(const char *stage,
+                                      const report_frame_t *frame,
+                                      size_t payload_len,
+                                      esp_err_t err,
+                                      int http_status,
+                                      int64_t total_ms,
+                                      int64_t open_ms,
+                                      int64_t stream_ms,
+                                      int64_t fetch_ms,
+                                      int64_t read_ms)
+{
+    ESP_LOGI(TAG,
+             "report stage=%s frame=%" PRIu32 " ref=%" PRIu32 " mode=%u len=%u err=%s(0x%x) http=%d ms total=%lld open=%lld stream=%lld fetch=%lld read=%lld heap=%u min=%u largest=%u stack=%u q=%u fail_streak=%u",
+             stage != NULL ? stage : "unknown",
+             frame != NULL ? frame->frame_id : 0U,
+             frame != NULL ? frame->ref_seq : 0U,
+             frame != NULL ? (unsigned int) frame->mode : 0U,
+             (unsigned int) payload_len,
+             esp_err_to_name(err),
+             (unsigned int) err,
+             http_status,
+             (long long) total_ms,
+             (long long) open_ms,
+             (long long) stream_ms,
+             (long long) fetch_ms,
+             (long long) read_ms,
+             (unsigned int) heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+             (unsigned int) heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+             (unsigned int) heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+             (unsigned int) uxTaskGetStackHighWaterMark(NULL),
+              (unsigned int) (s_queue != NULL ? uxQueueMessagesWaiting(s_queue) : 0U),
+              (unsigned int) s_report_transport_fail_streak);
+}
+
+static void maybe_force_wifi_recover(const report_frame_t *frame, esp_err_t err, int http_status)
+{
+    int64_t now_us;
+    int64_t cooldown_us;
+    esp_err_t reconnect_err;
+
+    if (s_report_transport_fail_streak < CLOUD_REPORT_WIFI_RECOVER_FAIL_STREAK) {
+        return;
+    }
+    if (!wifi_manager_is_connected()) {
+        return;
+    }
+
+    now_us = esp_timer_get_time();
+    cooldown_us = (int64_t) CLOUD_REPORT_WIFI_RECOVER_COOLDOWN_MS * 1000LL;
+    if (s_last_wifi_recover_us > 0 && (now_us - s_last_wifi_recover_us) < cooldown_us) {
+        return;
+    }
+    s_last_wifi_recover_us = now_us;
+    s_registered = false;
+
+    ESP_LOGW(TAG,
+             "forcing WiFi/cloud recovery after report failures streak=%u frame=%" PRIu32 " ref=%" PRIu32 " err=%s http=%d",
+             (unsigned int) s_report_transport_fail_streak,
+             frame != NULL ? frame->frame_id : 0U,
+             frame != NULL ? frame->ref_seq : 0U,
+             esp_err_to_name(err),
+             http_status);
+
+    post_event(CLOUD_CLIENT_EVENT_ERROR,
+               err != ESP_OK ? err : ESP_ERR_INVALID_STATE,
+               http_status,
+               frame != NULL ? frame->ref_seq : 0U,
+               frame != NULL ? frame->frame_id : 0U,
+               NULL,
+               "report_force_wifi_reconnect");
+
+    reconnect_err = wifi_manager_force_reconnect(CLOUD_REPORT_WIFI_RECONNECT_SETTLE_MS);
+    if (reconnect_err != ESP_OK) {
+        ESP_LOGW(TAG, "force WiFi reconnect request returned %s", esp_err_to_name(reconnect_err));
+    }
 }
 
 static esp_err_t post_report_request(const app_config_snapshot_t *snapshot,
@@ -229,14 +341,32 @@ static esp_err_t post_report_request(const app_config_snapshot_t *snapshot,
     char response[CLOUD_RESPONSE_MAX_LEN];
     int http_status = 0;
     server_command_event_t server_command;
+    esp_http_client_handle_t client = NULL;
+    const char *stage = "init";
+    uint32_t timeout_ms;
+    uint32_t total_budget_ms = 0U;
+    int64_t t0_us;
+    int64_t t_stage_us;
+    int64_t open_ms = 0;
+    int64_t stream_ms = 0;
+    int64_t fetch_ms = 0;
+    int64_t read_ms = 0;
+
+    if (snapshot == NULL || frame == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    timeout_ms = report_request_timeout_ms(snapshot, frame);
+    if (frame->mode == REPORT_MODE_FULL) {
+        total_budget_ms = CLOUD_FULL_HTTP_TOTAL_BUDGET_MS;
+    }
     esp_http_client_config_t cfg = {
         .url = url,
-        .timeout_ms = (int) snapshot->comm.http_timeout_ms,
+        .timeout_ms = (int) timeout_ms,
         .buffer_size = 2048,
         .buffer_size_tx = 2048,
-        .keep_alive_enable = true,
+        .keep_alive_enable = false,
     };
-    esp_http_client_handle_t client;
 
     if (!reporting_enabled) {
         post_event(CLOUD_CLIENT_EVENT_REPORT_RESULT, ESP_ERR_INVALID_STATE, 0, frame->ref_seq, frame->frame_id, NULL, "reporting_disabled");
@@ -271,6 +401,19 @@ static esp_err_t post_report_request(const app_config_snapshot_t *snapshot,
         return err;
     }
 
+    t0_us = esp_timer_get_time();
+    ESP_LOGI(TAG,
+             "report start frame=%" PRIu32 " ref=%" PRIu32 " mode=%u len=%u timeout=%ums budget=%ums heap=%u largest=%u q=%u",
+             frame->frame_id,
+             frame->ref_seq,
+             (unsigned int) frame->mode,
+             (unsigned int) payload_len,
+             (unsigned int) timeout_ms,
+             (unsigned int) total_budget_ms,
+             (unsigned int) heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+             (unsigned int) heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+             (unsigned int) (s_queue != NULL ? uxQueueMessagesWaiting(s_queue) : 0U));
+
     client = esp_http_client_init(&cfg);
     if (client == NULL) {
         post_event(CLOUD_CLIENT_EVENT_REPORT_RESULT, ESP_ERR_NO_MEM, 0, frame->ref_seq, frame->frame_id, NULL, "http_client_init_failed");
@@ -278,61 +421,115 @@ static esp_err_t post_report_request(const app_config_snapshot_t *snapshot,
     }
     esp_http_client_set_method(client, HTTP_METHOD_POST);
     esp_http_client_set_header(client, "Content-Type", "application/json");
+    esp_http_client_set_header(client, "Connection", "close");
 
+    stage = "open";
+    t_stage_us = esp_timer_get_time();
     err = esp_http_client_open(client, (int) payload_len);
+    open_ms = (esp_timer_get_time() - t_stage_us) / 1000LL;
     if (err != ESP_OK) {
         char detail[64];
-        format_err_message(detail, sizeof(detail), "http_open_failed", err);
-        esp_http_client_cleanup(client);
+        format_err_message(detail, sizeof(detail), "report_open_fail", err);
         post_event(CLOUD_CLIENT_EVENT_REPORT_RESULT, err, 0, frame->ref_seq, frame->frame_id, NULL, detail);
-        return err;
+        goto cleanup;
     }
 
-    err = report_codec_stream_heartbeat_json(snapshot, frame, scratch, sizeof(scratch), client);
-    if (err == ESP_OK) {
-        err = esp_http_client_fetch_headers(client);
-        if (err >= 0) {
-            err = ESP_OK;
-        }
+    stage = "stream";
+    t_stage_us = esp_timer_get_time();
+    err = report_codec_stream_heartbeat_json(snapshot, frame, scratch, sizeof(scratch), client, total_budget_ms);
+    stream_ms = (esp_timer_get_time() - t_stage_us) / 1000LL;
+    if (err != ESP_OK) {
+        char detail[64];
+        format_err_message(detail, sizeof(detail), "report_stream_fail", err);
+        post_event(CLOUD_CLIENT_EVENT_REPORT_RESULT, err, 0, frame->ref_seq, frame->frame_id, NULL, detail);
+        goto cleanup;
     }
 
+    stage = "fetch";
+    t_stage_us = esp_timer_get_time();
+    err = (esp_err_t) esp_http_client_fetch_headers(client);
+    fetch_ms = (esp_timer_get_time() - t_stage_us) / 1000LL;
+    if (err < 0) {
+        char detail[64];
+        format_err_message(detail, sizeof(detail), "report_fetch_fail", err);
+        post_event(CLOUD_CLIENT_EVENT_REPORT_RESULT, err, 0, frame->ref_seq, frame->frame_id, NULL, detail);
+        goto cleanup;
+    }
+    err = ESP_OK;
+
+    stage = "read";
+    t_stage_us = esp_timer_get_time();
+    err = read_response_body(client, response, sizeof(response), &http_status);
+    read_ms = (esp_timer_get_time() - t_stage_us) / 1000LL;
     if (err == ESP_OK) {
-        err = read_response_body(client, response, sizeof(response), &http_status);
-        if (err == ESP_OK) {
-            post_event(CLOUD_CLIENT_EVENT_REPORT_RESULT,
+        post_event(CLOUD_CLIENT_EVENT_REPORT_RESULT,
+                   ESP_OK,
+                   http_status,
+                   frame->ref_seq,
+                   frame->frame_id,
+                   NULL,
+                   (http_status >= 200 && http_status < 300) ? "report_ok" : "report_http_fail");
+
+        if (report_codec_parse_server_command(response, &server_command)) {
+            post_event(CLOUD_CLIENT_EVENT_SERVER_COMMAND,
                        ESP_OK,
                        http_status,
                        frame->ref_seq,
                        frame->frame_id,
-                       NULL,
-                       (http_status >= 200 && http_status < 300) ? "report_ok" : "report_http_fail");
-
-            if (report_codec_parse_server_command(response, &server_command)) {
-                post_event(CLOUD_CLIENT_EVENT_SERVER_COMMAND,
-                           ESP_OK,
-                           http_status,
-                           frame->ref_seq,
-                           frame->frame_id,
-                           &server_command,
-                           "server_command");
-            }
-        } else {
-            char detail[64];
-            format_err_message(detail, sizeof(detail), "report_read_fail", err);
-            post_event(CLOUD_CLIENT_EVENT_REPORT_RESULT, err, 0, frame->ref_seq, frame->frame_id, NULL, detail);
+                       &server_command,
+                       "server_command");
         }
         if (http_status == 401 || http_status == 404) {
             s_registered = false;
         }
     } else {
         char detail[64];
-        format_err_message(detail, sizeof(detail), "report_transport_fail", err);
+        format_err_message(detail, sizeof(detail), "report_read_fail", err);
         post_event(CLOUD_CLIENT_EVENT_REPORT_RESULT, err, 0, frame->ref_seq, frame->frame_id, NULL, detail);
     }
 
-    esp_http_client_close(client);
-    esp_http_client_cleanup(client);
-    touch_request_timestamp();
+cleanup:
+    if (client != NULL) {
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+    }
+    if (err == ESP_OK && http_status >= 200 && http_status < 300) {
+        s_report_transport_fail_streak = 0;
+        touch_request_timestamp();
+    } else if (err != ESP_OK || http_status == 0 || http_status >= 500) {
+        /*
+         * Do not let a failed full POST suppress all cloud traffic until the
+         * next full frame.  Clearing the timestamp lets the idle branch send a
+         * lightweight register/heartbeat during STM32's recovery holdoff, so
+         * the node remains online even while full snapshots are being skipped.
+         */
+        clear_request_timestamp();
+        if (s_report_transport_fail_streak < 1000000U) {
+            ++s_report_transport_fail_streak;
+        }
+        if (s_report_transport_fail_streak >= CLOUD_REPORT_REREGISTER_FAIL_STREAK) {
+            s_registered = false;
+            ESP_LOGW(TAG,
+                     "forcing re-register after report failures streak=%u err=%s http=%d",
+                     (unsigned int) s_report_transport_fail_streak,
+                      esp_err_to_name(err),
+                      http_status);
+        }
+        maybe_force_wifi_recover(frame, err, http_status);
+    } else {
+        touch_request_timestamp();
+    }
+
+    log_report_request_result(stage,
+                              frame,
+                              payload_len,
+                              err,
+                              http_status,
+                              (esp_timer_get_time() - t0_us) / 1000LL,
+                              open_ms,
+                              stream_ms,
+                              fetch_ms,
+                              read_ms);
     return err;
 }
 
@@ -352,7 +549,7 @@ static esp_err_t post_empty_heartbeat_request(const app_config_snapshot_t *snaps
         .timeout_ms = (int) snapshot->comm.http_timeout_ms,
         .buffer_size = 1024,
         .buffer_size_tx = 1024,
-        .keep_alive_enable = true,
+        .keep_alive_enable = false,
     };
     esp_http_client_handle_t client;
 
@@ -411,6 +608,7 @@ static esp_err_t post_empty_heartbeat_request(const app_config_snapshot_t *snaps
         post_event(CLOUD_CLIENT_EVENT_ERROR, err, 0, 0, 0, NULL, detail);
     }
 
+    esp_http_client_close(client);
     esp_http_client_cleanup(client);
     free(body);
     touch_request_timestamp();
@@ -466,7 +664,6 @@ static void cloud_task(void *arg)
         case CLOUD_MSG_SET_REPORTING:
             reporting_enabled = msg.data.reporting.enabled;
             report_mode = msg.data.reporting.mode;
-            (void) report_mode;
             if (reporting_enabled && s_last_request_us == 0) {
                 touch_request_timestamp();
             }

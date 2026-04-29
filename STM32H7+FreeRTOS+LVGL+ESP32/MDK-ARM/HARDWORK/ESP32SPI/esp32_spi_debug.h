@@ -72,6 +72,13 @@ uint32_t ESP32_SPI_GetLastTxSeq(void);
 uint32_t ESP32_SPI_GetLastFullEndRefSeq(void);
 uint32_t ESP32_SPI_GetLastNackRefSeq(void);
 uint16_t ESP32_SPI_GetLastNackReason(void);
+bool ESP32_SPI_ConsumeServerCommand(uint8_t *out_reset,
+                                    uint8_t *out_has_report_mode,
+                                    uint8_t *out_report_full,
+                                    uint8_t *out_has_downsample_step,
+                                    uint32_t *out_downsample_step,
+                                    uint8_t *out_has_upload_points,
+                                    uint32_t *out_upload_points);
 bool ESP32_SPI_GetTxResult(uint32_t ref_seq,
                            int32_t *out_http_status,
                            int32_t *out_result_code,

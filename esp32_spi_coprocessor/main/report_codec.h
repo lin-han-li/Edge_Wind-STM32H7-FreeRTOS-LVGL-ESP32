@@ -21,5 +21,6 @@ esp_err_t report_codec_stream_heartbeat_json(const app_config_snapshot_t *config
                                              const report_frame_t *frame,
                                              char *scratch,
                                              size_t scratch_len,
-                                             esp_http_client_handle_t client);
+                                             esp_http_client_handle_t client,
+                                             uint32_t total_budget_ms);
 bool report_codec_parse_server_command(const char *body, server_command_event_t *out_event);

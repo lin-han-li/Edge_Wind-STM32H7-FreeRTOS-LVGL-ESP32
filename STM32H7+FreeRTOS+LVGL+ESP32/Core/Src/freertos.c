@@ -588,11 +588,43 @@ void ESP8266_Task(void *argument)
   {
     osThreadSetPriority(self, osPriorityNormal);
   }
+  uint8_t boot_autoreconnect_checked = 0;
+  uint32_t boot_autoreconnect_start = HAL_GetTick();
+  uint32_t boot_autoreconnect_next = boot_autoreconnect_start + 3000U;
   /* Infinite loop */
   for(;;)
   {
     ESP_UI_TaskPoll();
     ESP_Console_Poll();
+    if (!boot_autoreconnect_checked)
+    {
+      uint32_t now = HAL_GetTick();
+      if ((int32_t)(now - boot_autoreconnect_next) >= 0)
+      {
+        bool auto_reconnect_en = false;
+        bool last_reporting = false;
+        boot_autoreconnect_next = now + 1000U;
+        (void)ESP_Config_LoadFromSD_UIFiles();
+        (void)ESP_CommParams_LoadFromSD();
+        if (ESP_AutoReconnect_Read(&auto_reconnect_en, &last_reporting))
+        {
+          boot_autoreconnect_checked = 1U;
+          printf("[ESP_BOOT] autoreconnect cfg: enabled=%u last_reporting=%u\r\n",
+                 auto_reconnect_en ? 1U : 0U,
+                 last_reporting ? 1U : 0U);
+          if (auto_reconnect_en && last_reporting)
+          {
+            printf("[ESP_BOOT] queue AUTO connect/report from SD flag\r\n");
+            (void)ESP_UI_SendCmd(ESP_UI_CMD_AUTO_CONNECT);
+          }
+        }
+        else if ((now - boot_autoreconnect_start) > 30000U)
+        {
+          boot_autoreconnect_checked = 1U;
+          printf("[ESP_BOOT] autoreconnect cfg unavailable, skip boot auto\r\n");
+        }
+      }
+    }
     /* ESP8266 task now handles only UI/console/control.
        DSP and upload run in independent producer/consumer tasks. */
     osDelay(5);

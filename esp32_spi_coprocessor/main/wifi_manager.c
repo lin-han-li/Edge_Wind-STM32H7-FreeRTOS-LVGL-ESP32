@@ -361,6 +361,51 @@ esp_err_t wifi_manager_connect(void)
     return err;
 }
 
+esp_err_t wifi_manager_force_reconnect(uint32_t settle_ms)
+{
+    esp_err_t err;
+
+    if (!s_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (settle_ms < 200U) {
+        settle_ms = 200U;
+    }
+    if (settle_ms > 3000U) {
+        settle_ms = 3000U;
+    }
+
+    lock_state();
+    s_manual_disconnect = false;
+    s_retry_count = 0;
+    s_connected = false;
+    s_ip_address[0] = '\0';
+    unlock_state();
+
+    if (s_reconnect_timer != NULL) {
+        (void) xTimerStop(s_reconnect_timer, 0);
+    }
+    xEventGroupClearBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+
+    ESP_LOGW(TAG, "force WiFi reconnect settle=%ums", (unsigned int) settle_ms);
+    post_event(WIFI_MANAGER_EVENT_CONNECTING, ESP_OK, 0);
+
+    /*
+     * This is not a user/manual disconnect. If the async disconnect event races
+     * with the direct connect below, the normal auto-reconnect path remains
+     * enabled as a fallback.
+     */
+    (void) esp_wifi_disconnect();
+    vTaskDelay(pdMS_TO_TICKS(settle_ms));
+
+    err = esp_wifi_connect();
+    ESP_LOGW(TAG, "force esp_wifi_connect -> %s", esp_err_to_name(err));
+    if (err == ESP_ERR_WIFI_CONN) {
+        return ESP_OK;
+    }
+    return err;
+}
+
 esp_err_t wifi_manager_disconnect(void)
 {
     if (!s_initialized) {

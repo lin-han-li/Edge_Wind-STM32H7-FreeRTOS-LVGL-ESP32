@@ -28,6 +28,7 @@ esp_err_t wifi_manager_init(wifi_manager_event_cb_t callback, void *ctx);
 esp_err_t wifi_manager_apply_config(const app_device_config_t *device);
 esp_err_t wifi_manager_set_reconnect_backoff_ms(uint32_t backoff_ms);
 esp_err_t wifi_manager_connect(void);
+esp_err_t wifi_manager_force_reconnect(uint32_t settle_ms);
 esp_err_t wifi_manager_disconnect(void);
 bool wifi_manager_is_connected(void);
 int wifi_manager_get_rssi_dbm(void);

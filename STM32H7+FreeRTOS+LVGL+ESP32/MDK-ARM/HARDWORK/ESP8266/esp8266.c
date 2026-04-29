@@ -34,15 +34,18 @@
 #endif
 
 #ifndef ESP32_SPI_STRESS_TEST
-#define ESP32_SPI_STRESS_TEST 1
+#define ESP32_SPI_STRESS_TEST 0
 #endif
 
 #ifndef ESP32_SPI_STRESS_FULL_UPLOAD
-#define ESP32_SPI_STRESS_FULL_UPLOAD 1
+#define ESP32_SPI_STRESS_FULL_UPLOAD 0
 #endif
 
 #ifndef ESP32_SPI_STRESS_SENDLIMIT_MS
 #define ESP32_SPI_STRESS_SENDLIMIT_MS 500U
+#endif
+#ifndef ESP32_SPI_FULL_IDLE_HEARTBEAT_MS
+#define ESP32_SPI_FULL_IDLE_HEARTBEAT_MS 5000U
 #endif
 
 #ifndef ESP32_SPI_STRESS_DATA_UPDATE_MS
@@ -57,8 +60,17 @@
 #define ESP_LEGACY_UART_LINK_WATCHDOG (!EW_USE_ESP32_SPI_UI)
 #endif
 
+#ifndef ESP32_SPI_RESULT_OK
+#define ESP32_SPI_RESULT_OK 0
+#endif
+#ifndef ESP32_SPI_NACK_BUSY
+#define ESP32_SPI_NACK_BUSY 5U
+#endif
 #ifndef ESP32_SPI_NACK_INVALID_STATE
 #define ESP32_SPI_NACK_INVALID_STATE 7U
+#endif
+#ifndef ESP32_SPI_NACK_INVALID_PAYLOAD
+#define ESP32_SPI_NACK_INVALID_PAYLOAD 8U
 #endif
 
 #ifndef ESP32_SPI_INVALID_STATE_AUTOSTOP_COUNT
@@ -66,14 +78,14 @@
 #endif
 
 #ifndef ESP32_SPI_FULL_CONTINUOUS_DEFAULT
-#define ESP32_SPI_FULL_CONTINUOUS_DEFAULT 1
+#define ESP32_SPI_FULL_CONTINUOUS_DEFAULT 0
 #endif
 
 #ifndef ESP32_SPI_FULL_NOT_ARMED_LOG_MS
 #define ESP32_SPI_FULL_NOT_ARMED_LOG_MS 5000U
 #endif
 #ifndef ESP32_SPI_FULL_RESULT_TIMEOUT_MS
-#define ESP32_SPI_FULL_RESULT_TIMEOUT_MS 30000U
+#define ESP32_SPI_FULL_RESULT_TIMEOUT_MS 45000U
 #endif
 #ifndef ESP32_SPI_FULL_WAIT_LOG_MS
 #define ESP32_SPI_FULL_WAIT_LOG_MS 5000U
@@ -81,11 +93,23 @@
 #ifndef ESP32_SPI_FULL_RESULT_POLL_MS
 #define ESP32_SPI_FULL_RESULT_POLL_MS 100U
 #endif
+#ifndef ESP32_SPI_FULL_TIMEOUT_HOLDOFF_MS
+#define ESP32_SPI_FULL_TIMEOUT_HOLDOFF_MS 1000U
+#endif
+#ifndef ESP32_SPI_FULL_BUSY_HOLDOFF_MS
+#define ESP32_SPI_FULL_BUSY_HOLDOFF_MS 3000U
+#endif
+#ifndef ESP32_SPI_FULL_MAX_HOLDOFF_MS
+#define ESP32_SPI_FULL_MAX_HOLDOFF_MS 5000U
+#endif
 #ifndef ESP_ALGO_MIN_INTERVAL_MS
 #define ESP_ALGO_MIN_INTERVAL_MS 0U
 #endif
 #ifndef ESP32_SPI_FULL_PACKETS_PER_POLL
 #define ESP32_SPI_FULL_PACKETS_PER_POLL 1U
+#endif
+#ifndef ESP32_SPI_FULL_PACKET_ACCEPT_TIMEOUT_MS
+#define ESP32_SPI_FULL_PACKET_ACCEPT_TIMEOUT_MS 500U
 #endif
 #ifndef ESP_UPLOAD_SNAPSHOT_SLOT_COUNT
 #define ESP_UPLOAD_SNAPSHOT_SLOT_COUNT 2U
@@ -361,11 +385,19 @@ static void ESP_StreamRx_Feed(const uint8_t *data, uint16_t len);
 void ESP_UI_Internal_OnLog(const char *line);
 static void ESP_SetServerReportMode(uint8_t full);
 static void ESP_SPI_ResetLocalReportState(const char *reason);
+#if (EW_USE_ESP32_SPI_UI && ESP32_SPI_ENABLE_FULL_UPLOAD)
+static void ESP_SPI_FullClearWaitState(void);
+static void ESP_SPI_FullResetUploadRuntimeState(void);
+static void ESP_SPI_FullEnterHoldoff(const char *reason, uint32_t holdoff_ms);
+static bool ESP_SPI_FullHoldoffActive(uint32_t now_tick);
+#endif
 static void ESP_SetServerDownsampleStep(uint32_t step);
 static bool ESP_TryParseDownsampleStep(const char *s, uint32_t *out_step);
 static void ESP_SetServerUploadPoints(uint32_t points);
 static bool ESP_TryParseUploadPoints(const char *s, uint32_t *out_points);
 static bool ESP_CommParams_SaveToSD(void);
+static bool ESP_UploadMode_LoadFromSD(void);
+static bool ESP_UploadMode_SaveToSD(uint8_t full);
 static void ESP_SPI_FullArmFrames(uint16_t frames);
 static void ESP_SPI_FullSetContinuous(uint8_t enable);
 static void ESP_SPI_FullPrintStatus(void);
@@ -600,6 +632,10 @@ static uint32_t g_spi_full_result_frame_id = 0U;
 static uint32_t g_spi_full_result_start_tick = 0U;
 static uint32_t g_spi_full_result_last_log_tick = 0U;
 static uint32_t g_spi_full_result_last_poll_tick = 0U;
+static uint32_t g_spi_full_holdoff_until_tick = 0U;
+static uint32_t g_spi_full_timeout_count = 0U;
+static uint32_t g_spi_full_busy_nack_count = 0U;
+static uint32_t g_spi_full_http_fail_count = 0U;
 #endif
 // 服务器请求的降采样步进：1..64
 static volatile uint32_t g_server_downsample_step = (uint32_t)WAVEFORM_SEND_STEP;
@@ -859,6 +895,8 @@ bool ESP_CommParams_LoadFromSD(void)
 #define UI_PARAM_TMP_FILE        "0:/config/.ui_param.cfg.tmp"
 #define UI_AUTOREPORT_CFG_FILE   "0:/config/ui_autoreport.cfg"
 #define UI_AUTOREPORT_TMP_FILE   "0:/config/.ui_autoreport.cfg.tmp"
+#define UI_UPLOAD_CFG_FILE       "0:/config/ui_upload.cfg"
+#define UI_UPLOAD_TMP_FILE       "0:/config/.ui_upload.cfg.tmp"
 
 static bool esp_sd_try_mount(uint32_t wait_ms)
 {
@@ -1053,6 +1091,94 @@ bool ESP_AutoReconnect_SetLastReporting(bool last_reporting)
 }
 
 /* 启动前置：从 UI 保存的 SD 文件读取 WiFi/Server 配置并应用 */
+
+static void ESP_UploadMode_ApplyLoaded(uint8_t full)
+{
+    full = full ? 1U : 0U;
+    g_server_report_full = full;
+    g_server_report_full_dirty = 0U;
+#if (EW_USE_ESP32_SPI_UI && ESP32_SPI_ENABLE_FULL_UPLOAD)
+    g_spi_full_continuous = full;
+    if (!full) {
+        g_spi_full_manual_frames = 0U;
+        ESP_SPI_FullResetUploadRuntimeState();
+    }
+#endif
+}
+
+static bool ESP_UploadMode_LoadFromSD(void)
+{
+    if (!esp_sd_try_mount(120U)) {
+        return false;
+    }
+
+    FIL fil;
+    if (f_open(&fil, UI_UPLOAD_CFG_FILE, FA_READ) != FR_OK) {
+        return false;
+    }
+
+    uint8_t full = g_server_report_full ? 1U : 0U;
+    char line[96];
+    while (f_gets(line, sizeof(line), &fil)) {
+        cfg_rstrip(line);
+        if (strncmp(line, "REPORT_MODE=", 12) == 0) {
+            const char *v = line + 12;
+            if (strcmp(v, "full") == 0 || strcmp(v, "FULL") == 0 || strcmp(v, "1") == 0) {
+                full = 1U;
+            } else if (strcmp(v, "summary") == 0 || strcmp(v, "SUMMARY") == 0 || strcmp(v, "0") == 0) {
+                full = 0U;
+            }
+        }
+    }
+    (void)f_close(&fil);
+
+    ESP_UploadMode_ApplyLoaded(full);
+    ESP_Log("[ESP] upload mode loaded from SD: %s\r\n", full ? "full" : "summary");
+    return true;
+}
+
+static bool ESP_UploadMode_SaveToSD(uint8_t full)
+{
+    if (!esp_sd_try_mount(200U)) {
+        return false;
+    }
+    if (esp_cfg_ensure_dir() != FR_OK) {
+        return false;
+    }
+
+    FIL fil;
+    if (f_open(&fil, UI_UPLOAD_TMP_FILE, FA_CREATE_ALWAYS | FA_WRITE) != FR_OK) {
+        return false;
+    }
+
+    char buf[64];
+    int n = snprintf(buf, sizeof(buf),
+                     "REPORT_MODE=%s\r\n",
+                     full ? "full" : "summary");
+    if (n <= 0 || n >= (int)sizeof(buf)) {
+        (void)f_close(&fil);
+        (void)f_unlink(UI_UPLOAD_TMP_FILE);
+        return false;
+    }
+
+    UINT bw = 0;
+    FRESULT wr = f_write(&fil, buf, (UINT)n, &bw);
+    FRESULT sr = f_sync(&fil);
+    (void)f_close(&fil);
+    if (wr != FR_OK || sr != FR_OK || bw != (UINT)n) {
+        (void)f_unlink(UI_UPLOAD_TMP_FILE);
+        return false;
+    }
+
+    (void)f_unlink(UI_UPLOAD_CFG_FILE);
+    FRESULT rn = f_rename(UI_UPLOAD_TMP_FILE, UI_UPLOAD_CFG_FILE);
+    if (rn != FR_OK) {
+        (void)f_unlink(UI_UPLOAD_TMP_FILE);
+        return false;
+    }
+    return true;
+}
+
 bool ESP_Config_LoadFromSD_UIFiles(void)
 {
     if (!esp_sd_try_mount(120U)) {
@@ -1114,6 +1240,7 @@ bool ESP_Config_LoadFromSD_UIFiles(void)
     if (any) {
         ESP_Config_Apply(&cfg);
     }
+    (void)ESP_UploadMode_LoadFromSD();
     return any;
 }
 
@@ -1813,13 +1940,7 @@ static void ESP_SPI_ResetLocalReportState(const char *reason)
     ESP_SetServerReportMode(0U);
 #if (ESP32_SPI_ENABLE_FULL_UPLOAD)
     g_spi_full_manual_frames = 0U;
-    g_spi_full_waiting_result = 0U;
-    g_spi_full_result_ref_seq = 0U;
-    g_spi_full_result_frame_id = 0U;
-    g_spi_full_result_start_tick = 0U;
-    g_spi_full_result_last_log_tick = 0U;
-    g_spi_full_result_last_poll_tick = 0U;
-    ESP_FullTx_ClearAndRelease();
+    ESP_SPI_FullResetUploadRuntimeState();
 #endif
     (void)ESP_AutoReconnect_SetLastReporting(false);
     ESP_Log("[ESP32SPI] local report state reset: %s\r\n",
@@ -1828,6 +1949,65 @@ static void ESP_SPI_ResetLocalReportState(const char *reason)
     (void)reason;
 #endif
 }
+
+#if (EW_USE_ESP32_SPI_UI && ESP32_SPI_ENABLE_FULL_UPLOAD)
+static void ESP_SPI_FullClearWaitState(void)
+{
+    g_spi_full_waiting_result = 0U;
+    g_spi_full_result_ref_seq = 0U;
+    g_spi_full_result_frame_id = 0U;
+    g_spi_full_result_start_tick = 0U;
+    g_spi_full_result_last_log_tick = 0U;
+    g_spi_full_result_last_poll_tick = 0U;
+}
+
+static void ESP_SPI_FullResetUploadRuntimeState(void)
+{
+    ESP_SPI_FullClearWaitState();
+    g_spi_full_holdoff_until_tick = 0U;
+    g_spi_full_timeout_count = 0U;
+    g_spi_full_busy_nack_count = 0U;
+    g_spi_full_http_fail_count = 0U;
+    ESP_FullTx_ClearAndRelease();
+}
+
+static void ESP_SPI_FullEnterHoldoff(const char *reason, uint32_t holdoff_ms)
+{
+    uint32_t now = HAL_GetTick();
+
+    if (holdoff_ms == 0U)
+    {
+        holdoff_ms = ESP32_SPI_FULL_BUSY_HOLDOFF_MS;
+    }
+    if (holdoff_ms > ESP32_SPI_FULL_MAX_HOLDOFF_MS)
+    {
+        holdoff_ms = ESP32_SPI_FULL_MAX_HOLDOFF_MS;
+    }
+    g_spi_full_holdoff_until_tick = now + holdoff_ms;
+    ESP_Log("[ESP32SPI] full recovery holdoff=%lums reason=%s timeout=%lu busy=%lu httpfail=%lu\r\n",
+            (unsigned long)holdoff_ms,
+            (reason != NULL) ? reason : "unknown",
+            (unsigned long)g_spi_full_timeout_count,
+            (unsigned long)g_spi_full_busy_nack_count,
+            (unsigned long)g_spi_full_http_fail_count);
+    (void)ESP32_SPI_PollEvents(50U);
+}
+
+static bool ESP_SPI_FullHoldoffActive(uint32_t now_tick)
+{
+    if (g_spi_full_holdoff_until_tick == 0U)
+    {
+        return false;
+    }
+    if ((int32_t)(now_tick - g_spi_full_holdoff_until_tick) < 0)
+    {
+        return true;
+    }
+    g_spi_full_holdoff_until_tick = 0U;
+    ESP_Log("[ESP32SPI] full recovery holdoff ended\r\n");
+    return false;
+}
+#endif
 
 static void ESP_SetServerDownsampleStep(uint32_t step)
 {
@@ -1965,6 +2145,34 @@ void ESP_Console_Poll(void)
         g_console_line_len = 0;
     }
 
+#if (EW_USE_ESP32_SPI_UI)
+    {
+        uint8_t reset = 0U, has_mode = 0U, full = 0U;
+        uint8_t has_downsample = 0U, has_upload = 0U;
+        uint32_t downsample = 0U, upload_points = 0U;
+        if (ESP32_SPI_ConsumeServerCommand(&reset,
+                                           &has_mode,
+                                           &full,
+                                           &has_downsample,
+                                           &downsample,
+                                           &has_upload,
+                                           &upload_points)) {
+            if (reset) {
+                g_server_reset_pending = 1U;
+            }
+            if (has_mode) {
+                ESP_SetServerReportMode(full);
+            }
+            if (has_downsample) {
+                ESP_SetServerDownsampleStep(downsample);
+            }
+            if (has_upload) {
+                ESP_SetServerUploadPoints(upload_points);
+            }
+        }
+    }
+#endif
+
     // 2) 处理“服务器下发 reset”指令
     if (g_server_reset_pending)
     {
@@ -1973,17 +2181,40 @@ void ESP_Console_Poll(void)
         ESP_SetFaultCode("E00");
     }
 
-    // 2.0) 处理“服务器下发 report_mode”指令
+    // 2.0) ???????? report_mode???
     if (g_server_report_full_dirty)
     {
+        uint8_t full = g_server_report_full ? 1U : 0U;
         g_server_report_full_dirty = 0;
-        if (g_server_report_full)
+#if (EW_USE_ESP32_SPI_UI && ESP32_SPI_ENABLE_FULL_UPLOAD)
+        g_spi_full_continuous = full;
+        if (!full) {
+            g_spi_full_manual_frames = 0U;
+            ESP_SPI_FullResetUploadRuntimeState();
+        }
+#endif
+        if (full)
         {
-            ESP_Log("[服务器命令] report_mode=full：请求全量上报\r\n");
+            ESP_Log("[?????] report_mode=full???????\r\n");
         }
         else
         {
-            ESP_Log("[服务器命令] report_mode=summary：关闭全量上报\r\n");
+            ESP_Log("[?????] report_mode=summary???????\r\n");
+        }
+#if (EW_USE_ESP32_SPI_UI)
+        if (g_esp_ready && g_report_enabled) {
+#if (ESP32_SPI_ENABLE_FULL_UPLOAD)
+            ESP_SPI_FullResetUploadRuntimeState();
+#endif
+            (void)ESP32_SPI_StartReport(full, 3000U);
+        }
+#endif
+        if (ESP_UploadMode_SaveToSD(full)) {
+            ESP_Log("[?????] report_mode=%s?????SD\r\n",
+                    full ? "full" : "summary");
+        } else {
+            ESP_Log("[?????] report_mode=%s????????SD??\r\n",
+                    full ? "full" : "summary");
         }
     }
 
@@ -2625,12 +2856,19 @@ void ESP_Post_Data(void)
                     (unsigned long)done_elapsed,
                     (long)http_status,
                     (long)result_code);
-            g_spi_full_waiting_result = 0U;
-            g_spi_full_result_ref_seq = 0U;
-            g_spi_full_result_frame_id = 0U;
-            g_spi_full_result_start_tick = 0U;
-            g_spi_full_result_last_log_tick = 0U;
-            g_spi_full_result_last_poll_tick = 0U;
+            ESP_SPI_FullClearWaitState();
+            if (result_code == ESP32_SPI_RESULT_OK && http_status >= 200 && http_status < 300) {
+                g_spi_full_holdoff_until_tick = 0U;
+                g_spi_full_timeout_count = 0U;
+                g_spi_full_busy_nack_count = 0U;
+                g_spi_full_http_fail_count = 0U;
+            } else {
+                if (g_spi_full_http_fail_count < 1000000UL) {
+                    g_spi_full_http_fail_count++;
+                }
+                ESP_SPI_FullEnterHoldoff("full http result failed",
+                                         ESP32_SPI_FULL_TIMEOUT_HOLDOFF_MS * g_spi_full_http_fail_count);
+            }
             if (g_spi_full_manual_frames == 0U && g_spi_full_continuous == 0U) {
                 ESP_SetServerReportMode(0U);
             }
@@ -2641,12 +2879,12 @@ void ESP_Post_Data(void)
                         (unsigned long)g_spi_full_result_frame_id,
                         (unsigned long)g_spi_full_result_ref_seq,
                         (unsigned long)wait_elapsed);
-                g_spi_full_waiting_result = 0U;
-                g_spi_full_result_ref_seq = 0U;
-                g_spi_full_result_frame_id = 0U;
-                g_spi_full_result_start_tick = 0U;
-                g_spi_full_result_last_log_tick = 0U;
-                g_spi_full_result_last_poll_tick = 0U;
+                ESP_SPI_FullClearWaitState();
+                if (g_spi_full_timeout_count < 1000000UL) {
+                    g_spi_full_timeout_count++;
+                }
+                ESP_SPI_FullEnterHoldoff("full http timeout",
+                                         ESP32_SPI_FULL_TIMEOUT_HOLDOFF_MS * g_spi_full_timeout_count);
                 if (g_spi_full_manual_frames == 0U && g_spi_full_continuous == 0U) {
                     ESP_SetServerReportMode(0U);
                 }
@@ -2662,6 +2900,11 @@ void ESP_Post_Data(void)
     }
 
     if (g_full_tx_sm.active == 0U) {
+        if (ESP_SPI_FullHoldoffActive(now_tick)) {
+            (void)ESP32_SPI_PollEvents(20U);
+            return;
+        }
+
         const ESP_UploadSnapshot_t *snapshot;
         uint32_t snapshot_seq = 0U;
         uint8_t one_shot = 0U;
@@ -2710,7 +2953,7 @@ void ESP_Post_Data(void)
     }
 
     while (g_full_tx_sm.active != 0U && packets_sent < ESP32_SPI_FULL_PACKETS_PER_POLL) {
-        ok = ESP_FullTx_StepPacket(1500U);
+        ok = ESP_FullTx_StepPacket(ESP32_SPI_FULL_PACKET_ACCEPT_TIMEOUT_MS);
         if (!ok) {
             break;
         }
@@ -2722,8 +2965,10 @@ void ESP_Post_Data(void)
         uint32_t failed_frame = g_full_tx_sm.frame_id;
         uint32_t elapsed_ms = HAL_GetTick() - g_full_tx_sm.start_tick;
         uint8_t one_shot_failed = g_full_tx_sm.one_shot;
+        uint8_t phase_failed = (uint8_t)g_full_tx_sm.phase;
+        uint16_t nack_reason = ESP32_SPI_GetLastNackReason();
         full_err++;
-        ESP_Log("[ESP32SPI] full tx fail frame=%lu elapsed=%lums pkt=%lu phase=%u try=%lu ok=%lu err=%lu snapshot=%lu drop=%lu\r\n",
+        ESP_Log("[ESP32SPI] full tx fail frame=%lu elapsed=%lums pkt=%lu phase=%u try=%lu ok=%lu err=%lu snapshot=%lu drop=%lu nack=%u\r\n",
                 (unsigned long)failed_frame,
                 (unsigned long)elapsed_ms,
                 (unsigned long)g_full_tx_sm.packet_count,
@@ -2732,9 +2977,20 @@ void ESP_Post_Data(void)
                 (unsigned long)full_ok,
                 (unsigned long)full_err,
                 (unsigned long)g_full_tx_sm.snapshot_seq,
-                (unsigned long)g_upload_snapshot_drop_count);
-        if (ESP32_SPI_GetLastNackReason() == ESP32_SPI_NACK_INVALID_STATE) {
+                (unsigned long)g_upload_snapshot_drop_count,
+                (unsigned int)nack_reason);
+        if (nack_reason == ESP32_SPI_NACK_INVALID_STATE) {
             ESP_SPI_ResetLocalReportState("full NACK invalid_state");
+        } else if (nack_reason == ESP32_SPI_NACK_BUSY ||
+                   (phase_failed == (uint8_t)ESP_FULL_TX_BEGIN &&
+                    nack_reason == ESP32_SPI_NACK_INVALID_PAYLOAD)) {
+            if (g_spi_full_busy_nack_count < 1000000UL) {
+                g_spi_full_busy_nack_count++;
+            }
+            ESP_FullTx_ClearAndRelease();
+            ESP_SPI_FullEnterHoldoff((nack_reason == ESP32_SPI_NACK_BUSY) ?
+                                     "full NACK busy" : "full begin NACK invalid_payload",
+                                     ESP32_SPI_FULL_BUSY_HOLDOFF_MS * g_spi_full_busy_nack_count);
         } else {
             ESP_FullTx_ClearAndRelease();
         }
@@ -2750,6 +3006,7 @@ void ESP_Post_Data(void)
         uint32_t done_packets = g_full_tx_sm.packet_count;
         uint32_t elapsed_ms = HAL_GetTick() - g_full_tx_sm.start_tick;
         full_ok++;
+        g_spi_full_busy_nack_count = 0U;
         g_spi_full_waiting_result = 1U;
         g_spi_full_result_ref_seq = ESP32_SPI_GetLastFullEndRefSeq();
         g_spi_full_result_frame_id = done_frame;
@@ -4254,11 +4511,14 @@ static bool ESP_UI_SPI_LoadAndApplyConfig(void)
 
 #if (ESP32_SPI_STRESS_TEST)
     p.min_interval_ms = ESP32_SPI_STRESS_SENDLIMIT_MS;
-    ESP_CommParams_Apply(&p);
 #if (ESP32_SPI_STRESS_FULL_UPLOAD)
+    /* Keep lightweight idle heartbeats below server NODE_TIMEOUT as a fallback
+       if full-frame uploads are backing off or waiting for recovery. */
+    p.heartbeat_ms = ESP32_SPI_FULL_IDLE_HEARTBEAT_MS;
     g_server_report_full = 1U;
     g_server_report_full_dirty = 0U;
 #endif
+    ESP_CommParams_Apply(&p);
 #endif
 
     if (!cfg || cfg->wifi_ssid[0] == '\0' || cfg->server_ip[0] == '\0' || cfg->node_id[0] == '\0') {
@@ -4325,10 +4585,14 @@ static bool ESP_UI_DoWiFi(void)
 #if (EW_USE_ESP32_SPI_UI)
     ESP_Log("[UI] Executing WIFI via ESP32 SPI...\r\n");
     g_esp_ready = 0;
+    g_report_enabled = 0;
     g_ui_wifi_ok = 0;
     g_ui_tcp_ok = 0;
     g_ui_reg_ok = 0;
     g_uart2_at_mode = 0;
+#if (ESP32_SPI_ENABLE_FULL_UPLOAD)
+    ESP_SPI_FullResetUploadRuntimeState();
+#endif
 
     if (!ESP32_SPI_EnsureReady(5000U)) {
         ESP_Log("[ESP32SPI] ESP32 not ready.\r\n");
@@ -4521,6 +4785,9 @@ static bool ESP_UI_DoRegister(void)
     g_esp_ready = 1;
     g_uart2_at_mode = 0;
     g_ui_reg_ok = 1;
+#if (ESP32_SPI_ENABLE_FULL_UPLOAD)
+    ESP_SPI_FullResetUploadRuntimeState();
+#endif
     ESP_UI_SPI_LogStatus("register ok");
     {
         esp32_spi_status_t st;
@@ -4590,6 +4857,9 @@ static void ESP_UI_ToggleReport(void)
             ESP_Log("[UI] Report denied: link not ready (need REG first)\r\n");
             return;
         }
+#if (ESP32_SPI_ENABLE_FULL_UPLOAD)
+        ESP_SPI_FullResetUploadRuntimeState();
+#endif
         if (!ESP32_SPI_StartReport(mode, 3000U)) {
             ESP_UI_SPI_LogStatus("start report failed");
             return;
@@ -4602,6 +4872,9 @@ static void ESP_UI_ToggleReport(void)
     {
         (void)ESP32_SPI_StopReport(3000U);
         g_report_enabled = 0U;
+#if (ESP32_SPI_ENABLE_FULL_UPLOAD)
+        ESP_SPI_FullResetUploadRuntimeState();
+#endif
         ESP_Log("[UI] Data upload stopped.\r\n");
         (void)ESP_AutoReconnect_SetLastReporting(false);
     }

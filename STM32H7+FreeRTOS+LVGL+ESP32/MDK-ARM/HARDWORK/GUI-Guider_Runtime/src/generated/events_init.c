@@ -1908,6 +1908,20 @@ static uint32_t g_dc_report_stop_tick = 0;
 static uint8_t g_dc_reg_dimmed = 0;
 static lv_obj_t *g_dc_lbl_reg_countdown = NULL;
 static uint32_t g_dc_console_len = 0;
+/* DeviceConnect console is intentionally tiny and curated.
+ * Full upload / DSP / SPI debug logs can arrive for hours. Feeding those
+ * lines into an LVGL textarea repeatedly causes large text relayouts and can
+ * make the touch UI look frozen. Keep only short human-action/status lines
+ * here; the complete diagnostic stream remains on the UART console. */
+#ifndef EW_DEVICECONNECT_CONSOLE_MAX_CHARS
+#define EW_DEVICECONNECT_CONSOLE_MAX_CHARS 1024u
+#endif
+#ifndef EW_DEVICECONNECT_CONSOLE_MAX_LINES
+#define EW_DEVICECONNECT_CONSOLE_MAX_LINES 16u
+#endif
+static char g_dc_console_text[EW_DEVICECONNECT_CONSOLE_MAX_CHARS];
+static uint8_t g_dc_console_lines = 0;
+
 /* DeviceConnect 进入时是否已从 SD 加载并应用到 ESP 配置缓冲区 */
 static uint8_t g_dc_cfg_loaded = 0;
 /* 进入 DeviceConnect 时的配置加载 timer（去重，避免重复创建导致 UI 抖动/刷屏） */
@@ -2049,33 +2063,98 @@ static void dc_queue_log_line(const char *line)
     (void)osMessageQueuePut(g_dc_q, &m, 0U, 0U);
 }
 
+static bool dc_line_has(const char *line, const char *needle)
+{
+    return (line != NULL && needle != NULL && strstr(line, needle) != NULL);
+}
+
+static bool dc_log_line_should_show(const char *line)
+{
+    if (!line || line[0] == '\0') {
+        return false;
+    }
+
+    /* High-rate diagnostics: UART only, never DeviceConnect textarea. */
+    if (dc_line_has(line, "[DSP]") ||
+        dc_line_has(line, "[AD7606]") ||
+        dc_line_has(line, "[PARAM]") ||
+        dc_line_has(line, "[Debug]") ||
+        dc_line_has(line, "[debug]") ||
+        dc_line_has(line, "USART2 RX") ||
+        dc_line_has(line, "USART2 ERR") ||
+        dc_line_has(line, "Heartbeat sent") ||
+        dc_line_has(line, " >> ") ||
+        dc_line_has(line, " << ") ||
+        dc_line_has(line, "[ESP command]") ||
+        dc_line_has(line, "[ESP expect]") ||
+        dc_line_has(line, "[ESP echo") ||
+        dc_line_has(line, "Summary TX") ||
+        dc_line_has(line, "summary tx") ||
+        dc_line_has(line, "full tx progress") ||
+        dc_line_has(line, "full tx done") ||
+        dc_line_has(line, "full waiting") ||
+        dc_line_has(line, "full status") ||
+        dc_line_has(line, "full http done") ||
+        dc_line_has(line, "[ESP32SPI] TX ") ||
+        dc_line_has(line, "[ESP32SPI] RX ") ||
+        dc_line_has(line, "TX REPORT_") ||
+        dc_line_has(line, "RX STATUS_RESP") ||
+        dc_line_has(line, "[ESP32SPI] STATUS ready=") ||
+        dc_line_has(line, "[ESP32SPI] EVENT type=") ||
+        dc_line_has(line, "[ESP32SPI] RESP type=") ||
+        dc_line_has(line, "RX EVENT") ||
+        dc_line_has(line, "RX TX_RESULT") ||
+        dc_line_has(line, "TX_RESULT ref_seq") ||
+        dc_line_has(line, "NACK ref_seq")) {
+        return false;
+    }
+
+    /* Keep explicit user actions, connection steps and real problems. */
+    if (dc_line_has(line, "[UI]") ||
+        dc_line_has(line, "Executing") ||
+        dc_line_has(line, "AutoReconnect") ||
+        dc_line_has(line, "Config") ||
+        dc_line_has(line, "config") ||
+        dc_line_has(line, "WiFi") ||
+        dc_line_has(line, "TCP") ||
+        dc_line_has(line, "REG") ||
+        dc_line_has(line, "Register") ||
+        dc_line_has(line, "register") ||
+        dc_line_has(line, "report_mode") ||
+        dc_line_has(line, "server command") ||
+        dc_line_has(line, "failed") ||
+        dc_line_has(line, "Failed") ||
+        dc_line_has(line, "fail") ||
+        dc_line_has(line, "FAIL") ||
+        dc_line_has(line, "ERROR") ||
+        dc_line_has(line, "error") ||
+        dc_line_has(line, "timeout") ||
+        dc_line_has(line, "Timeout") ||
+        dc_line_has(line, "not ready") ||
+        dc_line_has(line, "invalid") ||
+        dc_line_has(line, "denied") ||
+        dc_line_has(line, "reset") ||
+        dc_line_has(line, "ready")) {
+        return true;
+    }
+
+    return false;
+}
+
 static void dc_post_log_from_esp(const char *line, void *ctx)
 {
     (void)ctx;
     if (!g_dc_q || !line)
         return;
-    /* 默认过滤掉“每秒刷屏”的调试统计，避免长期运行导致 LVGL 卡死 */
-#ifndef EW_DEVICECONNECT_LOG_VERBOSE
-#define EW_DEVICECONNECT_LOG_VERBOSE 0
-#endif
-#if (EW_DEVICECONNECT_LOG_VERBOSE == 0)
-    if (strncmp(line, "[调试]", 6) == 0) {
+    if (!dc_log_line_should_show(line)) {
         return;
     }
-#endif
-    /* 日志节流：200ms 内仅投递 1 条，其余丢弃并汇总 */
+    /* Throttle visible UI logs. Do not print "dropped N lines" into the
+     * textarea; that message itself becomes high-rate noise during full upload. */
     static uint32_t last_log_tick = 0;
-    static uint16_t dropped = 0;
     uint32_t now = lv_tick_get();
-    if (last_log_tick != 0U && (now - last_log_tick) < 200U) {
-        dropped++;
+    if (last_log_tick != 0U && (now - last_log_tick) < 500U) {
         return;
-    }
-    if (dropped) {
-        char info[64];
-        snprintf(info, sizeof(info), "...(log throttled, dropped %u lines)", (unsigned)dropped);
-        dc_queue_log_line(info);
-        dropped = 0;
     }
     last_log_tick = now;
     dc_queue_log_line(line);
@@ -2103,34 +2182,49 @@ static void dc_console_append(lv_ui *ui, const char *line)
     if (line[0] == '\0')
         return;
 
-    /* 控制最大长度，避免无限增长 */
-    const uint32_t max_len = 2048;
-    const char *cur = lv_textarea_get_text(ui->DeviceConnect_ta_console);
-    if (g_dc_console_len == 0 && cur && cur[0] != '\0') {
-        g_dc_console_len = (uint32_t)strlen(cur);
+    char one[160];
+    size_t n = 0;
+    if (line[0] != '>') {
+        one[n++] = '>';
+        one[n++] = ' ';
     }
-    if (g_dc_console_len > (max_len - 256))
-    {
-        const char *trunc = "> (log truncated)\n";
-        lv_textarea_set_text(ui->DeviceConnect_ta_console, trunc);
-        g_dc_console_len = (uint32_t)strlen(trunc);
+    while (*line != '\0' && n < sizeof(one) - 2U) {
+        char c = *line++;
+        if (c == '\r') {
+            continue;
+        }
+        if (c == '\n') {
+            break;
+        }
+        one[n++] = c;
+    }
+    one[n++] = '\n';
+    one[n] = '\0';
+
+    while ((g_dc_console_lines >= EW_DEVICECONNECT_CONSOLE_MAX_LINES) ||
+           (g_dc_console_len + n >= EW_DEVICECONNECT_CONSOLE_MAX_CHARS)) {
+        char *first_nl = strchr(g_dc_console_text, '\n');
+        if (!first_nl) {
+            g_dc_console_text[0] = '\0';
+            g_dc_console_len = 0;
+            g_dc_console_lines = 0;
+            break;
+        }
+        size_t drop = (size_t)(first_nl - g_dc_console_text) + 1U;
+        memmove(g_dc_console_text, g_dc_console_text + drop, g_dc_console_len - drop + 1U);
+        g_dc_console_len -= (uint32_t)drop;
+        if (g_dc_console_lines > 0U) {
+            g_dc_console_lines--;
+        }
     }
 
-    /* 模仿 HTML：每行前加 "> " */
-    if (line[0] != '>' )
-    {
-        lv_textarea_add_text(ui->DeviceConnect_ta_console, "> ");
-        g_dc_console_len += 2;
-    }
-    lv_textarea_add_text(ui->DeviceConnect_ta_console, line);
-    size_t last = strlen(line);
-    g_dc_console_len += (uint32_t)last;
-    if (last == 0 || line[last - 1] != '\n')
-    {
-        lv_textarea_add_text(ui->DeviceConnect_ta_console, "\n");
-        g_dc_console_len += 1;
+    if (n < EW_DEVICECONNECT_CONSOLE_MAX_CHARS) {
+        memcpy(g_dc_console_text + g_dc_console_len, one, n + 1U);
+        g_dc_console_len += (uint32_t)n;
+        g_dc_console_lines++;
     }
 
+    lv_textarea_set_text(ui->DeviceConnect_ta_console, g_dc_console_text);
     lv_textarea_set_cursor_pos(ui->DeviceConnect_ta_console, LV_TEXTAREA_CURSOR_LAST);
 }
 
@@ -2818,6 +2912,18 @@ void events_init_DeviceConnect(lv_ui *ui)
     lv_obj_add_event_cb(ui->DeviceConnect_btn_tcp, DeviceConnect_tcp_event_handler, LV_EVENT_CLICKED, ui);
     lv_obj_add_event_cb(ui->DeviceConnect_btn_reg, DeviceConnect_reg_event_handler, LV_EVENT_CLICKED, ui);
     lv_obj_add_event_cb(ui->DeviceConnect_btn_report, DeviceConnect_report_event_handler, LV_EVENT_CLICKED, ui);
+
+    /* Reset the small ring-style console each time the screen is rebuilt.
+     * The backing textarea has max_length=2048, but we keep our own 1KB/16-line
+     * buffer to avoid long-text relayout stalls from high-rate SPI/DSP logs. */
+    strncpy(g_dc_console_text, "> System Ready.\n> Waiting for user action...\n", sizeof(g_dc_console_text) - 1U);
+    g_dc_console_text[sizeof(g_dc_console_text) - 1U] = '\0';
+    g_dc_console_len = (uint32_t)strlen(g_dc_console_text);
+    g_dc_console_lines = 2U;
+    if (ui->DeviceConnect_ta_console && lv_obj_is_valid(ui->DeviceConnect_ta_console)) {
+        lv_textarea_set_text(ui->DeviceConnect_ta_console, g_dc_console_text);
+        lv_textarea_set_cursor_pos(ui->DeviceConnect_ta_console, LV_TEXTAREA_CURSOR_LAST);
+    }
 
     /* 每次进入 DeviceConnect 界面都自动从 SD 加载配置并应用到 ESP 缓冲区 */
     lv_obj_add_event_cb(ui->DeviceConnect, DeviceConnect_screen_event_handler, LV_EVENT_SCREEN_LOADED, ui);

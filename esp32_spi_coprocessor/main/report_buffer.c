@@ -22,6 +22,21 @@ typedef struct {
 
 static report_channel_tracking_t s_tracking[REPORT_MAX_CHANNELS];
 
+/*
+ * Full frames are large (~85 KB for 4ch x 4096 waveform + 2048 FFT).
+ * Repeated malloc/free every few seconds eventually fragments ESP32 heap and
+ * was observed to make full uploads fail after long runs.  Keep one reusable
+ * full-frame assembly buffer in static RAM.  STM32 sends the next full frame
+ * only after the previous HTTP result, so one in-flight full buffer is enough
+ * for the normal producer/consumer flow.
+ */
+static report_frame_t s_full_frame_storage;
+static bool s_full_frame_in_use;
+static int32_t s_full_waveform_storage[REPORT_MAX_CHANNELS][REPORT_FULL_MAX_WAVEFORM_COUNT];
+static int16_t s_full_fft_storage[REPORT_MAX_CHANNELS][REPORT_FULL_MAX_FFT_COUNT];
+static uint8_t s_full_waveform_received_storage[REPORT_MAX_CHANNELS][(REPORT_FULL_MAX_WAVEFORM_COUNT + 7U) / 8U];
+static uint8_t s_full_fft_received_storage[REPORT_MAX_CHANNELS][(REPORT_FULL_MAX_FFT_COUNT + 7U) / 8U];
+
 static void copy_fixed_string(char *dst, size_t dst_size, const char *src, size_t src_size)
 {
     size_t copy_len;
@@ -80,18 +95,24 @@ static void free_tracking(report_channel_tracking_t *tracking)
         return;
     }
     for (size_t i = 0; i < REPORT_MAX_CHANNELS; ++i) {
-        free(tracking[i].waveform_received);
-        free(tracking[i].fft_received);
+        if (tracking[i].waveform_received != NULL &&
+            tracking[i].waveform_received != s_full_waveform_received_storage[i]) {
+            free(tracking[i].waveform_received);
+        }
+        if (tracking[i].fft_received != NULL &&
+            tracking[i].fft_received != s_full_fft_received_storage[i]) {
+            free(tracking[i].fft_received);
+        }
         tracking[i].waveform_received = NULL;
         tracking[i].fft_received = NULL;
     }
 }
 
-static report_frame_t *report_frame_alloc_from_summary(const protocol_report_summary_payload_t *payload)
+static void report_frame_fill_from_summary(report_frame_t *frame,
+                                           const protocol_report_summary_payload_t *payload)
 {
-    report_frame_t *frame = (report_frame_t *) calloc(1, sizeof(report_frame_t));
-    if (frame == NULL) {
-        return NULL;
+    if (frame == NULL || payload == NULL) {
+        return;
     }
 
     frame->frame_id = payload->frame_id;
@@ -112,12 +133,29 @@ static report_frame_t *report_frame_alloc_from_summary(const protocol_report_sum
         dst->waveform_count = src->waveform_count;
         dst->fft_count = src->fft_count;
     }
+}
+
+static report_frame_t *report_frame_alloc_from_summary(const protocol_report_summary_payload_t *payload)
+{
+    report_frame_t *frame = (report_frame_t *) calloc(1, sizeof(report_frame_t));
+    if (frame == NULL) {
+        return NULL;
+    }
+
+    report_frame_fill_from_summary(frame, payload);
     return frame;
 }
 
 void report_frame_free(report_frame_t *frame)
 {
     if (frame == NULL) {
+        return;
+    }
+    if (frame == &s_full_frame_storage) {
+        s_full_frame_in_use = false;
+        if (s_inflight == frame) {
+            s_inflight = NULL;
+        }
         return;
     }
     for (size_t i = 0; i < frame->channel_count; ++i) {
@@ -130,6 +168,8 @@ void report_frame_free(report_frame_t *frame)
 void report_buffer_init(void)
 {
     s_inflight = NULL;
+    s_full_frame_in_use = false;
+    memset(&s_full_frame_storage, 0, sizeof(s_full_frame_storage));
     memset(s_tracking, 0, sizeof(s_tracking));
 }
 
@@ -170,24 +210,24 @@ esp_err_t report_buffer_begin_full(const protocol_report_full_begin_payload_t *p
     if (s_inflight != NULL && payload->frame_id == s_inflight->frame_id) {
         return ESP_OK;
     }
+    if (s_full_frame_in_use && s_inflight == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
 
     report_buffer_reset();
-    frame = report_frame_alloc_from_summary(payload);
-    if (frame == NULL) {
-        return ESP_ERR_NO_MEM;
-    }
+    frame = &s_full_frame_storage;
+    memset(frame, 0, sizeof(*frame));
+    report_frame_fill_from_summary(frame, payload);
 
     {
         size_t alloc_bytes = 0U;
         if (frame->channel_count == 0U || frame->channel_count > REPORT_MAX_CHANNELS) {
-            report_frame_free(frame);
             return ESP_ERR_INVALID_SIZE;
         }
         for (size_t i = 0; i < frame->channel_count; ++i) {
             const report_channel_data_t *ch = &frame->channels[i];
             if (ch->waveform_count > REPORT_FULL_MAX_WAVEFORM_COUNT ||
                 ch->fft_count > REPORT_FULL_MAX_FFT_COUNT) {
-                report_frame_free(frame);
                 return ESP_ERR_INVALID_SIZE;
             }
             alloc_bytes += ((size_t) ch->waveform_count * sizeof(int32_t)) +
@@ -196,7 +236,6 @@ esp_err_t report_buffer_begin_full(const protocol_report_full_begin_payload_t *p
                            bitset_size_for_count(ch->fft_count);
         }
         if (alloc_bytes > REPORT_FULL_MAX_ALLOC_BYTES) {
-            report_frame_free(frame);
             return ESP_ERR_INVALID_SIZE;
         }
     }
@@ -204,35 +243,21 @@ esp_err_t report_buffer_begin_full(const protocol_report_full_begin_payload_t *p
     for (size_t i = 0; i < frame->channel_count; ++i) {
         report_channel_data_t *ch = &frame->channels[i];
         if (ch->waveform_count > 0U) {
-            ch->waveform_scaled = (int32_t *) calloc(ch->waveform_count, sizeof(int32_t));
-            if (ch->waveform_scaled == NULL) {
-                report_frame_free(frame);
-                return ESP_ERR_NO_MEM;
-            }
-            tracking[i].waveform_received = (uint8_t *) calloc(bitset_size_for_count(ch->waveform_count), sizeof(uint8_t));
-            if (tracking[i].waveform_received == NULL) {
-                free_tracking(tracking);
-                report_frame_free(frame);
-                return ESP_ERR_NO_MEM;
-            }
+            ch->waveform_scaled = s_full_waveform_storage[i];
+            memset(ch->waveform_scaled, 0, ch->waveform_count * sizeof(int32_t));
+            tracking[i].waveform_received = s_full_waveform_received_storage[i];
+            memset(tracking[i].waveform_received, 0, bitset_size_for_count(ch->waveform_count));
         }
         if (ch->fft_count > 0U) {
-            ch->fft_tenths = (int16_t *) calloc(ch->fft_count, sizeof(int16_t));
-            if (ch->fft_tenths == NULL) {
-                free_tracking(tracking);
-                report_frame_free(frame);
-                return ESP_ERR_NO_MEM;
-            }
-            tracking[i].fft_received = (uint8_t *) calloc(bitset_size_for_count(ch->fft_count), sizeof(uint8_t));
-            if (tracking[i].fft_received == NULL) {
-                free_tracking(tracking);
-                report_frame_free(frame);
-                return ESP_ERR_NO_MEM;
-            }
+            ch->fft_tenths = s_full_fft_storage[i];
+            memset(ch->fft_tenths, 0, ch->fft_count * sizeof(int16_t));
+            tracking[i].fft_received = s_full_fft_received_storage[i];
+            memset(tracking[i].fft_received, 0, bitset_size_for_count(ch->fft_count));
         }
     }
 
     s_inflight = frame;
+    s_full_frame_in_use = true;
     memcpy(s_tracking, tracking, sizeof(s_tracking));
     return ESP_OK;
 }

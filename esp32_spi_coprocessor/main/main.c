@@ -153,6 +153,8 @@ static protocol_result_code_t map_err_to_result(esp_err_t err)
     switch (err) {
     case ESP_OK:
         return PROTOCOL_RESULT_OK;
+    case ESP_FAIL:
+        return PROTOCOL_RESULT_IO_ERROR;
     case ESP_ERR_INVALID_ARG:
         return PROTOCOL_RESULT_INVALID_ARG;
     case ESP_ERR_TIMEOUT:
@@ -717,7 +719,10 @@ static void handle_protocol_packet(const protocol_packet_t *packet, size_t rx_by
             send_tx_accepted(packet->header.seq, begin->frame_id);
             protocol_mark_processed(packet);
         } else {
-            send_nack(packet->header.seq, PROTOCOL_NACK_INVALID_PAYLOAD);
+            /* A previous full frame may still be owned by the HTTP/cloud task.
+             * Tell STM32 this is temporary back-pressure instead of a bad frame. */
+            send_nack(packet->header.seq,
+                      (err == ESP_ERR_INVALID_STATE) ? PROTOCOL_NACK_BUSY : PROTOCOL_NACK_INVALID_PAYLOAD);
         }
         break;
 
