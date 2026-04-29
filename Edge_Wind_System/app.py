@@ -32,7 +32,15 @@ def _try_get_csrf_protect():
     except Exception:
         return None
 
+def _try_get_csrf_error():
+    try:
+        mod = importlib.import_module("flask_wtf.csrf")
+        return getattr(mod, "CSRFError", None)
+    except Exception:
+        return None
+
 CSRFProtect = _try_get_csrf_protect()
+CSRFError = _try_get_csrf_error()
 
 # ==================== 环境变量加载 ====================
 try:

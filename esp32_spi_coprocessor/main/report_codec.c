@@ -306,6 +306,13 @@ static bool emit_heartbeat_json(json_builder_t *builder,
     builder_append(builder, ",\"seq\":%" PRIu32, frame->frame_id);
     builder_append(builder, ",\"downsample_step\":%" PRIu32, frame->downsample_step);
     builder_append(builder, ",\"upload_points\":%" PRIu32, frame->upload_points);
+    builder_append(builder, ",\"report_mode\":");
+    builder_append_json_string(builder, (frame->mode == REPORT_MODE_FULL) ? "full" : "summary");
+    builder_append(builder, ",\"heartbeat_ms\":%" PRIu32, config->comm.heartbeat_ms);
+    builder_append(builder, ",\"min_interval_ms\":%" PRIu32, config->comm.min_interval_ms);
+    builder_append(builder, ",\"http_timeout_ms\":%" PRIu32, config->comm.http_timeout_ms);
+    builder_append(builder, ",\"chunk_kb\":%" PRIu32, config->comm.chunk_kb);
+    builder_append(builder, ",\"chunk_delay_ms\":%" PRIu32, config->comm.chunk_delay_ms);
     builder_append(builder, ",\"channels\":[");
 
     for (size_t i = 0; i < frame->channel_count; ++i) {
@@ -397,7 +404,15 @@ esp_err_t report_codec_build_empty_heartbeat_json(const app_config_snapshot_t *c
     if (channels == NULL ||
         !cJSON_AddStringToObject(root, "node_id", config->device.node_id) ||
         !cJSON_AddStringToObject(root, "status", status_to_text(status)) ||
-        !cJSON_AddStringToObject(root, "fault_code", fault)) {
+        !cJSON_AddStringToObject(root, "fault_code", fault) ||
+        !cJSON_AddStringToObject(root, "report_mode", "summary") ||
+        !cJSON_AddNumberToObject(root, "downsample_step", config->comm.downsample_step) ||
+        !cJSON_AddNumberToObject(root, "upload_points", config->comm.upload_points) ||
+        !cJSON_AddNumberToObject(root, "heartbeat_ms", config->comm.heartbeat_ms) ||
+        !cJSON_AddNumberToObject(root, "min_interval_ms", config->comm.min_interval_ms) ||
+        !cJSON_AddNumberToObject(root, "http_timeout_ms", config->comm.http_timeout_ms) ||
+        !cJSON_AddNumberToObject(root, "chunk_kb", config->comm.chunk_kb) ||
+        !cJSON_AddNumberToObject(root, "chunk_delay_ms", config->comm.chunk_delay_ms)) {
         cJSON_Delete(root);
         return ESP_ERR_NO_MEM;
     }
@@ -497,6 +512,30 @@ static bool fallback_parse_u32(const char *body, const char *key, uint32_t *out_
     return true;
 }
 
+static bool json_item_to_u32(const cJSON *item, uint32_t *out_value)
+{
+    if (item == NULL || out_value == NULL) {
+        return false;
+    }
+    if (cJSON_IsNumber(item)) {
+        double value = item->valuedouble;
+        if (value < 0.0 || value > 4294967295.0) {
+            return false;
+        }
+        *out_value = (uint32_t) value;
+        return true;
+    }
+    if (cJSON_IsString(item) && item->valuestring != NULL) {
+        char *endptr = NULL;
+        unsigned long parsed = strtoul(item->valuestring, &endptr, 10);
+        if (endptr != item->valuestring) {
+            *out_value = (uint32_t) parsed;
+            return true;
+        }
+    }
+    return false;
+}
+
 bool report_codec_parse_server_command(const char *body, server_command_event_t *out_event)
 {
     cJSON *root = NULL;
@@ -514,6 +553,24 @@ bool report_codec_parse_server_command(const char *body, server_command_event_t 
             out_event->has_reset = true;
         }
 
+        item = find_key_recursive(root, "command_id");
+        if (json_item_to_u32(item, &out_event->command_id)) {
+            out_event->has_command_id = true;
+        }
+
+        /*
+         * The cloud response also carries normal node state fields such as
+         * report_mode/upload_points for UI synchronization.  They are not
+         * server commands unless the response includes a persisted command_id
+         * (or the legacy reset command string).  Without this guard ESP32
+         * re-emits every heartbeat response as a SERVER_COMMAND event, causing
+         * STM32 to repeatedly re-apply report mode while full upload is active.
+         */
+        if (!out_event->has_command_id && !out_event->has_reset) {
+            cJSON_Delete(root);
+            return false;
+        }
+
         item = find_key_recursive(root, "report_mode");
         if (cJSON_IsString(item) && item->valuestring != NULL) {
             if (strcmp(item->valuestring, "full") == 0) {
@@ -526,20 +583,47 @@ bool report_codec_parse_server_command(const char *body, server_command_event_t 
         }
 
         item = find_key_recursive(root, "downsample_step");
-        if (cJSON_IsNumber(item)) {
+        if (json_item_to_u32(item, &out_event->downsample_step)) {
             out_event->has_downsample_step = true;
-            out_event->downsample_step = (uint32_t) item->valuedouble;
         }
 
         item = find_key_recursive(root, "upload_points");
-        if (cJSON_IsNumber(item)) {
+        if (json_item_to_u32(item, &out_event->upload_points)) {
             out_event->has_upload_points = true;
-            out_event->upload_points = (uint32_t) item->valuedouble;
+        }
+
+        item = find_key_recursive(root, "heartbeat_ms");
+        if (json_item_to_u32(item, &out_event->heartbeat_ms)) {
+            out_event->has_heartbeat_ms = true;
+        }
+
+        item = find_key_recursive(root, "min_interval_ms");
+        if (json_item_to_u32(item, &out_event->min_interval_ms)) {
+            out_event->has_min_interval_ms = true;
+        }
+
+        item = find_key_recursive(root, "http_timeout_ms");
+        if (json_item_to_u32(item, &out_event->http_timeout_ms)) {
+            out_event->has_http_timeout_ms = true;
+        }
+
+        item = find_key_recursive(root, "chunk_kb");
+        if (json_item_to_u32(item, &out_event->chunk_kb)) {
+            out_event->has_chunk_kb = true;
+        }
+
+        item = find_key_recursive(root, "chunk_delay_ms");
+        if (json_item_to_u32(item, &out_event->chunk_delay_ms)) {
+            out_event->has_chunk_delay_ms = true;
         }
         cJSON_Delete(root);
     } else {
         if (strstr(body, "\"command\":\"reset\"") != NULL || strstr(body, "command=reset") != NULL) {
             out_event->has_reset = true;
+        }
+        out_event->has_command_id = fallback_parse_u32(body, "command_id", &out_event->command_id);
+        if (!out_event->has_command_id && !out_event->has_reset) {
+            return false;
         }
         if (strstr(body, "\"report_mode\":\"full\"") != NULL || strstr(body, "report_mode=full") != NULL) {
             out_event->has_report_mode = true;
@@ -550,10 +634,20 @@ bool report_codec_parse_server_command(const char *body, server_command_event_t 
         }
         out_event->has_downsample_step = fallback_parse_u32(body, "downsample_step", &out_event->downsample_step);
         out_event->has_upload_points = fallback_parse_u32(body, "upload_points", &out_event->upload_points);
+        out_event->has_heartbeat_ms = fallback_parse_u32(body, "heartbeat_ms", &out_event->heartbeat_ms);
+        out_event->has_min_interval_ms = fallback_parse_u32(body, "min_interval_ms", &out_event->min_interval_ms);
+        out_event->has_http_timeout_ms = fallback_parse_u32(body, "http_timeout_ms", &out_event->http_timeout_ms);
+        out_event->has_chunk_kb = fallback_parse_u32(body, "chunk_kb", &out_event->chunk_kb);
+        out_event->has_chunk_delay_ms = fallback_parse_u32(body, "chunk_delay_ms", &out_event->chunk_delay_ms);
     }
 
     return out_event->has_reset ||
            out_event->has_report_mode ||
            out_event->has_downsample_step ||
-           out_event->has_upload_points;
+           out_event->has_upload_points ||
+           out_event->has_heartbeat_ms ||
+           out_event->has_min_interval_ms ||
+           out_event->has_http_timeout_ms ||
+           out_event->has_chunk_kb ||
+           out_event->has_chunk_delay_ms;
 }

@@ -234,6 +234,9 @@ typedef struct __attribute__((packed)) {
     uint32_t downsample_step;
     uint32_t upload_points;
     int32_t last_http_status;
+    uint32_t config_version;
+    uint32_t last_command_id;
+    int32_t last_error_code;
     char ip_address[APP_MAX_IP_STR_LEN];
     char node_id[APP_MAX_NODE_ID_LEN];
     char last_error[APP_MAX_ERROR_TEXT_LEN];

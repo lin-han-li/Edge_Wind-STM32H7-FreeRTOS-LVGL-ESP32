@@ -207,6 +207,9 @@ void protocol_fill_status_payload(protocol_status_payload_t *payload, const app_
     payload->downsample_step = snapshot->downsample_step;
     payload->upload_points = snapshot->upload_points;
     payload->last_http_status = snapshot->last_http_status;
+    payload->config_version = snapshot->config_version;
+    payload->last_command_id = snapshot->last_command_id;
+    payload->last_error_code = snapshot->last_error_code;
     strncpy(payload->ip_address, snapshot->ip_address, sizeof(payload->ip_address) - 1U);
     strncpy(payload->node_id, snapshot->node_id, sizeof(payload->node_id) - 1U);
     strncpy(payload->last_error, snapshot->last_error, sizeof(payload->last_error) - 1U);

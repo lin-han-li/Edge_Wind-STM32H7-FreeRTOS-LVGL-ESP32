@@ -604,18 +604,21 @@ void ESP8266_Task(void *argument)
         bool auto_reconnect_en = false;
         bool last_reporting = false;
         boot_autoreconnect_next = now + 1000U;
-        (void)ESP_Config_LoadFromSD_UIFiles();
-        (void)ESP_CommParams_LoadFromSD();
+        bool sd_runtime_ok = ESP_Config_LoadRuntimeFromSD();
         if (ESP_AutoReconnect_Read(&auto_reconnect_en, &last_reporting))
         {
           boot_autoreconnect_checked = 1U;
           printf("[ESP_BOOT] autoreconnect cfg: enabled=%u last_reporting=%u\r\n",
                  auto_reconnect_en ? 1U : 0U,
                  last_reporting ? 1U : 0U);
-          if (auto_reconnect_en && last_reporting)
+          if (auto_reconnect_en && last_reporting && sd_runtime_ok)
           {
             printf("[ESP_BOOT] queue AUTO connect/report from SD flag\r\n");
             (void)ESP_UI_SendCmd(ESP_UI_CMD_AUTO_CONNECT);
+          }
+          else if (auto_reconnect_en && last_reporting && !sd_runtime_ok)
+          {
+            printf("[ESP_BOOT] autoreconnect skipped: SD runtime config invalid\r\n");
           }
         }
         else if ((now - boot_autoreconnect_start) > 30000U)

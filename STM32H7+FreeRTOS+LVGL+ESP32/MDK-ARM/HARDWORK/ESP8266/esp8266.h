@@ -115,6 +115,7 @@ void ESP_CommParams_Apply(const ESP_CommParams_t *p);
 
 /* 从 SD 加载并应用（不会影响 WiFi/Server 等 SystemConfig_t） */
 bool ESP_CommParams_LoadFromSD(void);
+bool ESP_CommParams_SaveRuntimeToSD(void);
 
 /* 快捷 getter：给内部发送/心跳/自恢复逻辑使用 */
 uint32_t ESP_CommParams_HeartbeatMs(void);
@@ -137,6 +138,7 @@ bool ESP_AutoReconnect_SetLastReporting(bool last_reporting);
 
 /* 启动前置：从 SD 读取 WiFi/Server 配置（UI 保存的文件）并应用到 ESP_Config */
 bool ESP_Config_LoadFromSD_UIFiles(void);
+bool ESP_Config_LoadRuntimeFromSD(void);
 
 // 数据采样与发送参数
 /* 波形点数：必须与采样双缓冲长度一致（否则 src[][] 步长不一致会读错内存） */
@@ -202,6 +204,7 @@ bool ESP_Config_LoadFromSD_UIFiles(void);
         ESP_UI_CMD_REG,
         ESP_UI_CMD_REPORT_TOGGLE,
         ESP_UI_CMD_AUTO_CONNECT,
+        ESP_UI_CMD_APPLY_CONFIG,
     } esp_ui_cmd_t;
 
     typedef void (*esp_ui_log_hook_t)(const char *line, void *ctx);

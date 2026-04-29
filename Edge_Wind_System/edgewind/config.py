@@ -14,6 +14,8 @@ class Config:
     # avoid cross-app session/remember-token collisions across ports.
     SESSION_COOKIE_NAME = os.environ.get('SESSION_COOKIE_NAME', 'edgewind_session')
     REMEMBER_COOKIE_NAME = os.environ.get('REMEMBER_COOKIE_NAME', 'edgewind_remember')
+    # Monitoring pages often stay open for hours; keep CSRF valid for 24h by default.
+    WTF_CSRF_TIME_LIMIT = int(os.environ.get('WTF_CSRF_TIME_LIMIT', os.environ.get('EDGEWIND_CSRF_TIME_LIMIT', 86400)))
     
     # ==================== 数据库配置 ====================
     # 重要：默认使用 instance/ 目录下的数据库文件，保持与原项目一致（避免“看起来没有识别到数据库”的错觉）

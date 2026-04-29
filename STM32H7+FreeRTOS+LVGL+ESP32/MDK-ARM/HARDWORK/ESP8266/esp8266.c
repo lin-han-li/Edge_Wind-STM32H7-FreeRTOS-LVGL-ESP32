@@ -396,6 +396,7 @@ static bool ESP_TryParseDownsampleStep(const char *s, uint32_t *out_step);
 static void ESP_SetServerUploadPoints(uint32_t points);
 static bool ESP_TryParseUploadPoints(const char *s, uint32_t *out_points);
 static bool ESP_CommParams_SaveToSD(void);
+static void ESP_SPI_ApplyCommParamsToCoprocessor(const ESP_CommParams_t *p);
 static bool ESP_UploadMode_LoadFromSD(void);
 static bool ESP_UploadMode_SaveToSD(uint8_t full);
 static void ESP_SPI_FullArmFrames(uint16_t frames);
@@ -591,10 +592,13 @@ typedef struct
     uint32_t snapshot_seq;
     uint32_t start_tick;
     uint32_t packet_count;
+    uint32_t wave_step;
+    uint32_t upload_points;
     const ESP_UploadSnapshot_t *snapshot;
     esp32_spi_report_channel_t channels[4];
     const float *waves[4];
     const float *ffts[4];
+    uint16_t wave_source_counts[4];
     uint8_t channel_index;
     uint16_t element_offset;
 } ESP_FullTxState_t;
@@ -752,9 +756,9 @@ void ESP_CommParams_Apply(const ESP_CommParams_t *p)
 {
     if (!p) return;
     /* 约束：避免极端值导致系统抖动或“永不发送” */
-    uint32_t hb    = clamp_u32(p->heartbeat_ms,    200u, 600000u);
+    uint32_t hb    = clamp_u32(p->heartbeat_ms,    200u, 54999u);
     uint32_t minit = clamp_u32(p->min_interval_ms, 0u,   600000u);
-    uint32_t http  = clamp_u32(p->http_timeout_ms, 100u, 600000u);
+    uint32_t http  = clamp_u32(p->http_timeout_ms, 1000u, 600000u);
     uint32_t hrs   = clamp_u32(p->hardreset_sec,   5u,   3600u);
     uint32_t step  = clamp_u32(p->wave_step,       1u,   64u);
     uint32_t upmax = (uint32_t)WAVEFORM_POINTS;
@@ -1106,6 +1110,11 @@ static void ESP_UploadMode_ApplyLoaded(uint8_t full)
 #endif
 }
 
+bool ESP_CommParams_SaveRuntimeToSD(void)
+{
+    return ESP_CommParams_SaveToSD();
+}
+
 static bool ESP_UploadMode_LoadFromSD(void)
 {
     if (!esp_sd_try_mount(120U)) {
@@ -1187,7 +1196,8 @@ bool ESP_Config_LoadFromSD_UIFiles(void)
 
     /* 以当前配置为基底（若未加载则会先装载默认值） */
     SystemConfig_t cfg = *ESP_Config_Get();
-    bool any = false;
+    bool wifi_loaded = false;
+    bool server_loaded = false;
 
     /* WiFi */
     {
@@ -1205,7 +1215,7 @@ bool ESP_Config_LoadFromSD_UIFiles(void)
                 }
             }
             (void)f_close(&fil);
-            any = true;
+            wifi_loaded = true;
         }
     }
 
@@ -1233,15 +1243,57 @@ bool ESP_Config_LoadFromSD_UIFiles(void)
                 }
             }
             (void)f_close(&fil);
-            any = true;
+            server_loaded = true;
         }
     }
 
-    if (any) {
+    if (wifi_loaded && server_loaded) {
         ESP_Config_Apply(&cfg);
+    } else {
+        ESP_Log("[ESP_CFG] SD config incomplete: wifi=%u server=%u\r\n",
+                wifi_loaded ? 1U : 0U,
+                server_loaded ? 1U : 0U);
     }
     (void)ESP_UploadMode_LoadFromSD();
-    return any;
+    return (wifi_loaded && server_loaded);
+}
+
+static bool ESP_Config_IsValidForLink(const SystemConfig_t *cfg)
+{
+    if (cfg == NULL) return false;
+    if (cfg->wifi_ssid[0] == '\0') return false;
+    if (cfg->server_ip[0] == '\0') return false;
+    if (cfg->server_port == 0U) return false;
+    if (cfg->node_id[0] == '\0') return false;
+    return true;
+}
+
+bool ESP_Config_LoadRuntimeFromSD(void)
+{
+    bool cfg_ok;
+    bool comm_ok;
+    const SystemConfig_t *cfg;
+
+    ESP_LoadConfig();
+    cfg_ok = ESP_Config_LoadFromSD_UIFiles();
+    comm_ok = ESP_CommParams_LoadFromSD();
+    (void)ESP_UploadMode_LoadFromSD();
+
+    cfg = ESP_Config_Get();
+    if (!cfg_ok || !ESP_Config_IsValidForLink(cfg)) {
+        ESP_Log("[ESP_CFG] runtime SD load invalid: cfg_ok=%u ssid=%u host=%u port=%u node=%u\r\n",
+                cfg_ok ? 1U : 0U,
+                (cfg && cfg->wifi_ssid[0]) ? 1U : 0U,
+                (cfg && cfg->server_ip[0]) ? 1U : 0U,
+                (cfg && cfg->server_port) ? 1U : 0U,
+                (cfg && cfg->node_id[0]) ? 1U : 0U);
+        return false;
+    }
+
+    if (!comm_ok) {
+        ESP_Log("[ESP_CFG] ui_param.cfg missing/unreadable; using runtime/default comm params.\r\n");
+    }
+    return true;
 }
 
 // =================================================================================
@@ -1926,11 +1978,12 @@ static void ESP_Console_HandleLine(char *line)
 static void ESP_SetServerReportMode(uint8_t full)
 {
     full = (full != 0U) ? 1U : 0U;
-    if (g_server_report_full != full)
-    {
-        g_server_report_full = full;
-        g_server_report_full_dirty = 1U;
-    }
+    /* Treat every cloud command as an apply request.  After boot the runtime
+       mode may come from SD while this command-cache variable is still at its
+       compile-time default, so comparing only against g_server_report_full can
+       incorrectly drop idempotent-looking commands. */
+    g_server_report_full = full;
+    g_server_report_full_dirty = 1U;
 }
 
 static void ESP_SPI_ResetLocalReportState(const char *reason)
@@ -2013,11 +2066,10 @@ static void ESP_SetServerDownsampleStep(uint32_t step)
 {
     if (step < 1U) step = 1U;
     if (step > 64U) step = 64U;
-    if (g_server_downsample_step != step)
-    {
-        g_server_downsample_step = step;
-        g_server_downsample_dirty = 1U;
-    }
+    /* Always apply a cloud command.  The current runtime value is authoritative
+       and may differ from this command-cache after SD restore. */
+    g_server_downsample_step = step;
+    g_server_downsample_dirty = 1U;
 }
 
 static bool ESP_TryParseDownsampleStep(const char *s, uint32_t *out_step)
@@ -2073,11 +2125,11 @@ static void ESP_SetServerUploadPoints(uint32_t points)
         if (points > maxp) points = maxp;
     }
 
-    if (g_server_upload_points != points)
-    {
-        g_server_upload_points = points;
-        g_server_upload_points_dirty = 1U;
-    }
+    /* Always apply a cloud command.  This fixes the 2048 -> 4096 case after
+       reboot/SD restore: g_comm_upload_points can be 2048 while this cache is
+       still the default 4096, and the old comparison dropped the command. */
+    g_server_upload_points = points;
+    g_server_upload_points_dirty = 1U;
 }
 
 static bool ESP_TryParseUploadPoints(const char *s, uint32_t *out_points)
@@ -2115,6 +2167,30 @@ static bool ESP_TryParseUploadPoints(const char *s, uint32_t *out_points)
     return true;
 }
 
+static void ESP_SPI_ApplyCommParamsToCoprocessor(const ESP_CommParams_t *p)
+{
+#if (EW_USE_ESP32_SPI_UI)
+    if (!p || !g_esp_ready) {
+        return;
+    }
+    if (!ESP32_SPI_ApplyCommParams(p->heartbeat_ms,
+                                   p->min_interval_ms,
+                                   p->http_timeout_ms,
+                                   3000U,
+                                   p->wave_step,
+                                   p->upload_points,
+                                   p->hardreset_sec,
+                                   p->chunk_kb,
+                                   p->chunk_delay_ms)) {
+        ESP_Log("[SERVER_CMD] failed to re-apply comm params to ESP32\r\n");
+    } else {
+        ESP_Log("[SERVER_CMD] comm params re-applied to ESP32\r\n");
+    }
+#else
+    (void)p;
+#endif
+}
+
 void ESP_Console_Init(void)
 {
 #if (ESP_CONSOLE_ENABLE)
@@ -2149,14 +2225,26 @@ void ESP_Console_Poll(void)
     {
         uint8_t reset = 0U, has_mode = 0U, full = 0U;
         uint8_t has_downsample = 0U, has_upload = 0U;
+        uint8_t has_hb = 0U, has_min = 0U, has_http = 0U, has_chunk = 0U, has_chunk_delay = 0U;
         uint32_t downsample = 0U, upload_points = 0U;
+        uint32_t hb_ms = 0U, min_ms = 0U, http_ms = 0U, chunk_kb = 0U, chunk_delay_ms = 0U;
         if (ESP32_SPI_ConsumeServerCommand(&reset,
                                            &has_mode,
                                            &full,
                                            &has_downsample,
                                            &downsample,
                                            &has_upload,
-                                           &upload_points)) {
+                                           &upload_points,
+                                           &has_hb,
+                                           &hb_ms,
+                                           &has_min,
+                                           &min_ms,
+                                           &has_http,
+                                           &http_ms,
+                                           &has_chunk,
+                                           &chunk_kb,
+                                           &has_chunk_delay,
+                                           &chunk_delay_ms)) {
             if (reset) {
                 g_server_reset_pending = 1U;
             }
@@ -2168,6 +2256,35 @@ void ESP_Console_Poll(void)
             }
             if (has_upload) {
                 ESP_SetServerUploadPoints(upload_points);
+            }
+            if (has_hb || has_min || has_http || has_chunk || has_chunk_delay) {
+                ESP_CommParams_t old_p;
+                ESP_CommParams_t p;
+                ESP_CommParams_Get(&old_p);
+                p = old_p;
+                if (has_hb) {
+                    p.heartbeat_ms = hb_ms;
+                }
+                if (has_min) {
+                    p.min_interval_ms = min_ms;
+                }
+                if (has_http) {
+                    p.http_timeout_ms = http_ms;
+                }
+                if (has_chunk) {
+                    p.chunk_kb = chunk_kb;
+                }
+                if (has_chunk_delay) {
+                    p.chunk_delay_ms = chunk_delay_ms;
+                }
+                ESP_CommParams_Apply(&p);
+                if (ESP_CommParams_SaveToSD()) {
+                    ESP_Log("[SERVER_CMD] comm params applied and saved to SD\r\n");
+                    ESP_SPI_ApplyCommParamsToCoprocessor(&p);
+                } else {
+                    ESP_Log("[SERVER_CMD] comm params applied but SD save failed\r\n");
+                    ESP_CommParams_Apply(&old_p);
+                }
             }
         }
     }
@@ -2186,6 +2303,12 @@ void ESP_Console_Poll(void)
     {
         uint8_t full = g_server_report_full ? 1U : 0U;
         g_server_report_full_dirty = 0;
+        if (!ESP_UploadMode_SaveToSD(full)) {
+            g_server_report_full = full ? 0U : 1U;
+            ESP_Log("[SERVER_CMD] report_mode=%s rejected: SD save failed\r\n",
+                    full ? "full" : "summary");
+            return;
+        }
 #if (EW_USE_ESP32_SPI_UI && ESP32_SPI_ENABLE_FULL_UPLOAD)
         g_spi_full_continuous = full;
         if (!full) {
@@ -2209,13 +2332,8 @@ void ESP_Console_Poll(void)
             (void)ESP32_SPI_StartReport(full, 3000U);
         }
 #endif
-        if (ESP_UploadMode_SaveToSD(full)) {
-            ESP_Log("[?????] report_mode=%s?????SD\r\n",
-                    full ? "full" : "summary");
-        } else {
-            ESP_Log("[?????] report_mode=%s????????SD??\r\n",
-                    full ? "full" : "summary");
-        }
+        ESP_Log("[SERVER_CMD] report_mode=%s saved to SD\r\n",
+                full ? "full" : "summary");
     }
 
     // 2.1) 处理“服务器下发 downsample_step”指令
@@ -2223,8 +2341,10 @@ void ESP_Console_Poll(void)
     {
         g_server_downsample_dirty = 0;
 
+        ESP_CommParams_t old_p;
         ESP_CommParams_t p;
-        ESP_CommParams_Get(&p);
+        ESP_CommParams_Get(&old_p);
+        p = old_p;
         uint32_t target = (uint32_t)g_server_downsample_step;
         if (target < 1U) target = 1U;
         if (target > 64U) target = 64U;
@@ -2237,8 +2357,10 @@ void ESP_Console_Poll(void)
 
         if (ESP_CommParams_SaveToSD()) {
             ESP_Log("[服务器命令] downsample_step=%lu：已生效并保存到SD\r\n", (unsigned long)target);
+            ESP_SPI_ApplyCommParamsToCoprocessor(&p);
         } else {
             ESP_Log("[服务器命令] downsample_step=%lu：已生效，但保存SD失败\r\n", (unsigned long)target);
+            ESP_CommParams_Apply(&old_p);
         }
     }
 
@@ -2247,8 +2369,10 @@ void ESP_Console_Poll(void)
     {
         g_server_upload_points_dirty = 0;
 
+        ESP_CommParams_t old_p;
         ESP_CommParams_t p;
-        ESP_CommParams_Get(&p);
+        ESP_CommParams_Get(&old_p);
+        p = old_p;
         uint32_t target = (uint32_t)g_server_upload_points;
         ESP_Log("[服务器命令] upload_points=%lu：应用上传点数并写入SD\r\n", (unsigned long)target);
 
@@ -2259,8 +2383,10 @@ void ESP_Console_Poll(void)
 
         if (ESP_CommParams_SaveToSD()) {
             ESP_Log("[服务器命令] upload_points=%lu：已生效并保存到SD\r\n", (unsigned long)target);
+            ESP_SPI_ApplyCommParamsToCoprocessor(&p);
         } else {
             ESP_Log("[服务器命令] upload_points=%lu：已生效，但保存SD失败\r\n", (unsigned long)target);
+            ESP_CommParams_Apply(&old_p);
         }
     }
 
@@ -2368,12 +2494,46 @@ void ESP_Console_Poll(void)
 }
 
 #if (EW_USE_ESP32_SPI_UI && ESP32_SPI_ENABLE_FULL_UPLOAD)
+static uint16_t ESP_FullTx_EffectiveWaveCount(uint32_t wave_step,
+                                              uint32_t upload_points,
+                                              uint16_t source_count)
+{
+    uint32_t step = (wave_step == 0U) ? 1U : wave_step;
+    uint32_t limit = upload_points;
+    uint32_t available;
+
+    if (source_count == 0U)
+    {
+        return 0U;
+    }
+    if (limit == 0U || limit > (uint32_t)WAVEFORM_POINTS)
+    {
+        limit = (uint32_t)WAVEFORM_POINTS;
+    }
+
+    /* Number of samples that can be emitted from the full local window after
+       applying downsample_step.  upload_points is a limit for the transmitted
+       waveform, not a reason to touch the local DSP/algorithm window. */
+    available = (((uint32_t)source_count + step - 1U) / step);
+    if (limit > available)
+    {
+        limit = available;
+    }
+    if (limit > 65535U)
+    {
+        limit = 65535U;
+    }
+    return (uint16_t)limit;
+}
+
 static bool ESP_FullTx_StartFrame(uint32_t frame_id,
                                   const ESP_UploadSnapshot_t *snapshot,
                                   uint32_t snapshot_seq,
                                   uint8_t one_shot)
 {
     uint8_t channel_count;
+    uint32_t wave_step;
+    uint32_t upload_points;
 
     if (snapshot == NULL || snapshot->magic != ESP_UPLOAD_SNAPSHOT_MAGIC)
     {
@@ -2385,6 +2545,17 @@ static bool ESP_FullTx_StartFrame(uint32_t frame_id,
         return false;
     }
 
+    wave_step = ESP_CommParams_WaveStep();
+    if (wave_step == 0U)
+    {
+        wave_step = 1U;
+    }
+    upload_points = ESP_CommParams_UploadPoints();
+    if (upload_points == 0U || upload_points > (uint32_t)WAVEFORM_POINTS)
+    {
+        upload_points = (uint32_t)WAVEFORM_POINTS;
+    }
+
     memset(&g_full_tx_sm, 0, sizeof(g_full_tx_sm));
     g_full_tx_sm.active = 1U;
     g_full_tx_sm.one_shot = one_shot;
@@ -2394,15 +2565,31 @@ static bool ESP_FullTx_StartFrame(uint32_t frame_id,
     g_full_tx_sm.snapshot_seq = snapshot_seq;
     g_full_tx_sm.start_tick = HAL_GetTick();
     g_full_tx_sm.snapshot = snapshot;
+    g_full_tx_sm.wave_step = wave_step;
+    g_full_tx_sm.upload_points = upload_points;
     for (uint8_t i = 0U; i < channel_count; i++)
     {
+        uint16_t source_wave_count;
+        uint16_t tx_wave_count;
+
         if (snapshot->channels[i].waveform_count > WAVEFORM_POINTS ||
             snapshot->channels[i].fft_count > FFT_POINTS)
         {
             memset(&g_full_tx_sm, 0, sizeof(g_full_tx_sm));
             return false;
         }
+        source_wave_count = snapshot->channels[i].waveform_count;
+        tx_wave_count = ESP_FullTx_EffectiveWaveCount(wave_step,
+                                                      upload_points,
+                                                      source_wave_count);
+        if (tx_wave_count == 0U)
+        {
+            memset(&g_full_tx_sm, 0, sizeof(g_full_tx_sm));
+            return false;
+        }
         g_full_tx_sm.channels[i] = snapshot->channels[i];
+        g_full_tx_sm.channels[i].waveform_count = tx_wave_count;
+        g_full_tx_sm.wave_source_counts[i] = source_wave_count;
         g_full_tx_sm.waves[i] = snapshot->waveform[i];
         g_full_tx_sm.ffts[i] = snapshot->fft_data[i];
     }
@@ -2428,8 +2615,8 @@ static bool ESP_FullTx_StepPacket(uint32_t timeout_ms)
     case ESP_FULL_TX_BEGIN:
         ok = ESP32_SPI_ReportFullBegin(g_full_tx_sm.frame_id,
                                         (uint64_t)snapshot->tick_ms,
-                                        1U,
-                                        (uint32_t)WAVEFORM_POINTS,
+                                        g_full_tx_sm.wave_step,
+                                        g_full_tx_sm.upload_points,
                                         snapshot->fault_code,
                                         snapshot->status_code,
                                         g_full_tx_sm.channels,
@@ -2474,6 +2661,8 @@ static bool ESP_FullTx_StepPacket(uint32_t timeout_ms)
                                            g_full_tx_sm.waves[ch_idx],
                                            g_full_tx_sm.element_offset,
                                            count,
+                                           g_full_tx_sm.wave_step,
+                                           g_full_tx_sm.wave_source_counts[ch_idx],
                                            timeout_ms);
         if (!ok)
         {
@@ -2684,10 +2873,16 @@ void ESP_Post_Summary(void)
     uint32_t seq = ++s_seq;
 
     // JSON Header
-    if (!ESP_Appendf(&p, end, "{\"node_id\":\"%s\",\"status\":\"online\",\"fault_code\":\"%s\",\"seq\":%lu,\"downsample_step\":%lu,\"upload_points\":%lu,\"channels\":[",
+    if (!ESP_Appendf(&p, end, "{\"node_id\":\"%s\",\"status\":\"online\",\"fault_code\":\"%s\",\"seq\":%lu,\"downsample_step\":%lu,\"upload_points\":%lu,\"report_mode\":\"%s\",\"heartbeat_ms\":%lu,\"min_interval_ms\":%lu,\"http_timeout_ms\":%lu,\"chunk_kb\":%lu,\"chunk_delay_ms\":%lu,\"channels\":[",
                      g_sys_cfg.node_id, g_fault_code, (unsigned long)seq,
                      (unsigned long)ESP_CommParams_WaveStep(),
-                     (unsigned long)ESP_CommParams_UploadPoints()))
+                     (unsigned long)ESP_CommParams_UploadPoints(),
+                     g_server_report_full ? "full" : "summary",
+                     (unsigned long)ESP_CommParams_HeartbeatMs(),
+                     (unsigned long)ESP_CommParams_MinIntervalMs(),
+                     (unsigned long)ESP_CommParams_HttpTimeoutMs(),
+                     (unsigned long)ESP_CommParams_ChunkKb(),
+                     (unsigned long)ESP_CommParams_ChunkDelayMs()))
         return;
 
     for (int i = 0; i < 4; i++)
@@ -3004,6 +3199,10 @@ void ESP_Post_Data(void)
         uint32_t done_frame = g_full_tx_sm.frame_id;
         uint32_t done_seq = g_full_tx_sm.snapshot_seq;
         uint32_t done_packets = g_full_tx_sm.packet_count;
+        uint32_t done_wave_step = g_full_tx_sm.wave_step;
+        uint32_t done_upload_points = g_full_tx_sm.upload_points;
+        uint16_t done_wave_points = (g_full_tx_sm.channel_count > 0U) ?
+                                    g_full_tx_sm.channels[0].waveform_count : 0U;
         uint32_t elapsed_ms = HAL_GetTick() - g_full_tx_sm.start_tick;
         full_ok++;
         g_spi_full_busy_nack_count = 0U;
@@ -3018,7 +3217,7 @@ void ESP_Post_Data(void)
 
         if ((HAL_GetTick() - last_full_log) >= 1000U) {
             last_full_log = HAL_GetTick();
-            ESP_Log("[ESP32SPI] full tx done frame=%lu snap=%lu elapsed=%lums pkt=%lu try=%lu ok=%lu err=%lu points=%u fft=%u drop=%lu\r\n",
+            ESP_Log("[ESP32SPI] full tx done frame=%lu snap=%lu elapsed=%lums pkt=%lu try=%lu ok=%lu err=%lu step=%lu upload_points=%lu wave=%u fft=%u drop=%lu\r\n",
                     (unsigned long)done_frame,
                     (unsigned long)done_seq,
                     (unsigned long)elapsed_ms,
@@ -3026,7 +3225,9 @@ void ESP_Post_Data(void)
                     (unsigned long)full_try,
                     (unsigned long)full_ok,
                     (unsigned long)full_err,
-                    (unsigned int)WAVEFORM_POINTS,
+                    (unsigned long)done_wave_step,
+                    (unsigned long)done_upload_points,
+                    (unsigned int)done_wave_points,
                     (unsigned int)FFT_POINTS,
                     (unsigned long)g_upload_snapshot_drop_count);
         }
@@ -3117,10 +3318,16 @@ void ESP_Post_Data(void)
     }
 
     // JSON Header
-    if (!ESP_Appendf(&p, end, "{\"node_id\":\"%s\",\"status\":\"online\",\"fault_code\":\"%s\",\"seq\":%lu,\"downsample_step\":%lu,\"upload_points\":%lu,\"channels\":[",
+    if (!ESP_Appendf(&p, end, "{\"node_id\":\"%s\",\"status\":\"online\",\"fault_code\":\"%s\",\"seq\":%lu,\"downsample_step\":%lu,\"upload_points\":%lu,\"report_mode\":\"%s\",\"heartbeat_ms\":%lu,\"min_interval_ms\":%lu,\"http_timeout_ms\":%lu,\"chunk_kb\":%lu,\"chunk_delay_ms\":%lu,\"channels\":[",
                     g_sys_cfg.node_id, g_fault_code, (unsigned long)seq,
                     (unsigned long)step_u,
-                    (unsigned long)limit_u))
+                    (unsigned long)limit_u,
+                    g_server_report_full ? "full" : "summary",
+                    (unsigned long)ESP_CommParams_HeartbeatMs(),
+                    (unsigned long)ESP_CommParams_MinIntervalMs(),
+                    (unsigned long)ESP_CommParams_HttpTimeoutMs(),
+                    (unsigned long)ESP_CommParams_ChunkKb(),
+                    (unsigned long)ESP_CommParams_ChunkDelayMs()))
         return;
 
     // 循环写入 4 个通道的数据
@@ -4502,9 +4709,10 @@ static bool ESP_UI_SPI_LoadAndApplyConfig(void)
     const SystemConfig_t *cfg;
     ESP_CommParams_t p;
 
-    ESP_LoadConfig();
-    (void)ESP_Config_LoadFromSD_UIFiles();
-    (void)ESP_CommParams_LoadFromSD();
+    if (!ESP_Config_LoadRuntimeFromSD()) {
+        ESP_Log("[ESP32SPI] SD runtime config invalid; abort apply.\r\n");
+        return false;
+    }
 
     cfg = ESP_Config_Get();
     ESP_CommParams_Get(&p);
@@ -4521,7 +4729,7 @@ static bool ESP_UI_SPI_LoadAndApplyConfig(void)
     ESP_CommParams_Apply(&p);
 #endif
 
-    if (!cfg || cfg->wifi_ssid[0] == '\0' || cfg->server_ip[0] == '\0' || cfg->node_id[0] == '\0') {
+    if (!ESP_Config_IsValidForLink(cfg)) {
         ESP_Log("[ESP32SPI] config invalid: ssid/server/node is empty.\r\n");
         return false;
     }
@@ -4577,6 +4785,30 @@ static void ESP_UI_SPI_LogStatus(const char *prefix)
             (unsigned int)st->reporting_enabled,
             st->ip_address,
             st->last_error);
+}
+
+static bool ESP_UI_DoApplyConfig(void)
+{
+    ESP_Log("[UI] Applying saved SD config to ESP32...\r\n");
+    if (g_report_enabled) {
+        ESP_Log("[UI] Apply config denied: reporting active, stop/reconnect first.\r\n");
+        return false;
+    }
+    if (!ESP32_SPI_EnsureReady(5000U)) {
+        ESP_Log("[ESP32SPI] ESP32 not ready for config apply.\r\n");
+        return false;
+    }
+    if (!ESP_UI_SPI_LoadAndApplyConfig()) {
+        return false;
+    }
+    g_esp_ready = 0;
+    g_ui_wifi_ok = 0;
+    g_ui_tcp_ok = 0;
+    g_ui_reg_ok = 0;
+    (void)ESP32_SPI_QueryStatus(NULL, 500U);
+    ESP_UI_SPI_LogStatus("config applied");
+    ESP_Log("[UI] Saved SD config applied. Re-run WiFi/TCP/REG/Report if needed.\r\n");
+    return true;
 }
 #endif
 
@@ -4792,7 +5024,11 @@ static bool ESP_UI_DoRegister(void)
     {
         esp32_spi_status_t st;
         if (ESP32_SPI_QueryStatus(&st, 500U)) {
-            g_report_enabled = st.reporting_enabled ? 1U : 0U;
+            if (st.reporting_enabled) {
+                ESP_Log("[ESP32SPI] clearing residual ESP32 reporting state after REG.\r\n");
+                (void)ESP32_SPI_StopReport(3000U);
+            }
+            g_report_enabled = 0U;
         } else {
             g_report_enabled = 0U;
         }
@@ -4846,7 +5082,7 @@ static bool ESP_UI_DoRegister(void)
 #endif
 }
 
-static void ESP_UI_ToggleReport(void)
+static bool ESP_UI_ToggleReport(void)
 {
 #if (EW_USE_ESP32_SPI_UI)
     if (!g_report_enabled)
@@ -4855,30 +5091,38 @@ static void ESP_UI_ToggleReport(void)
         if (!g_esp_ready)
         {
             ESP_Log("[UI] Report denied: link not ready (need REG first)\r\n");
-            return;
+            return false;
         }
 #if (ESP32_SPI_ENABLE_FULL_UPLOAD)
         ESP_SPI_FullResetUploadRuntimeState();
 #endif
         if (!ESP32_SPI_StartReport(mode, 3000U)) {
             ESP_UI_SPI_LogStatus("start report failed");
-            return;
+            return false;
         }
         g_report_enabled = 1U;
         ESP_Log("[UI] Started ESP32 SPI data upload loop.\r\n");
         (void)ESP_AutoReconnect_SetLastReporting(true);
+        return true;
     }
     else
     {
-        (void)ESP32_SPI_StopReport(3000U);
+        if (!ESP32_SPI_StopReport(3000U)) {
+            esp32_spi_status_t st;
+            if (!ESP32_SPI_QueryStatus(&st, 1000U) || st.reporting_enabled) {
+                ESP_UI_SPI_LogStatus("stop report failed");
+                return false;
+            }
+            ESP_Log("[ESP32SPI] stop response missed, but status is stopped; continue.\r\n");
+        }
         g_report_enabled = 0U;
 #if (ESP32_SPI_ENABLE_FULL_UPLOAD)
         ESP_SPI_FullResetUploadRuntimeState();
 #endif
         ESP_Log("[UI] Data upload stopped.\r\n");
         (void)ESP_AutoReconnect_SetLastReporting(false);
+        return true;
     }
-    return;
 #else
     /* 只允许在链路就绪后开启上报，避免“未注册就上报”造成大量超时 */
     if (!g_report_enabled)
@@ -4886,12 +5130,13 @@ static void ESP_UI_ToggleReport(void)
         if (!g_esp_ready)
         {
             ESP_Log("[UI] Report denied: link not ready (need REG first)\r\n");
-            return;
+            return false;
         }
         g_report_enabled = 1U;
         ESP_Log("[UI] Started sensor data upload loop.\r\n");
         /* 记录上次上电前上报状态：开启 */
         (void)ESP_AutoReconnect_SetLastReporting(true);
+        return true;
     }
     else
     {
@@ -4899,6 +5144,7 @@ static void ESP_UI_ToggleReport(void)
         ESP_Log("[UI] Data upload stopped.\r\n");
         /* 记录上次上电前上报状态：关闭 */
         (void)ESP_AutoReconnect_SetLastReporting(false);
+        return true;
     }
 #endif
 }
@@ -4923,7 +5169,10 @@ static void ESP_UI_AutoConnect(void)
 
     if (!g_report_enabled)
     {
-        ESP_UI_ToggleReport();
+        if (!ESP_UI_ToggleReport()) {
+            esp_ui_step_done(ESP_UI_CMD_REPORT_TOGGLE, false);
+            return;
+        }
     }
     esp_ui_step_done(ESP_UI_CMD_REPORT_TOGGLE, true);
 }
@@ -4934,14 +5183,8 @@ void ESP_UI_TaskPoll(void)
         return;
 
     uint8_t c = 0xFF;
-    /* 若 UI 连续点击导致队列堆积：只处理最后一条（防止“过期命令”触发超时） */
-    uint32_t got = 0;
-    while (osMessageQueueGet(g_esp_ui_q, &c, NULL, 0U) == osOK)
-    {
-        got++;
-        /* 继续取，直到队列清空，最后一个 c 即“最新命令” */
-    }
-    if (!got)
+    /* 保持 FIFO：不要丢弃前置 WiFi/TCP/REG 等控制命令。按钮侧已做禁用/节流。 */
+    if (osMessageQueueGet(g_esp_ui_q, &c, NULL, 0U) != osOK)
         return;
 
     {
@@ -4969,15 +5212,24 @@ void ESP_UI_TaskPoll(void)
         case ESP_UI_CMD_REPORT_TOGGLE:
         {
             bool before = ESP_UI_IsReporting();
-            ESP_UI_ToggleReport();
+            bool toggled_ok = ESP_UI_ToggleReport();
             bool after = ESP_UI_IsReporting();
-            /* 若由于链路未就绪导致拒绝开启，上报状态不会变化，则认为失败 */
-            bool ok = (before != after) || (!after); /* 允许“停止上报”总是成功 */
+            bool ok = toggled_ok && (before != after);
             esp_ui_step_done(cmd, ok);
         }
             break;
         case ESP_UI_CMD_AUTO_CONNECT:
             ESP_UI_AutoConnect();
+            break;
+        case ESP_UI_CMD_APPLY_CONFIG:
+        {
+#if (EW_USE_ESP32_SPI_UI)
+            bool ok = ESP_UI_DoApplyConfig();
+#else
+            bool ok = ESP_Config_LoadRuntimeFromSD();
+#endif
+            esp_ui_step_done(cmd, ok);
+        }
             break;
         default:
             break;

@@ -5,7 +5,7 @@ API路由蓝图
 from flask import Blueprint, request, jsonify
 from flask_login import login_required
 from datetime import datetime, timedelta
-from edgewind.models import db, Device, DataPoint, WorkOrder, SystemConfig, FaultSnapshot, HistoryData
+from edgewind.models import db, Device, DataPoint, WorkOrder, SystemConfig, FaultSnapshot, HistoryData, NodePendingCommand
 from edgewind.knowledge_graph import FAULT_KNOWLEDGE_GRAPH, FAULT_CODE_MAP, generate_ai_report, get_fault_knowledge_graph
 from edgewind.utils import (
     save_to_buffer, get_latest_normal_data, get_latest_fault_data,
@@ -45,6 +45,16 @@ node_report_modes = {}  # {node_id: 'summary'|'full'}
 node_downsample_commands = {}  # {node_id: int(1..64)}
 node_upload_points_commands = {}  # {node_id: int(256..4096, step=256)}
 DEFAULT_REPORT_MODE = 'summary'
+CONFIG_COMMAND_KEYS = {
+    'report_mode',
+    'downsample_step',
+    'upload_points',
+    'heartbeat_ms',
+    'min_interval_ms',
+    'http_timeout_ms',
+    'chunk_kb',
+    'chunk_delay_ms',
+}
 
 # 节点超时时间（秒）
 # 说明：此前为 10s，网络/设备偶发抖动（或一次心跳解析失败）就会导致节点被清空，前端表现为“运行一段时间后停机/无节点”。
@@ -296,7 +306,256 @@ def _get_report_mode(node_id: str | None) -> str:
     if not node_id:
         return DEFAULT_REPORT_MODE
     mode = (node_report_modes.get(node_id) or '').strip().lower()
-    return mode if mode in ('summary', 'full') else DEFAULT_REPORT_MODE
+    if mode in ('summary', 'full'):
+        return mode
+    try:
+        cmd = (NodePendingCommand.query
+               .filter(NodePendingCommand.target_node == node_id,
+                       NodePendingCommand.key == 'report_mode',
+                       NodePendingCommand.status.in_(('pending', 'delivered', 'applied')))
+               .order_by(NodePendingCommand.id.desc())
+               .first())
+        if cmd:
+            mode = (cmd.value or '').strip().lower()
+            if mode in ('summary', 'full'):
+                node_report_modes[node_id] = mode
+                return mode
+    except Exception:
+        pass
+    return DEFAULT_REPORT_MODE
+
+
+def _parse_int_range(value, lo: int, hi: int) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        if isinstance(value, float):
+            if not value.is_integer():
+                return None
+            v = int(value)
+        else:
+            raw = str(value).strip()
+            if not raw or not re.match(r'^\d+$', raw):
+                return None
+            v = int(raw)
+    except Exception:
+        return None
+    return v if lo <= v <= hi else None
+
+
+def _normalize_command_value(key: str, value):
+    key = (key or '').strip()
+    if key == 'report_mode':
+        mode = (value or '').strip().lower()
+        if mode in ('summary', 'full'):
+            return mode
+        return None
+    if key == 'downsample_step':
+        return _parse_downsample_step(value)
+    if key == 'upload_points':
+        return _parse_upload_points(value)
+    if key == 'heartbeat_ms':
+        return _parse_int_range(value, 200, 54999)
+    if key == 'min_interval_ms':
+        return _parse_int_range(value, 0, 600000)
+    if key == 'http_timeout_ms':
+        return _parse_int_range(value, 1000, 600000)
+    if key == 'chunk_kb':
+        return _parse_int_range(value, 0, 16)
+    if key == 'chunk_delay_ms':
+        return _parse_int_range(value, 0, 200)
+    return None
+
+
+def _new_command_id() -> str:
+    # ESP32 status payload carries uint32_t command id, so keep this numeric.
+    #
+    # Do not use a random id here.  Some already-deployed ESP32 firmware builds
+    # use command_id as an ordering/deduplication hint, so a later command with a
+    # smaller random id can be treated as stale.  Generate a monotonic uint32 id
+    # above every persisted command id and above the current epoch seconds.
+    max_seen = int(time.time())
+    try:
+        for (raw_id,) in db.session.query(NodePendingCommand.command_id).all():
+            try:
+                value = int(str(raw_id).strip())
+            except Exception:
+                continue
+            if 0 <= value < 0xFFFFFFFF and value > max_seen:
+                max_seen = value
+    except Exception as exc:
+        logger.warning("[node_command] command_id scan failed, fallback to time: %s", exc)
+
+    next_id = max_seen + 1
+    if next_id > 0xFFFFFFFF:
+        # Practically unreachable for this product, but keep the value valid for
+        # the ESP32 uint32_t field if a corrupted DB ever contains huge IDs.
+        next_id = max(1, int(time.time()) & 0xFFFFFFFF)
+    return str(next_id)
+
+
+def _sync_memory_command_cache(node_id: str, key: str, value) -> None:
+    try:
+        if key == 'report_mode':
+            node_report_modes[node_id] = str(value)
+            if node_id in active_nodes:
+                active_nodes[node_id].setdefault('data', {})
+                active_nodes[node_id]['data']['report_mode'] = str(value)
+        elif key == 'downsample_step':
+            node_downsample_commands[node_id] = int(value)
+            _sync_active_node_downsample_step(node_id, int(value))
+        elif key == 'upload_points':
+            node_upload_points_commands[node_id] = int(value)
+            _sync_active_node_upload_points(node_id, int(value))
+        elif key in CONFIG_COMMAND_KEYS and node_id in active_nodes:
+            active_nodes[node_id].setdefault('data', {})
+            active_nodes[node_id]['data'][key] = int(value)
+    except Exception:
+        pass
+
+
+def _enqueue_node_command(node_id: str, key: str, value):
+    """Persist a config command and update in-memory target cache for quick UI feedback."""
+    normalized = _normalize_command_value(key, value)
+    if not node_id or key not in CONFIG_COMMAND_KEYS or normalized is None:
+        return None
+
+    try:
+        # Supersede older not-yet-applied commands for the same node/key.
+        old_items = NodePendingCommand.query.filter(
+            NodePendingCommand.target_node == node_id,
+            NodePendingCommand.key == key,
+            NodePendingCommand.status.in_(('pending', 'delivered')),
+        ).all()
+        now = datetime.utcnow()
+        for item in old_items:
+            item.status = 'failed'
+            item.error = 'superseded'
+            item.updated_at = now
+
+        cmd = NodePendingCommand(
+            command_id=_new_command_id(),
+            target_node=node_id,
+            key=key,
+            value=str(normalized),
+            status='pending',
+        )
+        db.session.add(cmd)
+        db.session.commit()
+        _sync_memory_command_cache(node_id, key, normalized)
+        logger.info("[node_command] queued node=%s key=%s value=%s command_id=%s",
+                    node_id, key, normalized, cmd.command_id)
+        return cmd
+    except Exception as exc:
+        db.session.rollback()
+        logger.exception(f"[node_command] enqueue failed node={node_id} key={key}: {exc}")
+        return None
+
+
+def _latest_pending_command_values(node_id: str, mark_delivered: bool = False) -> dict:
+    """Return latest pending/delivered commands per key; optionally mark pending as delivered."""
+    if not node_id:
+        return {}
+    try:
+        rows = (NodePendingCommand.query
+                .filter(NodePendingCommand.target_node == node_id,
+                        NodePendingCommand.status.in_(('pending', 'delivered')))
+                .order_by(NodePendingCommand.id.asc())
+                .all())
+    except Exception as exc:
+        logger.warning(f"[node_command] query pending failed node={node_id}: {exc}")
+        return {}
+
+    latest: dict[str, NodePendingCommand] = {}
+    for row in rows:
+        if row.key in CONFIG_COMMAND_KEYS:
+            latest[row.key] = row
+
+    if mark_delivered:
+        now = datetime.utcnow()
+        changed = False
+        for row in latest.values():
+            if row.status == 'pending':
+                row.status = 'delivered'
+                row.delivered_at = now
+                row.updated_at = now
+                changed = True
+                logger.info("[node_command] delivered node=%s key=%s value=%s command_id=%s",
+                            node_id, row.key, row.value, row.command_id)
+        if changed:
+            try:
+                db.session.commit()
+            except Exception:
+                db.session.rollback()
+
+    out = {}
+    latest_cmd_id = None
+    for key, row in latest.items():
+        value = _normalize_command_value(key, row.value)
+        if value is not None:
+            out[key] = value
+            latest_cmd_id = row.command_id
+    if latest_cmd_id is not None:
+        out['command_id'] = latest_cmd_id
+    return out
+
+
+def _append_pending_config_commands(node_id: str, response_payload: dict, mark_delivered: bool = True) -> dict:
+    pending = _latest_pending_command_values(node_id, mark_delivered=mark_delivered)
+    for key, value in pending.items():
+        response_payload[key] = value
+    return response_payload
+
+
+def _mark_command_applied(node_id: str, key: str, value, failed: bool = False, error: str | None = None) -> None:
+    normalized = _normalize_command_value(key, value)
+    if not node_id or key not in CONFIG_COMMAND_KEYS or normalized is None:
+        return
+    try:
+        rows = (NodePendingCommand.query
+                .filter(NodePendingCommand.target_node == node_id,
+                        NodePendingCommand.key == key,
+                        NodePendingCommand.status.in_(('pending', 'delivered')))
+                .order_by(NodePendingCommand.id.asc())
+                .all())
+        if not rows:
+            return
+        now = datetime.utcnow()
+        changed = False
+        for row in rows:
+            if str(_normalize_command_value(key, row.value)) == str(normalized):
+                row.status = 'failed' if failed else 'applied'
+                row.error = error
+                row.applied_at = None if failed else now
+                row.updated_at = now
+                changed = True
+                logger.info("[node_command] %s node=%s key=%s value=%s command_id=%s error=%s",
+                            row.status, node_id, key, normalized, row.command_id, error)
+        if changed:
+            db.session.commit()
+    except Exception as exc:
+        db.session.rollback()
+        logger.warning(f"[node_command] ack failed node={node_id} key={key}: {exc}")
+
+
+def _ack_config_commands_from_payload(node_id: str, payload: dict) -> None:
+    if not node_id or not isinstance(payload, dict):
+        return
+    mode_raw = str(payload.get('report_mode') or '').strip().lower()
+    if mode_raw in ('summary', 'full'):
+        mode = mode_raw
+        node_report_modes[node_id] = mode
+        _mark_command_applied(node_id, 'report_mode', mode)
+    for key in ('downsample_step', 'upload_points', 'heartbeat_ms', 'min_interval_ms', 'http_timeout_ms', 'chunk_kb', 'chunk_delay_ms'):
+        value = _normalize_command_value(key, payload.get(key))
+        if value is not None:
+            try:
+                if node_id in active_nodes:
+                    active_nodes[node_id].setdefault('data', {})
+                    active_nodes[node_id]['data'][key] = int(value)
+            except Exception:
+                pass
+            _mark_command_applied(node_id, key, value)
 
 
 
@@ -428,6 +687,7 @@ def _ack_downsample_command(node_id: str, payload: dict) -> int | None:
     _sync_active_node_downsample_step(node_id, reported_step)
     if pending is not None and int(pending) == reported_step:
         node_downsample_commands.pop(node_id, None)
+        _mark_command_applied(node_id, 'downsample_step', reported_step)
     return reported_step
 
 
@@ -489,6 +749,7 @@ def _ack_upload_points_command(node_id: str, payload: dict) -> int | None:
     _sync_active_node_upload_points(node_id, reported)
     if pending is not None and int(pending) == reported:
         node_upload_points_commands.pop(node_id, None)
+        _mark_command_applied(node_id, 'upload_points', reported)
     return reported
 
 
@@ -732,6 +993,7 @@ def upload_data():
             pending_points = node_upload_points_commands.get(device_id)
             if pending_points is not None:
                 _sync_active_node_upload_points(device_id, int(pending_points))
+        _ack_config_commands_from_payload(device_id, data)
 
         # 3) 保存波形数据点（用于历史趋势/后续分析）
         # 性能说明：多节点高频上报时，频繁落库会显著拖慢响应。
@@ -786,6 +1048,11 @@ def upload_data():
                     'report_mode': _get_report_mode(device_id),
                     'downsample_step': (active_nodes.get(device_id, {}).get('data', {}) or {}).get('downsample_step'),
                     'upload_points': (active_nodes.get(device_id, {}).get('data', {}) or {}).get('upload_points'),
+                    'heartbeat_ms': (active_nodes.get(device_id, {}).get('data', {}) or {}).get('heartbeat_ms'),
+                    'min_interval_ms': (active_nodes.get(device_id, {}).get('data', {}) or {}).get('min_interval_ms'),
+                    'http_timeout_ms': (active_nodes.get(device_id, {}).get('data', {}) or {}).get('http_timeout_ms'),
+                    'chunk_kb': (active_nodes.get(device_id, {}).get('data', {}) or {}).get('chunk_kb'),
+                    'chunk_delay_ms': (active_nodes.get(device_id, {}).get('data', {}) or {}).get('chunk_delay_ms'),
                     'metrics': {
                         'voltage': float((data or {}).get('voltage', 0) or 0),
                         'voltage_neg': float((data or {}).get('voltage_neg', 0) or 0),
@@ -807,13 +1074,16 @@ def upload_data():
             # ack：设备已恢复正常，则认为 reset 已执行
             if cmd == 'reset' and (fault_code == 'E00'):
                 node_commands.pop(device_id, None)
-        resp['report_mode'] = _get_report_mode(device_id)
+        # Do not echo normal report_mode as a command.  Pending config commands
+        # are appended below with command_id; ESP32 treats command_id-bearing
+        # fields as actionable server commands.
         pending_step = node_downsample_commands.get(device_id)
         if pending_step is not None:
             resp['downsample_step'] = int(pending_step)
         pending_points = node_upload_points_commands.get(device_id)
         if pending_points is not None:
             resp['upload_points'] = int(pending_points)
+        _append_pending_config_commands(device_id, resp, mark_delivered=True)
         return jsonify(resp), 200
 
     except Exception as e:
@@ -884,6 +1154,7 @@ def node_heartbeat():
             pending_points = node_upload_points_commands.get(node_id)
             if pending_points is not None:
                 _sync_active_node_upload_points(node_id, int(pending_points))
+        _ack_config_commands_from_payload(node_id, data)
 
         # 2. Initialize Data Structure
         processed_data = {
@@ -1030,8 +1301,14 @@ def node_heartbeat():
                     for ch in processed_channels
                     if isinstance(ch, dict)
                 ]
-                logger.info("[/api/node/heartbeat][series] node_id=%s ch=%d raw_lens=%s emit_lens=%s",
-                            node_id, len(processed_channels), raw_series_lens, series_lens)
+                logger.info("[/api/node/heartbeat][series] node_id=%s mode=%s step=%s upload_points=%s ch=%d raw_lens=%s emit_lens=%s",
+                            node_id,
+                            data.get('report_mode'),
+                            data.get('downsample_step'),
+                            data.get('upload_points'),
+                            len(processed_channels),
+                            raw_series_lens,
+                            series_lens)
         metrics_all_zero = (
             float(processed_data.get('voltage') or 0) == 0.0 and
             float(processed_data.get('voltage_neg') or 0) == 0.0 and
@@ -1155,6 +1432,11 @@ def node_heartbeat():
                 'report_mode': _get_report_mode(node_id),
                 'downsample_step': (active_nodes.get(node_id, {}).get('data', {}) or {}).get('downsample_step'),
                 'upload_points': (active_nodes.get(node_id, {}).get('data', {}) or {}).get('upload_points'),
+                'heartbeat_ms': (active_nodes.get(node_id, {}).get('data', {}) or {}).get('heartbeat_ms'),
+                'min_interval_ms': (active_nodes.get(node_id, {}).get('data', {}) or {}).get('min_interval_ms'),
+                'http_timeout_ms': (active_nodes.get(node_id, {}).get('data', {}) or {}).get('http_timeout_ms'),
+                'chunk_kb': (active_nodes.get(node_id, {}).get('data', {}) or {}).get('chunk_kb'),
+                'chunk_delay_ms': (active_nodes.get(node_id, {}).get('data', {}) or {}).get('chunk_delay_ms'),
                 'metrics': {
                     'voltage': processed_data.get('voltage', 0),
                     'voltage_neg': processed_data.get('voltage_neg', 0),
@@ -1201,13 +1483,16 @@ def node_heartbeat():
             response_payload['command'] = cmd
             if cmd == 'reset' and fault_code == 'E00':
                 node_commands.pop(node_id, None)
-        response_payload['report_mode'] = _get_report_mode(node_id)
+        # Do not echo normal report_mode as a command.  Pending config commands
+        # are appended below with command_id; ESP32 treats command_id-bearing
+        # fields as actionable server commands.
         pending_step = node_downsample_commands.get(node_id)
         if pending_step is not None:
             response_payload['downsample_step'] = int(pending_step)
         pending_points = node_upload_points_commands.get(node_id)
         if pending_points is not None:
             response_payload['upload_points'] = int(pending_points)
+        _append_pending_config_commands(node_id, response_payload, mark_delivered=True)
         
         # 9. 节流更新数据库设备心跳（避免 50Hz 高频心跳把 SQLite 打爆）
         last_db = _last_db_heartbeat_ts.get(node_id, 0)
@@ -1387,6 +1672,9 @@ def set_node_report_mode():
         if mode not in ('summary', 'full'):
             return jsonify({'success': False, 'error': 'Invalid mode'}), 400
 
+        cmd = _enqueue_node_command(node_id, 'report_mode', mode)
+        if cmd is None:
+            return jsonify({'success': False, 'error': 'Failed to persist command'}), 500
         node_report_modes[node_id] = mode
 
         # 同步到 active_nodes 的轻量数据（便于页面立即刷新）
@@ -1422,7 +1710,7 @@ def set_node_report_mode():
         except Exception:
             pass
 
-        return jsonify({'success': True, 'node_id': node_id, 'report_mode': mode}), 200
+        return jsonify({'success': True, 'node_id': node_id, 'report_mode': mode, 'command_id': cmd.command_id}), 200
 
     except Exception as e:
         logger.exception(f"[/api/nodes/report_mode] 失败: {e}")
@@ -1453,6 +1741,9 @@ def set_node_downsample_step():
                 'report_mode': mode,
             }), 409
 
+        cmd = _enqueue_node_command(node_id, 'downsample_step', int(step))
+        if cmd is None:
+            return jsonify({'success': False, 'error': 'Failed to persist command'}), 500
         node_downsample_commands[node_id] = int(step)
         _sync_active_node_downsample_step(node_id, int(step))
 
@@ -1481,6 +1772,7 @@ def set_node_downsample_step():
             'node_id': node_id,
             'downsample_step': int(step),
             'report_mode': mode,
+            'command_id': cmd.command_id,
         }), 200
 
     except Exception as e:
@@ -1495,13 +1787,19 @@ def set_node_upload_points():
     try:
         payload = request.get_json() or {}
         node_id = _normalize_node_id(payload.get('node_id') or payload.get('device_id'))
-        points = _parse_upload_points(payload.get('points'))
+        raw_points = payload.get('points')
+        if raw_points is None:
+            raw_points = payload.get('upload_points')
+        points = _parse_upload_points(raw_points)
 
         if not node_id:
+            logger.warning("[/api/nodes/upload_points] bad payload: missing node_id keys=%s", sorted(payload.keys()))
             return jsonify({'success': False, 'error': 'Missing node_id'}), 400
         if len(node_id) > 100:
+            logger.warning("[/api/nodes/upload_points] bad payload: node_id too long len=%s", len(node_id))
             return jsonify({'success': False, 'error': 'node_id too long (max 100)'}), 400
         if points is None:
+            logger.warning("[/api/nodes/upload_points] bad payload: invalid points raw=%r keys=%s", raw_points, sorted(payload.keys()))
             return jsonify({'success': False, 'error': 'Invalid points (expected 256..4096 and step=256)'}), 400
 
         mode = _get_report_mode(node_id)
@@ -1512,6 +1810,9 @@ def set_node_upload_points():
                 'report_mode': mode,
             }), 409
 
+        cmd = _enqueue_node_command(node_id, 'upload_points', int(points))
+        if cmd is None:
+            return jsonify({'success': False, 'error': 'Failed to persist command'}), 500
         node_upload_points_commands[node_id] = int(points)
         _sync_active_node_upload_points(node_id, int(points))
 
@@ -1540,10 +1841,66 @@ def set_node_upload_points():
             'node_id': node_id,
             'upload_points': int(points),
             'report_mode': mode,
+            'command_id': cmd.command_id,
         }), 200
 
     except Exception as e:
         logger.exception(f"[/api/nodes/upload_points] 失败: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@api_bp.route('/nodes/comm_params', methods=['POST'])
+@login_required
+def set_node_comm_params():
+    """Persist and deliver communication/upload tuning commands to a node."""
+    try:
+        payload = request.get_json() or {}
+        node_id = _normalize_node_id(payload.get('node_id') or payload.get('device_id'))
+        if not node_id:
+            return jsonify({'success': False, 'error': 'Missing node_id'}), 400
+        if len(node_id) > 100:
+            return jsonify({'success': False, 'error': 'node_id too long (max 100)'}), 400
+
+        accepted = {}
+        errors = {}
+        for key in ('heartbeat_ms', 'min_interval_ms', 'http_timeout_ms', 'chunk_kb', 'chunk_delay_ms'):
+            if key not in payload:
+                continue
+            value = _normalize_command_value(key, payload.get(key))
+            if value is None:
+                errors[key] = 'invalid'
+                continue
+            cmd = _enqueue_node_command(node_id, key, value)
+            if cmd is None:
+                errors[key] = 'persist_failed'
+                continue
+            accepted[key] = {'value': int(value), 'command_id': cmd.command_id}
+
+        if errors:
+            return jsonify({'success': False, 'node_id': node_id, 'accepted': accepted, 'errors': errors}), 400
+        if not accepted:
+            return jsonify({'success': False, 'error': 'No supported parameters'}), 400
+
+        try:
+            if socketio_instance:
+                node_info = active_nodes.get(node_id) or {}
+                update = {
+                    'node_id': node_id,
+                    'status': node_info.get('status', 'online'),
+                    'fault_code': node_info.get('fault_code', 'E00'),
+                    'timestamp': time.time(),
+                    'report_mode': _get_report_mode(node_id),
+                }
+                for key, info in accepted.items():
+                    update[key] = info['value']
+                socketio_instance.emit('node_status_update', update, namespace='/')
+        except Exception:
+            pass
+
+        return jsonify({'success': True, 'node_id': node_id, 'accepted': accepted}), 200
+
+    except Exception as e:
+        logger.exception(f"[/api/nodes/comm_params] failed: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 

@@ -249,6 +249,15 @@
                             下发
                         </button>
                     </div>
+                    <div class="input-group input-group-sm" style="width: 620px;">
+                        <span class="input-group-text">Comm</span>
+                        <input class="form-control" id="heartbeat-ms-input" type="number" min="200" max="54999" step="100" value="5000" title="heartbeat_ms" aria-label="heartbeat_ms">
+                        <input class="form-control" id="min-interval-ms-input" type="number" min="0" max="600000" step="10" value="200" title="min_interval_ms" aria-label="min_interval_ms">
+                        <input class="form-control" id="http-timeout-ms-input" type="number" min="1000" max="600000" step="100" value="15000" title="http_timeout_ms" aria-label="http_timeout_ms">
+                        <input class="form-control" id="chunk-kb-input" type="number" min="0" max="16" step="1" value="0" title="chunk_kb" aria-label="chunk_kb">
+                        <input class="form-control" id="chunk-delay-ms-input" type="number" min="0" max="200" step="1" value="0" title="chunk_delay_ms" aria-label="chunk_delay_ms">
+                        <button class="btn btn-outline-light" id="btn-send-comm-params" type="button">Apply</button>
+                    </div>
                     <span class="small text-light" id="report-mode-indicator">当前模式：摘要</span>
                 </div>
             </div>
@@ -320,6 +329,23 @@
         return el ? (el.getAttribute('content') || '') : '';
     }
 
+    async function readApiError(resp) {
+        const contentType = (resp.headers.get('content-type') || '').toLowerCase();
+        if (contentType.includes('application/json')) {
+            const data = await resp.json().catch(() => null);
+            return {
+                data: data || {},
+                message: data?.error || data?.message || `HTTP ${resp.status}`
+            };
+        }
+
+        const text = await resp.text().catch(() => '');
+        if (/csrf|????|token has expired|token is missing|token is invalid/i.test(text)) {
+            return { data: {}, message: '??????????????????' };
+        }
+        return { data: {}, message: `HTTP ${resp.status}` };
+    }
+
     // ========== 全局状态 ==========
     let currentNodeId = null;
     // Global State: Default to viewing positive voltage
@@ -370,6 +396,30 @@
             return n;
         }
         return null;
+    }
+
+    function normalizeCommInt(value, min, max) {
+        const n = Number.parseInt(value, 10);
+        if (Number.isInteger(n) && n >= min && n <= max) {
+            return n;
+        }
+        return null;
+    }
+
+    function applyCommParamsForNode(nodeId) {
+        if (!nodeId) return;
+        const cfg = NODE_CONFIGS?.[nodeId] || {};
+        const fields = [
+            ['heartbeat-ms-input', 'heartbeat_ms', 5000],
+            ['min-interval-ms-input', 'min_interval_ms', 200],
+            ['http-timeout-ms-input', 'http_timeout_ms', 15000],
+            ['chunk-kb-input', 'chunk_kb', 0],
+            ['chunk-delay-ms-input', 'chunk_delay_ms', 0],
+        ];
+        for (const [id, key, fallback] of fields) {
+            const el = document.getElementById(id);
+            if (el) el.value = cfg[key] ?? fallback;
+        }
     }
 
     function setReportModeButtonState(mode) {
@@ -480,6 +530,7 @@
             setDownsampleControlsEnabled(false);
             applyUploadPointsForNode(nodeId, { force: true, fallbackToDefault: true });
             applyDownsampleForNode(nodeId, { force: true, fallbackToDefault: true });
+            applyCommParamsForNode(nodeId);
             downsampleAppliedNodeId = null;
             uploadPointsAppliedNodeId = null;
             return;
@@ -493,6 +544,7 @@
         setDownsampleControlsEnabled(currentReportMode === 'full');
         applyUploadPointsForNode(nodeId, { force: switchedUpload, fallbackToDefault: switchedUpload });
         applyDownsampleForNode(nodeId, { force: switchedNode, fallbackToDefault: switchedNode });
+        applyCommParamsForNode(nodeId);
         downsampleAppliedNodeId = nodeId;
         uploadPointsAppliedNodeId = nodeId;
     }
@@ -514,7 +566,7 @@
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    ...(csrfToken ? { 'X-CSRFToken': csrfToken } : {})
+                    ...(csrfToken ? { 'X-CSRFToken': csrfToken, 'X-CSRF-Token': csrfToken } : {})
                 },
                 body: JSON.stringify({ node_id: currentNodeId, mode: targetMode })
             });
@@ -525,7 +577,8 @@
                     window.location.href = `/login?next=${next}`;
                     return;
                 }
-                throw new Error(`HTTP ${resp.status}`);
+                const apiError = await readApiError(resp);
+                throw new Error(apiError.message);
             }
             const data = await resp.json();
             if (!data.success) {
@@ -577,7 +630,7 @@
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    ...(csrfToken ? { 'X-CSRFToken': csrfToken } : {})
+                    ...(csrfToken ? { 'X-CSRFToken': csrfToken, 'X-CSRF-Token': csrfToken } : {})
                 },
                 body: JSON.stringify({ node_id: currentNodeId, step })
             });
@@ -588,12 +641,13 @@
                     window.location.href = `/login?next=${next}`;
                     return;
                 }
-                const errorData = await resp.json().catch(() => ({}));
+                const apiError = await readApiError(resp);
+                const errorData = apiError.data || {};
                 if (resp.status === 409 && errorData?.report_mode) {
                     reportModeByNode[currentNodeId] = String(errorData.report_mode).toLowerCase();
                     applyReportModeForNode(currentNodeId);
                 }
-                throw new Error(errorData.error || `HTTP ${resp.status}`);
+                throw new Error(apiError.message);
             }
 
             const data = await resp.json();
@@ -646,7 +700,7 @@
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    ...(csrfToken ? { 'X-CSRFToken': csrfToken } : {})
+                    ...(csrfToken ? { 'X-CSRFToken': csrfToken, 'X-CSRF-Token': csrfToken } : {})
                 },
                 body: JSON.stringify({ node_id: currentNodeId, points })
             });
@@ -657,12 +711,13 @@
                     window.location.href = `/login?next=${next}`;
                     return;
                 }
-                const errorData = await resp.json().catch(() => ({}));
+                const apiError = await readApiError(resp);
+                const errorData = apiError.data || {};
                 if (resp.status === 409 && errorData?.report_mode) {
                     reportModeByNode[currentNodeId] = String(errorData.report_mode).toLowerCase();
                     applyReportModeForNode(currentNodeId);
                 }
-                throw new Error(errorData.error || `HTTP ${resp.status}`);
+                throw new Error(apiError.message);
             }
 
             const data = await resp.json();
@@ -689,6 +744,64 @@
     // 故障日志：统一维护一份“可排序的列表”，避免直接 DOM insert 导致顺序不可控
     // key 优先用工单 id；没有 id 时使用 `${timeStr}|${nodeId}|${faultCode}`
     // 重要：同一工单状态变化（pending->processing->resolved）必须“更新同一条记录”，不能被去重挡住。
+
+
+    async function requestCommParams() {
+        if (!currentNodeId) {
+            if (typeof window.showToast === 'function') window.showToast('Please select a node first', 'warning');
+            return;
+        }
+        const spec = [
+            ['heartbeat-ms-input', 'heartbeat_ms', 200, 54999],
+            ['min-interval-ms-input', 'min_interval_ms', 0, 600000],
+            ['http-timeout-ms-input', 'http_timeout_ms', 1000, 600000],
+            ['chunk-kb-input', 'chunk_kb', 0, 16],
+            ['chunk-delay-ms-input', 'chunk_delay_ms', 0, 200],
+        ];
+        const payload = { node_id: currentNodeId };
+        for (const [id, key, lo, hi] of spec) {
+            const el = document.getElementById(id);
+            if (!el) continue;
+            const value = normalizeCommInt(el.value, lo, hi);
+            if (value === null) {
+                if (typeof window.showToast === 'function') window.showToast(`${key} out of range`, 'warning');
+                return;
+            }
+            payload[key] = value;
+        }
+        try {
+            const csrfToken = getCsrfToken();
+            const resp = await fetch('/api/nodes/comm_params', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(csrfToken ? { 'X-CSRFToken': csrfToken, 'X-CSRF-Token': csrfToken } : {})
+                },
+                body: JSON.stringify(payload)
+            });
+            if (!resp.ok) {
+                if (resp.status === 401) {
+                    const next = encodeURIComponent(window.location.pathname + window.location.search);
+                    window.location.href = `/login?next=${next}`;
+                    return;
+                }
+                const apiError = await readApiError(resp);
+                const errorData = apiError.data || {};
+                throw new Error(apiError.message || JSON.stringify(errorData.errors || {}) || `HTTP ${resp.status}`);
+            }
+            const data = await resp.json();
+            if (!data.success) throw new Error(data.error || 'request failed');
+            NODE_CONFIGS[currentNodeId] = NODE_CONFIGS[currentNodeId] || {};
+            for (const [key, info] of Object.entries(data.accepted || {})) {
+                NODE_CONFIGS[currentNodeId][key] = info.value;
+            }
+            applyCommParamsForNode(currentNodeId);
+            if (typeof window.showToast === 'function') window.showToast('Communication parameters queued', 'success');
+        } catch (e) {
+            console.error('[requestCommParams] failed:', e);
+            if (typeof window.showToast === 'function') window.showToast(String(e?.message || 'failed'), 'error');
+        }
+    }
     const faultLogMap = new Map();  // key -> {id,nodeId,faultCode,timeStr,status,tsMs}
 
     function normalizeFaultStatus(status) {
@@ -918,6 +1031,7 @@
         const btnSummary = document.getElementById('btn-request-summary');
         const btnSendUploadPoints = document.getElementById('btn-send-upload-points');
         const btnSendDownsample = document.getElementById('btn-send-downsample');
+        const btnSendCommParams = document.getElementById('btn-send-comm-params');
         if (btnFull) {
             btnFull.addEventListener('click', () => requestReportMode('full'));
         }
@@ -929,6 +1043,9 @@
         }
         if (btnSendDownsample) {
             btnSendDownsample.addEventListener('click', requestDownsampleStep);
+        }
+        if (btnSendCommParams) {
+            btnSendCommParams.addEventListener('click', requestCommParams);
         }
         const uploadPointsInput = document.getElementById('upload-points-input');
         if (uploadPointsInput) {
@@ -1237,6 +1354,10 @@
                 if (up !== null) {
                     newConfigs[nodeId].upload_points = up;
                     uploadPointsByNode[nodeId] = up;
+                }
+                for (const [key, lo, hi] of [['heartbeat_ms',200,54999], ['min_interval_ms',0,600000], ['http_timeout_ms',1000,600000], ['chunk_kb',0,16], ['chunk_delay_ms',0,200]]) {
+                    const cv = normalizeCommInt(node[key], lo, hi);
+                    if (cv !== null) newConfigs[nodeId][key] = cv;
                 }
             });
             
@@ -2282,6 +2403,10 @@
                             NODE_CONFIGS[node.node_id].upload_points = up;
                             uploadPointsByNode[node.node_id] = up;
                         }
+                        for (const [key, lo, hi] of [['heartbeat_ms',200,54999], ['min_interval_ms',0,600000], ['http_timeout_ms',1000,600000], ['chunk_kb',0,16], ['chunk_delay_ms',0,200]]) {
+                            const cv = normalizeCommInt(node[key], lo, hi);
+                            if (cv !== null) NODE_CONFIGS[node.node_id][key] = cv;
+                        }
                     }
                     // 关键修复：初始化故障历史记录，避免误触发弹窗
                     nodeFaultHistory[node.node_id] = node.fault_code || 'E00';
@@ -2322,6 +2447,10 @@
                     NODE_CONFIGS[nodeId].upload_points = createdPoints;
                     uploadPointsByNode[nodeId] = createdPoints;
                 }
+                for (const [key, lo, hi] of [['heartbeat_ms',200,54999], ['min_interval_ms',0,600000], ['http_timeout_ms',1000,600000], ['chunk_kb',0,16], ['chunk_delay_ms',0,200]]) {
+                    const cv = normalizeCommInt(msg[key], lo, hi);
+                    if (cv !== null) NODE_CONFIGS[nodeId][key] = cv;
+                }
                 renderNodeList();
             } else {
                 NODE_CONFIGS[nodeId].status = msg.status;
@@ -2339,6 +2468,10 @@
                     NODE_CONFIGS[nodeId].upload_points = updatePoints;
                     uploadPointsByNode[nodeId] = updatePoints;
                 }
+                for (const [key, lo, hi] of [['heartbeat_ms',200,54999], ['min_interval_ms',0,600000], ['http_timeout_ms',1000,600000], ['chunk_kb',0,16], ['chunk_delay_ms',0,200]]) {
+                    const cv = normalizeCommInt(msg[key], lo, hi);
+                    if (cv !== null) NODE_CONFIGS[nodeId][key] = cv;
+                }
             }
 
             if (msg.report_mode) {
@@ -2352,6 +2485,9 @@
             }
             if (currentNodeId === nodeId && normalizeUploadPoints(msg.upload_points) !== null) {
                 applyUploadPointsForNode(nodeId);
+            }
+            if (currentNodeId === nodeId) {
+                applyCommParamsForNode(nodeId);
             }
             
             // ========== 系统故障日志（全局）：对所有节点的故障码变化进行记录 ==========

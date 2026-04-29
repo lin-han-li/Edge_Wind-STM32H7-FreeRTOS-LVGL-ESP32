@@ -28,6 +28,9 @@ typedef struct {
     uint32_t downsample_step;
     uint32_t upload_points;
     int32_t last_http_status;
+    uint32_t config_version;
+    uint32_t last_command_id;
+    int32_t last_error_code;
     char ip_address[16];
     char node_id[64];
     char last_error[64];
@@ -78,7 +81,17 @@ bool ESP32_SPI_ConsumeServerCommand(uint8_t *out_reset,
                                     uint8_t *out_has_downsample_step,
                                     uint32_t *out_downsample_step,
                                     uint8_t *out_has_upload_points,
-                                    uint32_t *out_upload_points);
+                                    uint32_t *out_upload_points,
+                                    uint8_t *out_has_heartbeat_ms,
+                                    uint32_t *out_heartbeat_ms,
+                                    uint8_t *out_has_min_interval_ms,
+                                    uint32_t *out_min_interval_ms,
+                                    uint8_t *out_has_http_timeout_ms,
+                                    uint32_t *out_http_timeout_ms,
+                                    uint8_t *out_has_chunk_kb,
+                                    uint32_t *out_chunk_kb,
+                                    uint8_t *out_has_chunk_delay_ms,
+                                    uint32_t *out_chunk_delay_ms);
 bool ESP32_SPI_GetTxResult(uint32_t ref_seq,
                            int32_t *out_http_status,
                            int32_t *out_result_code,
@@ -110,6 +123,8 @@ bool ESP32_SPI_ReportFullWaveChunk(uint32_t frame_id,
                                    const float *waveform,
                                    uint16_t element_offset,
                                    uint16_t element_count,
+                                   uint32_t source_step,
+                                   uint16_t source_count,
                                    uint32_t timeout_ms);
 bool ESP32_SPI_ReportFullFftChunk(uint32_t frame_id,
                                   uint8_t channel_id,

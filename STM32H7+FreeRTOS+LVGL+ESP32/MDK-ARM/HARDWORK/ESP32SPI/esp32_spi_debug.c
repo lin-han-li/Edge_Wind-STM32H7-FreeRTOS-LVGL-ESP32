@@ -243,6 +243,9 @@ typedef struct {
     uint32_t downsample_step;
     uint32_t upload_points;
     int32_t last_http_status;
+    uint32_t config_version;
+    uint32_t last_command_id;
+    int32_t last_error_code;
     char ip_address[16];
     char node_id[64];
     char last_error[64];
@@ -258,7 +261,7 @@ typedef bool (*esp32_spi_payload_builder_t)(uint8_t *payload, uint16_t payload_l
 
 typedef char esp32_spi_header_size_check[(sizeof(esp32_spi_header_t) == 28U) ? 1 : -1];
 typedef char esp32_spi_packet_size_check[(sizeof(esp32_spi_packet_t) == ESP32_SPI_FRAME_SIZE) ? 1 : -1];
-typedef char esp32_spi_status_size_check[(sizeof(esp32_status_payload_t) == 172U) ? 1 : -1];
+typedef char esp32_spi_status_size_check[(sizeof(esp32_status_payload_t) == 184U) ? 1 : -1];
 
 static uint8_t s_tx_buf[ESP32_SPI_FRAME_SIZE] __attribute__((aligned(32)));
 static uint8_t s_rx_buf[ESP32_SPI_FRAME_SIZE] __attribute__((aligned(32)));
@@ -292,6 +295,16 @@ static uint8_t s_pending_server_downsample_valid = 0U;
 static uint32_t s_pending_server_downsample_step = 0U;
 static uint8_t s_pending_server_upload_valid = 0U;
 static uint32_t s_pending_server_upload_points = 0U;
+static uint8_t s_pending_server_heartbeat_valid = 0U;
+static uint32_t s_pending_server_heartbeat_ms = 0U;
+static uint8_t s_pending_server_min_interval_valid = 0U;
+static uint32_t s_pending_server_min_interval_ms = 0U;
+static uint8_t s_pending_server_http_timeout_valid = 0U;
+static uint32_t s_pending_server_http_timeout_ms = 0U;
+static uint8_t s_pending_server_chunk_kb_valid = 0U;
+static uint32_t s_pending_server_chunk_kb = 0U;
+static uint8_t s_pending_server_chunk_delay_valid = 0U;
+static uint32_t s_pending_server_chunk_delay_ms = 0U;
 
 static uint16_t crc16_le_update(uint16_t crc, const uint8_t *data, uint32_t len)
 {
@@ -684,6 +697,9 @@ static void update_status_from_payload(const esp32_status_payload_t *payload)
     s_status.downsample_step = payload->downsample_step;
     s_status.upload_points = payload->upload_points;
     s_status.last_http_status = payload->last_http_status;
+    s_status.config_version = payload->config_version;
+    s_status.last_command_id = payload->last_command_id;
+    s_status.last_error_code = payload->last_error_code;
     copy_fixed_text(s_status.ip_address, sizeof(s_status.ip_address), payload->ip_address, sizeof(payload->ip_address));
     copy_fixed_text(s_status.node_id, sizeof(s_status.node_id), payload->node_id, sizeof(payload->node_id));
     copy_fixed_text(s_status.last_error, sizeof(s_status.last_error), payload->last_error, sizeof(payload->last_error));
@@ -758,20 +774,38 @@ static void update_status_from_event(const esp32_event_payload_t *event)
         char text[65];
         copy_fixed_text(text, sizeof(text), event->text, sizeof(event->text));
         copy_text(s_status.last_error, sizeof(s_status.last_error), text);
+        if (event->result_code != ESP32_RESULT_OK) {
+            break;
+        }
         if (strcmp(text, "reset") == 0) {
             s_pending_server_reset = 1U;
         } else if (strcmp(text, "report_mode") == 0) {
             s_pending_server_report_mode_valid = 1U;
-            s_pending_server_report_full = (event->value0 != 0U) ? 1U : 0U;
+            s_pending_server_report_full = (event->value1 != 0U) ? 1U : 0U;
             s_status.report_mode = s_pending_server_report_full;
         } else if (strcmp(text, "downsample_step") == 0) {
             s_pending_server_downsample_valid = 1U;
-            s_pending_server_downsample_step = event->value0;
-            s_status.downsample_step = event->value0;
+            s_pending_server_downsample_step = event->value1;
+            s_status.downsample_step = event->value1;
         } else if (strcmp(text, "upload_points") == 0) {
             s_pending_server_upload_valid = 1U;
-            s_pending_server_upload_points = event->value0;
-            s_status.upload_points = event->value0;
+            s_pending_server_upload_points = event->value1;
+            s_status.upload_points = event->value1;
+        } else if (strcmp(text, "heartbeat_ms") == 0) {
+            s_pending_server_heartbeat_valid = 1U;
+            s_pending_server_heartbeat_ms = event->value1;
+        } else if (strcmp(text, "min_interval_ms") == 0) {
+            s_pending_server_min_interval_valid = 1U;
+            s_pending_server_min_interval_ms = event->value1;
+        } else if (strcmp(text, "http_timeout_ms") == 0) {
+            s_pending_server_http_timeout_valid = 1U;
+            s_pending_server_http_timeout_ms = event->value1;
+        } else if (strcmp(text, "chunk_kb") == 0) {
+            s_pending_server_chunk_kb_valid = 1U;
+            s_pending_server_chunk_kb = event->value1;
+        } else if (strcmp(text, "chunk_delay_ms") == 0) {
+            s_pending_server_chunk_delay_valid = 1U;
+            s_pending_server_chunk_delay_ms = event->value1;
         }
         break;
     }
@@ -1319,12 +1353,27 @@ bool ESP32_SPI_ConsumeServerCommand(uint8_t *out_reset,
                                     uint8_t *out_has_downsample_step,
                                     uint32_t *out_downsample_step,
                                     uint8_t *out_has_upload_points,
-                                    uint32_t *out_upload_points)
+                                    uint32_t *out_upload_points,
+                                    uint8_t *out_has_heartbeat_ms,
+                                    uint32_t *out_heartbeat_ms,
+                                    uint8_t *out_has_min_interval_ms,
+                                    uint32_t *out_min_interval_ms,
+                                    uint8_t *out_has_http_timeout_ms,
+                                    uint32_t *out_http_timeout_ms,
+                                    uint8_t *out_has_chunk_kb,
+                                    uint32_t *out_chunk_kb,
+                                    uint8_t *out_has_chunk_delay_ms,
+                                    uint32_t *out_chunk_delay_ms)
 {
     uint8_t has_any = (s_pending_server_reset ||
                        s_pending_server_report_mode_valid ||
                        s_pending_server_downsample_valid ||
-                       s_pending_server_upload_valid) ? 1U : 0U;
+                       s_pending_server_upload_valid ||
+                       s_pending_server_heartbeat_valid ||
+                       s_pending_server_min_interval_valid ||
+                       s_pending_server_http_timeout_valid ||
+                       s_pending_server_chunk_kb_valid ||
+                       s_pending_server_chunk_delay_valid) ? 1U : 0U;
 
     if (out_reset != NULL) {
         *out_reset = s_pending_server_reset;
@@ -1347,11 +1396,46 @@ bool ESP32_SPI_ConsumeServerCommand(uint8_t *out_reset,
     if (out_upload_points != NULL) {
         *out_upload_points = s_pending_server_upload_points;
     }
+    if (out_has_heartbeat_ms != NULL) {
+        *out_has_heartbeat_ms = s_pending_server_heartbeat_valid;
+    }
+    if (out_heartbeat_ms != NULL) {
+        *out_heartbeat_ms = s_pending_server_heartbeat_ms;
+    }
+    if (out_has_min_interval_ms != NULL) {
+        *out_has_min_interval_ms = s_pending_server_min_interval_valid;
+    }
+    if (out_min_interval_ms != NULL) {
+        *out_min_interval_ms = s_pending_server_min_interval_ms;
+    }
+    if (out_has_http_timeout_ms != NULL) {
+        *out_has_http_timeout_ms = s_pending_server_http_timeout_valid;
+    }
+    if (out_http_timeout_ms != NULL) {
+        *out_http_timeout_ms = s_pending_server_http_timeout_ms;
+    }
+    if (out_has_chunk_kb != NULL) {
+        *out_has_chunk_kb = s_pending_server_chunk_kb_valid;
+    }
+    if (out_chunk_kb != NULL) {
+        *out_chunk_kb = s_pending_server_chunk_kb;
+    }
+    if (out_has_chunk_delay_ms != NULL) {
+        *out_has_chunk_delay_ms = s_pending_server_chunk_delay_valid;
+    }
+    if (out_chunk_delay_ms != NULL) {
+        *out_chunk_delay_ms = s_pending_server_chunk_delay_ms;
+    }
 
     s_pending_server_reset = 0U;
     s_pending_server_report_mode_valid = 0U;
     s_pending_server_downsample_valid = 0U;
     s_pending_server_upload_valid = 0U;
+    s_pending_server_heartbeat_valid = 0U;
+    s_pending_server_min_interval_valid = 0U;
+    s_pending_server_http_timeout_valid = 0U;
+    s_pending_server_chunk_kb_valid = 0U;
+    s_pending_server_chunk_delay_valid = 0U;
     return has_any != 0U;
 }
 
@@ -1775,6 +1859,8 @@ typedef struct {
     uint8_t channel_id;
     uint16_t element_offset;
     uint16_t element_count;
+    uint32_t source_step;
+    uint16_t source_count;
     const float *values;
 } esp32_full_chunk_builder_ctx_t;
 
@@ -1800,7 +1886,12 @@ static bool build_wave_chunk_payload(uint8_t *payload, uint16_t payload_len, voi
     memcpy(payload, &prefix, sizeof(prefix));
 
     for (uint16_t i = 0U; i < chunk->element_count; i++) {
-        int32_t scaled = scale_float_to_i32(chunk->values[chunk->element_offset + i], 200.0f);
+        uint32_t step = (chunk->source_step == 0U) ? 1U : chunk->source_step;
+        uint32_t src_index = (((uint32_t)chunk->element_offset + (uint32_t)i) * step);
+        if (chunk->source_count == 0U || src_index >= (uint32_t)chunk->source_count) {
+            return false;
+        }
+        int32_t scaled = scale_float_to_i32(chunk->values[src_index], 200.0f);
         memcpy(payload + sizeof(prefix) + ((uint32_t)i * sizeof(scaled)), &scaled, sizeof(scaled));
     }
     return true;
@@ -1828,7 +1919,11 @@ static bool build_fft_chunk_payload(uint8_t *payload, uint16_t payload_len, void
     memcpy(payload, &prefix, sizeof(prefix));
 
     for (uint16_t i = 0U; i < chunk->element_count; i++) {
-        int16_t scaled = scale_float_to_i16(chunk->values[chunk->element_offset + i], 10.0f);
+        uint32_t src_index = (uint32_t)chunk->element_offset + (uint32_t)i;
+        if (chunk->source_count == 0U || src_index >= (uint32_t)chunk->source_count) {
+            return false;
+        }
+        int16_t scaled = scale_float_to_i16(chunk->values[src_index], 10.0f);
         memcpy(payload + sizeof(prefix) + ((uint32_t)i * sizeof(scaled)), &scaled, sizeof(scaled));
     }
     return true;
@@ -1856,6 +1951,8 @@ static bool send_wave_chunks(uint32_t frame_id,
         chunk.channel_id = channel_id;
         chunk.element_offset = offset;
         chunk.element_count = count;
+        chunk.source_step = 1U;
+        chunk.source_count = waveform_count;
         chunk.values = waveform;
 
         payload_len = (uint16_t)(sizeof(esp32_report_chunk_prefix_t) + ((uint32_t)count * sizeof(int32_t)));
@@ -1895,6 +1992,8 @@ static bool send_fft_chunks(uint32_t frame_id,
         chunk.channel_id = channel_id;
         chunk.element_offset = offset;
         chunk.element_count = count;
+        chunk.source_step = 1U;
+        chunk.source_count = fft_count;
         chunk.values = fft;
 
         payload_len = (uint16_t)(sizeof(esp32_report_chunk_prefix_t) + ((uint32_t)count * sizeof(int16_t)));
@@ -1975,14 +2074,25 @@ bool ESP32_SPI_ReportFullWaveChunk(uint32_t frame_id,
                                    const float *waveform,
                                    uint16_t element_offset,
                                    uint16_t element_count,
+                                   uint32_t source_step,
+                                   uint16_t source_count,
                                    uint32_t timeout_ms)
 {
     esp32_full_chunk_builder_ctx_t chunk;
     uint16_t payload_len;
     uint32_t per_packet_timeout = (timeout_ms == 0U) ? 1500U : timeout_ms;
+    uint32_t step = (source_step == 0U) ? 1U : source_step;
+    uint32_t last_source_index;
 
     if (waveform == NULL || element_count == 0U ||
         element_count > ESP32_SPI_FullWaveChunkMaxElements()) {
+        return false;
+    }
+    if (source_count == 0U) {
+        return false;
+    }
+    last_source_index = (((uint32_t)element_offset + (uint32_t)element_count - 1U) * step);
+    if (last_source_index >= (uint32_t)source_count) {
         return false;
     }
 
@@ -1990,6 +2100,8 @@ bool ESP32_SPI_ReportFullWaveChunk(uint32_t frame_id,
     chunk.channel_id = channel_id;
     chunk.element_offset = element_offset;
     chunk.element_count = element_count;
+    chunk.source_step = step;
+    chunk.source_count = source_count;
     chunk.values = waveform;
     payload_len = (uint16_t)(sizeof(esp32_report_chunk_prefix_t) +
                              ((uint32_t)element_count * sizeof(int32_t)));
@@ -2023,6 +2135,8 @@ bool ESP32_SPI_ReportFullFftChunk(uint32_t frame_id,
     chunk.channel_id = channel_id;
     chunk.element_offset = element_offset;
     chunk.element_count = element_count;
+    chunk.source_step = 1U;
+    chunk.source_count = element_offset + element_count;
     chunk.values = fft;
     payload_len = (uint16_t)(sizeof(esp32_report_chunk_prefix_t) +
                              ((uint32_t)element_count * sizeof(int16_t)));

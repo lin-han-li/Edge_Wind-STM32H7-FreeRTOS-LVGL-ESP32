@@ -123,6 +123,38 @@ class SystemConfig(db.Model):
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+
+class NodePendingCommand(db.Model):
+    """Persistent command queue for device configuration commands."""
+    __tablename__ = 'node_pending_commands'
+
+    id = db.Column(db.Integer, primary_key=True)
+    command_id = db.Column(db.String(64), unique=True, nullable=False, index=True)
+    target_node = db.Column(db.String(100), nullable=False, index=True)
+    key = db.Column(db.String(64), nullable=False, index=True)
+    value = db.Column(db.Text, nullable=False)
+    status = db.Column(db.String(20), default='pending', nullable=False, index=True)
+    error = db.Column(db.String(200))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    delivered_at = db.Column(db.DateTime)
+    applied_at = db.Column(db.DateTime)
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'command_id': self.command_id,
+            'target_node': self.target_node,
+            'key': self.key,
+            'value': self.value,
+            'status': self.status,
+            'error': self.error,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+            'delivered_at': self.delivered_at.isoformat() if self.delivered_at else None,
+            'applied_at': self.applied_at.isoformat() if self.applied_at else None,
+        }
+
 class FaultSnapshot(db.Model):
     """故障快照表 - 保存故障前后的波形数据"""
     __tablename__ = 'fault_snapshots'

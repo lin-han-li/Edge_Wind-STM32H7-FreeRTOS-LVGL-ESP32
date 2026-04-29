@@ -716,18 +716,29 @@ static void ui_wifi_cfg_do_save_sync(lv_ui *ui)
     FRESULT res = ui_wifi_cfg_write_file(ssid ? ssid : "", pwd ? pwd : "");
     
     if (res == FR_OK) {
-        /* 保存后立即读一次，回显验证 */
         char r_ssid[64] = {0}, r_pwd[64] = {0};
         if (ui_wifi_cfg_read_file(r_ssid, sizeof(r_ssid), r_pwd, sizeof(r_pwd)) == FR_OK) {
             ui_wifi_cfg_apply_to_ui(ui, r_ssid, r_pwd);
         }
     }
     
-    ui_sd_result_to_status(ui, res, ui_wifi_cfg_set_status, "保存成功");
+    bool runtime_ok = (res == FR_OK) ? ESP_Config_LoadRuntimeFromSD() : false;
+    ui_sd_result_to_status(ui, res, ui_wifi_cfg_set_status, "Save OK");
+    if (res == FR_OK) {
+        if (ESP_UI_IsReporting()) {
+            ui_wifi_cfg_set_status(ui, "Saved; reporting active, reconnect to apply", 0xFFA500);
+        } else if (!runtime_ok) {
+            ui_wifi_cfg_set_status(ui, "Saved; SD config incomplete, not synced", 0xFFA500);
+        } else {
+            (void)ESP_UI_SendCmd(ESP_UI_CMD_APPLY_CONFIG);
+            ui_wifi_cfg_set_status(ui, "Saved; ESP32 sync queued", 0x3dfb00);
+        }
+    }
     
     if (ui->WifiConfig_btn_save && lv_obj_is_valid(ui->WifiConfig_btn_save))
         lv_obj_clear_state(ui->WifiConfig_btn_save, LV_STATE_DISABLED);
 }
+
 
 /* 进入 WifiConfig 界面后自动加载（延迟一帧执行，保证屏幕已渲染完成） */
 static void WifiConfig_load_timer_cb(lv_timer_t *t)
@@ -924,6 +935,38 @@ static FRESULT ui_server_cfg_read_file(char *ip, size_t ip_len, char *port, size
     return FR_OK;
 }
 
+static bool ui_server_cfg_parse_port_local(const char *s, uint32_t *out)
+{
+    if (!s || !out) return false;
+    while (*s == ' ' || *s == '\t') s++;
+    if (*s == '\0') return false;
+    char *end = NULL;
+    unsigned long v = strtoul(s, &end, 10);
+    if (end == s) return false;
+    while (*end == ' ' || *end == '\t') end++;
+    if (*end != '\0') return false;
+    *out = (uint32_t)v;
+    return true;
+}
+
+static bool ui_server_cfg_validate_and_warn(lv_ui *ui, const char *ip, const char *port, const char *id)
+{
+    uint32_t port_u = 0;
+    if (!ip || ip[0] == '\0') {
+        ui_server_cfg_set_status(ui, "Server host is empty", 0xFF4444);
+        return false;
+    }
+    if (!id || id[0] == '\0') {
+        ui_server_cfg_set_status(ui, "Node ID is empty", 0xFF4444);
+        return false;
+    }
+    if (!ui_server_cfg_parse_port_local(port, &port_u) || port_u == 0U || port_u > 65535U) {
+        ui_server_cfg_set_status(ui, "Port must be 1..65535", 0xFF4444);
+        return false;
+    }
+    return true;
+}
+
 static FRESULT ui_server_cfg_write_file(const char *ip, const char *port, const char *id, const char *loc)
 {
     printf("[SERVER_UI_CFG] write_file: start\r\n");
@@ -1042,13 +1085,32 @@ static void ui_server_cfg_do_save_sync(lv_ui *ui)
     const char *port = (ui->ServerConfig_ta_port) ? lv_textarea_get_text(ui->ServerConfig_ta_port) : "";
     const char *id   = (ui->ServerConfig_ta_id)   ? lv_textarea_get_text(ui->ServerConfig_ta_id)   : "";
     const char *loc  = (ui->ServerConfig_ta_loc)  ? lv_textarea_get_text(ui->ServerConfig_ta_loc)  : "";
+
+    if (!ui_server_cfg_validate_and_warn(ui, ip, port, id)) {
+        if (ui->ServerConfig_btn_save && lv_obj_is_valid(ui->ServerConfig_btn_save))
+            lv_obj_clear_state(ui->ServerConfig_btn_save, LV_STATE_DISABLED);
+        return;
+    }
+
     FRESULT res = ui_server_cfg_write_file(ip, port, id, loc);
     
-    ui_sd_result_to_status(ui, res, ui_server_cfg_set_status, "保存成功");
+    bool runtime_ok = (res == FR_OK) ? ESP_Config_LoadRuntimeFromSD() : false;
+    ui_sd_result_to_status(ui, res, ui_server_cfg_set_status, "Save OK");
+    if (res == FR_OK) {
+        if (ESP_UI_IsReporting()) {
+            ui_server_cfg_set_status(ui, "Saved; reporting active, reconnect to apply", 0xFFA500);
+        } else if (!runtime_ok) {
+            ui_server_cfg_set_status(ui, "Saved; SD config incomplete, not synced", 0xFFA500);
+        } else {
+            (void)ESP_UI_SendCmd(ESP_UI_CMD_APPLY_CONFIG);
+            ui_server_cfg_set_status(ui, "Saved; ESP32 sync queued", 0x3dfb00);
+        }
+    }
     
     if (ui->ServerConfig_btn_save && lv_obj_is_valid(ui->ServerConfig_btn_save))
         lv_obj_clear_state(ui->ServerConfig_btn_save, LV_STATE_DISABLED);
 }
+
 
 static void ServerConfig_load_timer_cb(lv_timer_t *t)
 {
@@ -1197,12 +1259,16 @@ static bool ui_param_cfg_validate_and_warn(lv_ui *ui, bool strict)
         ui_param_cfg_set_tips(ui, "错误：心跳间隔建议范围 200..600000 ms（例如 5000）", 0xFF4444);
         return !strict;
     }
+    if (hb >= 55000u) {
+        ui_param_cfg_set_tips(ui, "Error: heartbeat must stay below server NODE_TIMEOUT safety window (<55s).", 0xFF4444);
+        return !strict;
+    }
     if (send > 600000u) {
         ui_param_cfg_set_tips(ui, "错误：发包限频过大（建议 0..600000 ms，常用 200）", 0xFF4444);
         return !strict;
     }
-    if (http < 100u || http > 600000u) {
-        ui_param_cfg_set_tips(ui, "错误：回包超时建议范围 100..600000 ms（例如 1200）", 0xFF4444);
+    if (http < 1000u || http > 600000u) {
+        ui_param_cfg_set_tips(ui, "Error: HTTP timeout valid range is 1000..600000 ms.", 0xFF4444);
         return !strict;
     }
     if (rst < 5u || rst > 3600u) {
@@ -1607,7 +1673,15 @@ static void ui_param_cfg_do_save_sync(lv_ui *ui)
         /* 保存后立即回读一次，验证保存成功并回显 */
         ui_param_cfg_do_load_sync(ui);
         /* ui_param_cfg_do_load_sync 已经会设置状态，这里覆盖为“保存成功”更直观 */
-        ui_param_cfg_set_status(ui, "保存成功", 0x3dfb00);
+        bool runtime_ok = ESP_Config_LoadRuntimeFromSD();
+        if (ESP_UI_IsReporting()) {
+            ui_param_cfg_set_status(ui, "Saved; reporting active, reconnect to apply", 0xFFA500);
+        } else if (!runtime_ok) {
+            ui_param_cfg_set_status(ui, "Saved; SD config incomplete, not synced", 0xFFA500);
+        } else {
+            (void)ESP_UI_SendCmd(ESP_UI_CMD_APPLY_CONFIG);
+            ui_param_cfg_set_status(ui, "Saved; ESP32 sync queued", 0x3dfb00);
+        }
     } else {
         ui_sd_result_to_status(ui, res, ui_param_cfg_set_status, "保存成功");
     }
@@ -1719,7 +1793,7 @@ static void ParamConfig_preset_wan_event_handler(lv_event_t *e)
 {
     lv_ui *ui = (lv_ui *)lv_event_get_user_data(e);
     ParamConfig_apply_preset(ui,
-                             "120000", "1000", "8000", "60",
+                             "30000", "1000", "8000", "60",
                              "1", "160", "1",
                              "4096",
                              "已应用公网参数，正在保存...");

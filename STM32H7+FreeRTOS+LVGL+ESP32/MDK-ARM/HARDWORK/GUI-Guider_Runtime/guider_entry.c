@@ -66,16 +66,13 @@ static void boot_autostart_try_cb(lv_timer_t *t)
 
 void edgewind_ui_on_before_enter_button(void)
 {
-    /* 开机动画结束但按钮尚未显示：若上次上电前处于上报状态，则自动重连并开始上报 */
-    if (g_boot_autostart_done) {
-        return;
-    }
-    if (!g_boot_autostart_timer) {
-        g_boot_autostart_timer = lv_timer_create(boot_autostart_try_cb, 200, NULL);
-    }
-    /* 立刻尝试一次，提升响应速度 */
-    boot_autostart_try_cb(g_boot_autostart_timer);
+    /* Boot auto reconnect is now owned by FreeRTOS ESP8266_Task.
+     * Keep this GUI hook as a no-op to avoid duplicate AUTO_CONNECT triggers. */
+    (void)g_boot_autostart_timer;
+    (void)boot_autostart_try_cb;
+    g_boot_autostart_done = 1;
 }
+
 
 void edgewind_ui_on_enter_system(void)
 {

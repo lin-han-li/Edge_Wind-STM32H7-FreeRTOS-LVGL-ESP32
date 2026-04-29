@@ -59,6 +59,8 @@ typedef struct {
 } app_runtime_state_t;
 
 typedef struct {
+    bool has_command_id;
+    uint32_t command_id;
     bool has_reset;
     bool has_report_mode;
     report_mode_t report_mode;
@@ -66,6 +68,16 @@ typedef struct {
     uint32_t downsample_step;
     bool has_upload_points;
     uint32_t upload_points;
+    bool has_heartbeat_ms;
+    uint32_t heartbeat_ms;
+    bool has_min_interval_ms;
+    uint32_t min_interval_ms;
+    bool has_http_timeout_ms;
+    uint32_t http_timeout_ms;
+    bool has_chunk_kb;
+    uint32_t chunk_kb;
+    bool has_chunk_delay_ms;
+    uint32_t chunk_delay_ms;
 } server_command_event_t;
 
 typedef struct {
@@ -104,6 +116,9 @@ typedef struct {
     uint32_t upload_points;
     int last_http_status;
     int rssi_dbm;
+    uint32_t config_version;
+    uint32_t last_command_id;
+    int32_t last_error_code;
     char ip_address[APP_MAX_IP_STR_LEN];
     char node_id[APP_MAX_NODE_ID_LEN];
     char last_error[APP_MAX_ERROR_TEXT_LEN];

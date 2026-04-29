@@ -118,6 +118,38 @@ static void refresh_status_from_config(void)
     unlock_status();
 }
 
+static void bump_config_version_locked(void)
+{
+    s_status.config_version++;
+    if (s_status.config_version == 0U) {
+        s_status.config_version = 1U;
+    }
+}
+
+static bool device_config_valid(const app_device_config_t *device)
+{
+    return device != NULL &&
+           device->wifi_ssid[0] != '\0' &&
+           device->server_host[0] != '\0' &&
+           device->server_port != 0U &&
+           device->node_id[0] != '\0';
+}
+
+static bool comm_params_valid(const app_comm_params_t *comm)
+{
+    return comm != NULL &&
+           comm->heartbeat_ms >= 200U &&
+           comm->heartbeat_ms < 55000U &&
+           comm->http_timeout_ms >= 1000U &&
+           comm->downsample_step >= 1U &&
+           comm->downsample_step <= 64U &&
+           comm->upload_points >= 256U &&
+           comm->upload_points <= 4096U &&
+           (comm->upload_points % 256U) == 0U &&
+           comm->chunk_kb <= 256U &&
+           comm->chunk_delay_ms <= 5000U;
+}
+
 static void get_status_snapshot(app_status_snapshot_t *out_status)
 {
     lock_status();
@@ -376,9 +408,19 @@ static void send_hello_response(void)
 static esp_err_t submit_frame(report_frame_t *frame, uint32_t ref_seq)
 {
     esp_err_t err;
+    report_mode_t current_mode;
 
     lock_status();
     if (!s_status.reporting_enabled) {
+        s_status.last_error_code = (int32_t) ESP_ERR_INVALID_STATE;
+        unlock_status();
+        report_frame_free(frame);
+        send_nack(ref_seq, PROTOCOL_NACK_INVALID_STATE);
+        return ESP_ERR_INVALID_STATE;
+    }
+    current_mode = s_status.report_mode;
+    if (frame == NULL || frame->mode != current_mode) {
+        s_status.last_error_code = (int32_t) ESP_ERR_INVALID_STATE;
         unlock_status();
         report_frame_free(frame);
         send_nack(ref_seq, PROTOCOL_NACK_INVALID_STATE);
@@ -388,6 +430,9 @@ static esp_err_t submit_frame(report_frame_t *frame, uint32_t ref_seq)
 
     err = cloud_client_submit_frame(frame);
     if (err != ESP_OK) {
+        lock_status();
+        s_status.last_error_code = (int32_t) err;
+        unlock_status();
         report_frame_free(frame);
         send_nack(ref_seq, (err == ESP_ERR_TIMEOUT) ? PROTOCOL_NACK_QUEUE_FULL : PROTOCOL_NACK_BUSY);
         return err;
@@ -395,6 +440,7 @@ static esp_err_t submit_frame(report_frame_t *frame, uint32_t ref_seq)
 
     lock_status();
     s_status.last_frame_id = frame->frame_id;
+    s_status.last_error_code = 0;
     unlock_status();
     send_tx_accepted(ref_seq, frame->frame_id);
     return ESP_OK;
@@ -402,19 +448,76 @@ static esp_err_t submit_frame(report_frame_t *frame, uint32_t ref_seq)
 
 static void apply_server_command_event(const server_command_event_t *command)
 {
-    app_config_snapshot_t snapshot;
     esp_err_t err = ESP_OK;
+    uint32_t command_id = 0U;
 
-    app_config_get_snapshot(&snapshot);
+    if (command == NULL) {
+        return;
+    }
+
+    if (command->has_command_id) {
+        command_id = command->command_id;
+    }
+
+    ESP_LOGI(TAG,
+             "server command id=%" PRIu32 " reset=%d mode=%d downsample=%d/%" PRIu32 " upload=%d/%" PRIu32
+             " hb=%d/%" PRIu32 " min=%d/%" PRIu32 " http=%d/%" PRIu32 " chunk=%d/%" PRIu32 " delay=%d/%" PRIu32,
+             command_id,
+             command->has_reset ? 1 : 0,
+             command->has_report_mode ? (int) command->report_mode : -1,
+             command->has_downsample_step ? 1 : 0,
+             command->downsample_step,
+             command->has_upload_points ? 1 : 0,
+             command->upload_points,
+             command->has_heartbeat_ms ? 1 : 0,
+             command->heartbeat_ms,
+             command->has_min_interval_ms ? 1 : 0,
+             command->min_interval_ms,
+             command->has_http_timeout_ms ? 1 : 0,
+             command->http_timeout_ms,
+             command->has_chunk_kb ? 1 : 0,
+             command->chunk_kb,
+             command->has_chunk_delay_ms ? 1 : 0,
+             command->chunk_delay_ms);
+
+    if ((command->has_downsample_step && (command->downsample_step < 1U || command->downsample_step > 64U)) ||
+        (command->has_upload_points && (command->upload_points < 256U || command->upload_points > 4096U || (command->upload_points % 256U) != 0U)) ||
+        (command->has_heartbeat_ms && (command->heartbeat_ms < 200U || command->heartbeat_ms >= 55000U)) ||
+        (command->has_min_interval_ms && command->min_interval_ms > 600000U) ||
+        (command->has_http_timeout_ms && (command->http_timeout_ms < 1000U || command->http_timeout_ms > 600000U)) ||
+        (command->has_chunk_kb && command->chunk_kb > 16U) ||
+        (command->has_chunk_delay_ms && command->chunk_delay_ms > 200U)) {
+        err = ESP_ERR_INVALID_ARG;
+    }
+
+    /* STM32 SD is the authority.  ESP32 only validates and delivers cloud
+     * commands as SPI events; STM32 writes SD and then re-applies runtime
+     * SET_* / START_REPORT commands back to ESP32.
+     *
+     * Also mirror valid target values into STATUS as a diagnostic/fallback
+     * cache.  This does not make ESP32 the authority, but it lets STM32/UI see
+     * the last cloud command even if the async event has not been consumed yet.
+     */
+    lock_status();
+    s_status.last_command_id = command_id;
+    s_status.last_error_code = (err == ESP_OK) ? 0 : (int32_t) err;
+    if (err == ESP_OK) {
+        if (command->has_report_mode) {
+            s_status.report_mode = command->report_mode;
+        }
+        if (command->has_downsample_step) {
+            s_status.downsample_step = command->downsample_step;
+        }
+        if (command->has_upload_points) {
+            s_status.upload_points = command->upload_points;
+        }
+    }
+    unlock_status();
 
     if (command->has_reset) {
         send_protocol_event(PROTOCOL_EVENT_SERVER_COMMAND, PROTOCOL_RESULT_OK, 1, 0, 0, "reset");
     }
     if (command->has_report_mode) {
-        lock_status();
-        s_status.report_mode = command->report_mode;
-        unlock_status();
-        (void) persist_runtime_reporting(s_status.reporting_enabled, command->report_mode);
         send_protocol_event(PROTOCOL_EVENT_SERVER_COMMAND,
                             PROTOCOL_RESULT_OK,
                             2,
@@ -423,11 +526,6 @@ static void apply_server_command_event(const server_command_event_t *command)
                             "report_mode");
     }
     if (command->has_downsample_step) {
-        snapshot.comm.downsample_step = command->downsample_step;
-        err = app_config_update_comm(&snapshot.comm, true);
-        lock_status();
-        s_status.downsample_step = command->downsample_step;
-        unlock_status();
         send_protocol_event(PROTOCOL_EVENT_SERVER_COMMAND,
                             map_err_to_result(err),
                             3,
@@ -436,11 +534,6 @@ static void apply_server_command_event(const server_command_event_t *command)
                             "downsample_step");
     }
     if (command->has_upload_points) {
-        snapshot.comm.upload_points = command->upload_points;
-        err = app_config_update_comm(&snapshot.comm, true);
-        lock_status();
-        s_status.upload_points = command->upload_points;
-        unlock_status();
         send_protocol_event(PROTOCOL_EVENT_SERVER_COMMAND,
                             map_err_to_result(err),
                             4,
@@ -448,12 +541,53 @@ static void apply_server_command_event(const server_command_event_t *command)
                             0,
                             "upload_points");
     }
+    if (command->has_heartbeat_ms) {
+        send_protocol_event(PROTOCOL_EVENT_SERVER_COMMAND,
+                            map_err_to_result(err),
+                            5,
+                            command->heartbeat_ms,
+                            0,
+                            "heartbeat_ms");
+    }
+    if (command->has_min_interval_ms) {
+        send_protocol_event(PROTOCOL_EVENT_SERVER_COMMAND,
+                            map_err_to_result(err),
+                            6,
+                            command->min_interval_ms,
+                            0,
+                            "min_interval_ms");
+    }
+    if (command->has_http_timeout_ms) {
+        send_protocol_event(PROTOCOL_EVENT_SERVER_COMMAND,
+                            map_err_to_result(err),
+                            7,
+                            command->http_timeout_ms,
+                            0,
+                            "http_timeout_ms");
+    }
+    if (command->has_chunk_kb) {
+        send_protocol_event(PROTOCOL_EVENT_SERVER_COMMAND,
+                            map_err_to_result(err),
+                            8,
+                            command->chunk_kb,
+                            0,
+                            "chunk_kb");
+    }
+    if (command->has_chunk_delay_ms) {
+        send_protocol_event(PROTOCOL_EVENT_SERVER_COMMAND,
+                            map_err_to_result(err),
+                            9,
+                            command->chunk_delay_ms,
+                            0,
+                            "chunk_delay_ms");
+    }
 }
 
 static void handle_set_device_config(const protocol_packet_t *packet)
 {
     protocol_device_config_payload_t payload;
     app_device_config_t device;
+    app_config_snapshot_t old_snapshot;
     app_config_snapshot_t snapshot;
     esp_err_t err;
     esp_err_t apply_err = ESP_OK;
@@ -473,6 +607,15 @@ static void handle_set_device_config(const protocol_packet_t *packet)
     copy_fixed_string(device.node_location, sizeof(device.node_location), payload.node_location, sizeof(payload.node_location));
     copy_fixed_string(device.hw_version, sizeof(device.hw_version), payload.hw_version, sizeof(payload.hw_version));
 
+    if (!device_config_valid(&device)) {
+        lock_status();
+        s_status.last_error_code = (int32_t) ESP_ERR_INVALID_ARG;
+        unlock_status();
+        send_simple_response(PROTOCOL_MSG_SET_DEVICE_CONFIG_RESP, PROTOCOL_RESULT_INVALID_ARG, "config_invalid");
+        return;
+    }
+
+    app_config_get_snapshot(&old_snapshot);
     err = app_config_update_device(&device, false);
     if (err == ESP_OK) {
         app_config_get_snapshot(&snapshot);
@@ -484,16 +627,37 @@ static void handle_set_device_config(const protocol_packet_t *packet)
         if (apply_err == ESP_OK) {
             err = app_config_update_device(&device, true);
             if (err == ESP_OK) {
+                lock_status();
+                s_status.last_error_code = 0;
+                bump_config_version_locked();
+                unlock_status();
                 send_simple_response(PROTOCOL_MSG_SET_DEVICE_CONFIG_RESP, PROTOCOL_RESULT_OK, "config_applied");
                 send_protocol_event(PROTOCOL_EVENT_CONFIG_APPLIED, PROTOCOL_RESULT_OK, 0, 0, 0, "device_config");
                 protocol_mark_processed(packet);
             } else {
+                (void) app_config_update_device(&old_snapshot.device, false);
+                (void) wifi_manager_apply_config(&old_snapshot.device);
+                (void) cloud_client_apply_snapshot(&old_snapshot);
+                refresh_status_from_config();
+                lock_status();
+                s_status.last_error_code = (int32_t) err;
+                unlock_status();
                 send_simple_response(PROTOCOL_MSG_SET_DEVICE_CONFIG_RESP, map_err_to_result(err), "config_persist_failed");
             }
         } else {
+            (void) app_config_update_device(&old_snapshot.device, false);
+            (void) wifi_manager_apply_config(&old_snapshot.device);
+            (void) cloud_client_apply_snapshot(&old_snapshot);
+            refresh_status_from_config();
+            lock_status();
+            s_status.last_error_code = (int32_t) apply_err;
+            unlock_status();
             send_simple_response(PROTOCOL_MSG_SET_DEVICE_CONFIG_RESP, map_err_to_result(apply_err), "config_runtime_failed");
         }
     } else {
+        lock_status();
+        s_status.last_error_code = (int32_t) err;
+        unlock_status();
         send_simple_response(PROTOCOL_MSG_SET_DEVICE_CONFIG_RESP, map_err_to_result(err), "config_failed");
     }
 }
@@ -502,6 +666,7 @@ static void handle_set_comm_params(const protocol_packet_t *packet)
 {
     protocol_comm_params_payload_t payload;
     app_comm_params_t comm;
+    app_config_snapshot_t old_snapshot;
     app_config_snapshot_t snapshot;
     esp_err_t err;
     esp_err_t apply_err = ESP_OK;
@@ -523,6 +688,15 @@ static void handle_set_comm_params(const protocol_packet_t *packet)
     comm.chunk_kb = payload.chunk_kb;
     comm.chunk_delay_ms = payload.chunk_delay_ms;
 
+    if (!comm_params_valid(&comm)) {
+        lock_status();
+        s_status.last_error_code = (int32_t) ESP_ERR_INVALID_ARG;
+        unlock_status();
+        send_simple_response(PROTOCOL_MSG_SET_COMM_PARAMS_RESP, PROTOCOL_RESULT_INVALID_ARG, "comm_params_invalid");
+        return;
+    }
+
+    app_config_get_snapshot(&old_snapshot);
     err = app_config_update_comm(&comm, false);
     if (err == ESP_OK) {
         app_config_get_snapshot(&snapshot);
@@ -532,18 +706,39 @@ static void handle_set_comm_params(const protocol_packet_t *packet)
         }
         refresh_status_from_config();
         if (apply_err == ESP_OK) {
-            err = app_config_update_comm(&comm, true);
+            err = app_config_update_comm(&snapshot.comm, true);
             if (err == ESP_OK) {
+                lock_status();
+                s_status.last_error_code = 0;
+                bump_config_version_locked();
+                unlock_status();
                 send_simple_response(PROTOCOL_MSG_SET_COMM_PARAMS_RESP, PROTOCOL_RESULT_OK, "comm_params_applied");
                 send_protocol_event(PROTOCOL_EVENT_CONFIG_APPLIED, PROTOCOL_RESULT_OK, 1, 0, 0, "comm_params");
                 protocol_mark_processed(packet);
             } else {
+                (void) app_config_update_comm(&old_snapshot.comm, false);
+                (void) wifi_manager_set_reconnect_backoff_ms(old_snapshot.comm.reconnect_backoff_ms);
+                (void) cloud_client_apply_snapshot(&old_snapshot);
+                refresh_status_from_config();
+                lock_status();
+                s_status.last_error_code = (int32_t) err;
+                unlock_status();
                 send_simple_response(PROTOCOL_MSG_SET_COMM_PARAMS_RESP, map_err_to_result(err), "comm_params_persist_failed");
             }
         } else {
+            (void) app_config_update_comm(&old_snapshot.comm, false);
+            (void) wifi_manager_set_reconnect_backoff_ms(old_snapshot.comm.reconnect_backoff_ms);
+            (void) cloud_client_apply_snapshot(&old_snapshot);
+            refresh_status_from_config();
+            lock_status();
+            s_status.last_error_code = (int32_t) apply_err;
+            unlock_status();
             send_simple_response(PROTOCOL_MSG_SET_COMM_PARAMS_RESP, map_err_to_result(apply_err), "comm_params_runtime_failed");
         }
     } else {
+        lock_status();
+        s_status.last_error_code = (int32_t) err;
+        unlock_status();
         send_simple_response(PROTOCOL_MSG_SET_COMM_PARAMS_RESP, map_err_to_result(err), "comm_params_failed");
     }
 }
@@ -563,11 +758,15 @@ static void handle_start_report(const protocol_packet_t *packet)
         lock_status();
         s_status.reporting_enabled = true;
         s_status.report_mode = requested_mode;
+        s_status.last_error_code = 0;
         unlock_status();
         send_simple_response(PROTOCOL_MSG_START_REPORT_RESP, PROTOCOL_RESULT_OK, "report_started");
         (void) persist_runtime_reporting(true, requested_mode);
         protocol_mark_processed(packet);
     } else {
+        lock_status();
+        s_status.last_error_code = (int32_t) err;
+        unlock_status();
         send_simple_response(PROTOCOL_MSG_START_REPORT_RESP, map_err_to_result(err), "report_start_failed");
     }
 }
@@ -575,16 +774,22 @@ static void handle_start_report(const protocol_packet_t *packet)
 static void handle_stop_report(const protocol_packet_t *packet)
 {
     esp_err_t err;
+    report_mode_t current_mode;
 
     err = cloud_client_set_reporting(false, REPORT_MODE_SUMMARY);
     if (err == ESP_OK) {
         lock_status();
+        current_mode = s_status.report_mode;
         s_status.reporting_enabled = false;
+        s_status.last_error_code = 0;
         unlock_status();
         send_simple_response(PROTOCOL_MSG_STOP_REPORT_RESP, PROTOCOL_RESULT_OK, "report_stopped");
-        (void) persist_runtime_reporting(false, s_status.report_mode);
+        (void) persist_runtime_reporting(false, current_mode);
         protocol_mark_processed(packet);
     } else {
+        lock_status();
+        s_status.last_error_code = (int32_t) err;
+        unlock_status();
         send_simple_response(PROTOCOL_MSG_STOP_REPORT_RESP, map_err_to_result(err), "report_stop_failed");
     }
 }
@@ -715,7 +920,17 @@ static void handle_protocol_packet(const protocol_packet_t *packet, size_t rx_by
         if (err == ESP_OK) {
             const protocol_report_full_begin_payload_t *begin =
                 (const protocol_report_full_begin_payload_t *) packet->payload;
-            spi_link_flush_tx_queue();
+            /*
+             * Do NOT flush the ESP32->STM32 TX queue here.
+             *
+             * Continuous full upload starts a new frame immediately after the
+             * previous HTTP response is parsed.  That response is exactly where
+             * cloud-side configuration commands (upload_points/downsample/etc.)
+             * arrive.  The old unconditional flush on every FULL_BEGIN could
+             * erase a queued SERVER_COMMAND event before STM32 had a chance to
+             * clock it out, so the web UI showed "delivered" while STM32 never
+             * applied the command.
+             */
             send_tx_accepted(packet->header.seq, begin->frame_id);
             protocol_mark_processed(packet);
         } else {
@@ -739,6 +954,14 @@ static void handle_protocol_packet(const protocol_packet_t *packet, size_t rx_by
                                          packet->payload + sizeof(prefix),
                                          packet->header.payload_len - sizeof(prefix));
         if (err == ESP_OK) {
+            /*
+             * Keep the per-chunk TX_ACCEPTED: the STM32 full-upload state
+             * machine paces every waveform/FFT chunk by waiting for this ACK.
+             *
+             * The actual server-command loss was the FULL_BEGIN queue flush
+             * above, not the ACK itself. Removing this ACK stalls full upload
+             * after registration, so only the destructive flush is disabled.
+             */
             send_tx_accepted(packet->header.seq, prefix.frame_id);
             protocol_mark_processed(packet);
         } else {
@@ -859,6 +1082,7 @@ static void process_cloud_event(const cloud_client_event_t *event)
         s_status.last_http_status = event->http_status;
         s_status.registered_with_cloud = (event->error == ESP_OK && event->http_status >= 200 && event->http_status < 300);
         s_status.cloud_connected = s_status.registered_with_cloud;
+        s_status.last_error_code = s_status.registered_with_cloud ? 0 : (int32_t) (event->error != ESP_OK ? event->error : event->http_status);
         copy_string(s_status.last_error, sizeof(s_status.last_error), event->message);
         unlock_status();
         send_protocol_event(PROTOCOL_EVENT_REGISTER_RESULT,
@@ -881,12 +1105,14 @@ static void process_cloud_event(const cloud_client_event_t *event)
         s_status.last_frame_id = event->frame_id;
         if (event->error != ESP_OK || event->http_status < 200 || event->http_status >= 300) {
             s_status.cloud_connected = false;
+            s_status.last_error_code = (int32_t) (event->error != ESP_OK ? event->error : event->http_status);
             if (event->http_status == 401 || event->http_status == 404) {
                 s_status.registered_with_cloud = false;
             }
         } else {
             s_status.cloud_connected = true;
             s_status.registered_with_cloud = true;
+            s_status.last_error_code = 0;
         }
         copy_string(s_status.last_error, sizeof(s_status.last_error), event->message);
         unlock_status();
@@ -909,6 +1135,7 @@ static void process_cloud_event(const cloud_client_event_t *event)
         s_status.last_http_status = event->http_status;
         s_status.cloud_connected = true;
         s_status.registered_with_cloud = true;
+        s_status.last_error_code = 0;
         copy_string(s_status.last_error, sizeof(s_status.last_error), event->message);
         unlock_status();
         send_protocol_event(PROTOCOL_EVENT_CLOUD_STATE,
@@ -926,6 +1153,7 @@ static void process_cloud_event(const cloud_client_event_t *event)
     case CLOUD_CLIENT_EVENT_ERROR:
         lock_status();
         s_status.cloud_connected = false;
+        s_status.last_error_code = (int32_t) (event->error != ESP_OK ? event->error : event->http_status);
         copy_string(s_status.last_error, sizeof(s_status.last_error), event->message);
         unlock_status();
         send_protocol_event(PROTOCOL_EVENT_ERROR,
@@ -982,6 +1210,9 @@ void app_main(void)
     copy_string(s_status.node_id, sizeof(s_status.node_id), snapshot.device.node_id);
     s_status.downsample_step = snapshot.comm.downsample_step;
     s_status.upload_points = snapshot.comm.upload_points;
+    s_status.config_version = 1U;
+    s_status.last_command_id = 0U;
+    s_status.last_error_code = 0;
     s_status.reporting_enabled = APP_BOOT_AUTO_RECONNECT &&
                                   runtime_state.auto_reconnect_enabled &&
                                   runtime_state.last_reporting;
