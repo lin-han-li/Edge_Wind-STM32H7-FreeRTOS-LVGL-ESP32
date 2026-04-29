@@ -340,8 +340,8 @@
         }
 
         const text = await resp.text().catch(() => '');
-        if (/csrf|????|token has expired|token is missing|token is invalid/i.test(text)) {
-            return { data: {}, message: '??????????????????' };
+        if (/csrf|token has expired|token is missing|token is invalid/i.test(text)) {
+            return { data: {}, message: '登录状态已过期，请刷新页面后重试' };
         }
         return { data: {}, message: `HTTP ${resp.status}` };
     }

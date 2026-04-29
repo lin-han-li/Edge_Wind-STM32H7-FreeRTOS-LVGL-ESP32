@@ -2298,7 +2298,7 @@ void ESP_Console_Poll(void)
         ESP_SetFaultCode("E00");
     }
 
-    // 2.0) ???????? report_mode???
+    // 2.0) Apply server-issued report_mode.
     if (g_server_report_full_dirty)
     {
         uint8_t full = g_server_report_full ? 1U : 0U;
@@ -2316,14 +2316,9 @@ void ESP_Console_Poll(void)
             ESP_SPI_FullResetUploadRuntimeState();
         }
 #endif
-        if (full)
-        {
-            ESP_Log("[?????] report_mode=full???????\r\n");
-        }
-        else
-        {
-            ESP_Log("[?????] report_mode=summary???????\r\n");
-        }
+        /* The final clean status log is emitted below.  Avoid an extra
+         * user-visible UI log here.
+         */
 #if (EW_USE_ESP32_SPI_UI)
         if (g_esp_ready && g_report_enabled) {
 #if (ESP32_SPI_ENABLE_FULL_UPLOAD)
