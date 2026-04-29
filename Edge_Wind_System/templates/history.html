@@ -1,0 +1,886 @@
+{% extends "base.html" %}
+
+{% block title %}历史曲线 - EdgeWind{% endblock %}
+{% block page_title %}历史曲线{% endblock %}
+
+{% block extra_css %}
+<style>
+    /* 历史曲线页面背景色 */
+    body {
+        background: radial-gradient(circle at 50% -20%, #2d5a8a 0%, #1a2d4a 100%) fixed !important;
+        background-color: #1a2d4a !important;
+    }
+    
+    .main-content {
+        background: transparent !important;
+    }
+
+    /* 卡片选中样式 */
+    .card-select {
+        cursor: pointer;
+        border: 2px solid transparent;
+        transition: all 0.2s ease;
+    }
+    .card-select:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    }
+    .card-active {
+        border-color: #0d6efd !important;
+        box-shadow: 0 0 16px rgba(13, 110, 253, 0.18) !important;
+    }
+    .card-active .select-badge {
+        opacity: 1;
+        transform: translateY(0);
+    }
+    .select-badge {
+        opacity: 0;
+        transform: translateY(6px);
+        transition: all 0.2s;
+        font-size: 0.85rem;
+        font-weight: bold;
+    }
+
+    /* 节点列表项样式 */
+    .node-item {
+        cursor: pointer;
+        transition: background-color 0.2s;
+        padding: 0.5rem 0.75rem;
+    }
+    .node-item:hover {
+        background-color: rgba(0, 123, 255, 0.1);
+    }
+    .node-item.active {
+        background-color: rgba(0, 123, 255, 0.2);
+        border-left: 3px solid #0d6efd;
+    }
+
+    /* 数据卡片紧凑样式 */
+    .card-select .card-body {
+        padding: 0.5rem 0.75rem !important;
+    }
+    .card-select h3 {
+        font-size: 1.4rem;
+    }
+    .card-select h6 {
+        margin-bottom: 0.15rem !important;
+    }
+    .card-select .select-badge {
+        margin-top: 0.25rem !important;
+        font-size: 0.7rem;
+    }
+
+    /* 左右列等高布局 */
+    .row > [class*="col-lg-"] {
+        display: flex;
+        flex-direction: column;
+    }
+    .row > .col-lg-9 > .card:last-child {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+    }
+    .row > .col-lg-9 > .card:last-child > .card-body {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+    }
+    #historyChart {
+        flex: 1;
+        min-height: 450px;
+        height: 450px;
+    }
+
+    /* 顶部搜索栏样式 */
+    #nodeSearch {
+        background-color: rgba(255, 255, 255, 0.95);
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<!-- 顶部节点搜索栏 -->
+<div class="row mb-3">
+    <div class="col-12">
+        <div class="input-group">
+            <span class="input-group-text bg-dark text-white"><i class="bi bi-search"></i></span>
+            <input type="text" class="form-control" id="nodeSearch" placeholder="搜索历史节点（支持离线节点）...">
+            <span class="input-group-text text-muted small" id="nodeCount">0 个节点</span>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <!-- 左侧：节点列表和控制面板 -->
+    <div class="col-lg-3">
+        <!-- 边缘节点列表 -->
+        <div class="card mb-3">
+            <div class="card-header bg-dark text-white">
+                <h6 class="mb-0">
+                    <i class="bi bi-diagram-3"></i> 边缘节点列表
+                </h6>
+            </div>
+            <div class="card-body p-0">
+                <div class="list-group list-group-flush" id="nodeList" style="max-height: 180px; overflow-y: auto;">
+                    <div class="text-center text-muted py-4">
+                        <i class="bi bi-hourglass-split"></i> 加载中...
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- 控制面板 -->
+        <div class="card mb-3">
+            <div class="card-header bg-success text-white py-2">
+                <h6 class="mb-0 small">
+                    <i class="bi bi-sliders"></i> 查询控制
+                </h6>
+            </div>
+            <div class="card-body">
+                <div class="mb-3">
+                    <label class="form-label text-muted small fw-bold" for="historyLimit">回放点数</label>
+                    <div class="input-group input-group-sm">
+                        <span class="input-group-text"><i class="bi bi-clock-history"></i></span>
+                        <input type="number" class="form-control" id="historyLimit" value="600" min="1" max="20000" step="100">
+                    </div>
+                    <div class="form-text small">默认600，最大20000</div>
+                </div>
+                
+                <div class="mb-3">
+                    <label class="form-label text-muted small fw-bold">回放时段</label>
+                    <div class="mb-2">
+                        <label class="form-label text-muted small mb-1" for="historyStart">开始时间</label>
+                        <input type="text" class="form-control form-control-sm" id="historyStart"
+                               placeholder="YYYY-MM-DD HH:MM">
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label text-muted small mb-1" for="historyEnd">结束时间</label>
+                        <input type="text" class="form-control form-control-sm" id="historyEnd"
+                               placeholder="YYYY-MM-DD HH:MM">
+                    </div>
+                </div>
+                
+                <div class="mb-3">
+                    <label class="form-label text-muted small fw-bold">快捷时段</label>
+                    <div class="d-flex flex-wrap gap-1">
+                        <button class="btn btn-outline-secondary btn-sm" type="button" data-range-min="5">近5分钟</button>
+                        <button class="btn btn-outline-secondary btn-sm" type="button" data-range-min="30">近30分钟</button>
+                        <button class="btn btn-outline-secondary btn-sm" type="button" data-range-min="120">近2小时</button>
+                        <button class="btn btn-outline-secondary btn-sm" type="button" data-range-min="1440">近24小时</button>
+                    </div>
+                </div>
+                
+                <div class="d-grid gap-2">
+                    <button class="btn btn-primary btn-sm" id="btnLoad" type="button">
+                        <i class="bi bi-arrow-clockwise me-1"></i>加载数据
+                    </button>
+                    <button class="btn btn-outline-secondary btn-sm" id="btnClearRange" type="button">
+                        <i class="bi bi-x-circle me-1"></i>清空时段
+                    </button>
+                </div>
+            </div>
+        </div>
+        
+        <!-- 数据统计 -->
+        <div class="card border-info mb-3">
+            <div class="card-header bg-info text-white py-2">
+                <h6 class="mb-0 small">
+                    <i class="bi bi-bar-chart"></i> 数据统计
+                </h6>
+            </div>
+            <div class="card-body p-2">
+                <div class="row g-2 small">
+                    <div class="col-6">
+                        <div class="text-muted">已加载点数</div>
+                        <div class="fw-bold text-info" id="stat-loaded">0</div>
+                    </div>
+                    <div class="col-6">
+                        <div class="text-muted">总记录数</div>
+                        <div class="fw-bold text-info" id="stat-total">0</div>
+                    </div>
+                    <div class="col-12">
+                        <div class="text-muted">最新数据时间</div>
+                        <div class="fw-bold text-success small" id="stat-latest">--</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 数据管理 -->
+        <div class="card border-danger">
+            <div class="card-header bg-danger text-white py-2">
+                <h6 class="mb-0 small">
+                    <i class="bi bi-trash"></i> 数据管理
+                </h6>
+            </div>
+            <div class="card-body p-2">
+                <button class="btn btn-outline-danger btn-sm w-100" id="btnDeleteNodeHistory" type="button" disabled>
+                    <i class="bi bi-trash me-1"></i>删除该节点历史
+                </button>
+                <div class="form-text small text-muted mt-1">删除当前选中节点的所有历史数据</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 右侧：主内容区 -->
+    <div class="col-lg-9">
+        <!-- 4张数据卡片 -->
+        <div class="row g-3 mb-3">
+            <div class="col-md-3 col-6">
+                <div class="card h-100 shadow-sm card-select card-active" id="card-voltage_pos" 
+                     onclick="selectChannel('voltage_pos')" style="border-top: 3px solid #0d6efd;">
+                    <div class="card-body text-center d-flex flex-column justify-content-center">
+                        <h6 class="text-muted small fw-bold">直流母线(+)</h6>
+                        <h3 class="fw-bold text-primary mb-0" id="val-voltage_pos">--</h3>
+                        <small class="text-muted">V</small>
+                        <div class="select-badge text-primary">
+                            <i class="bi bi-check-circle-fill me-1"></i>已选中
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3 col-6">
+                <div class="card h-100 shadow-sm card-select" id="card-voltage_neg" 
+                     onclick="selectChannel('voltage_neg')" style="border-top: 3px solid #dc3545;">
+                    <div class="card-body text-center d-flex flex-column justify-content-center">
+                        <h6 class="text-muted small fw-bold">直流母线(-)</h6>
+                        <h3 class="fw-bold text-danger mb-0" id="val-voltage_neg">--</h3>
+                        <small class="text-muted">V</small>
+                        <div class="select-badge text-danger">
+                            <i class="bi bi-check-circle-fill me-1"></i>已选中
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3 col-6">
+                <div class="card h-100 shadow-sm card-select" id="card-current" 
+                     onclick="selectChannel('current')" style="border-top: 3px solid #0dcaf0;">
+                    <div class="card-body text-center d-flex flex-column justify-content-center">
+                        <h6 class="text-muted small fw-bold">负载电流</h6>
+                        <h3 class="fw-bold text-info mb-0" id="val-current">--</h3>
+                        <small class="text-muted">A</small>
+                        <div class="select-badge text-info">
+                            <i class="bi bi-check-circle-fill me-1"></i>已选中
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3 col-6">
+                <div class="card h-100 shadow-sm card-select" id="card-leakage" 
+                     onclick="selectChannel('leakage')" style="border-top: 3px solid #ffc107;">
+                    <div class="card-body text-center d-flex flex-column justify-content-center">
+                        <h6 class="text-muted small fw-bold">漏电流</h6>
+                        <h3 class="fw-bold text-warning mb-0" id="val-leakage">--</h3>
+                        <small class="text-muted">mA</small>
+                        <div class="select-badge text-warning">
+                            <i class="bi bi-check-circle-fill me-1"></i>已选中
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 历史曲线图表 -->
+        <div class="card">
+            <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center">
+                <div>
+                    <i class="bi bi-graph-up"></i>
+                    <span id="chart-title">历史曲线 - 直流母线(+)</span>
+                </div>
+                <button class="btn btn-sm btn-outline-light" id="btnResetZoom" type="button">
+                    <i class="bi bi-arrow-counterclockwise"></i> 重置缩放
+                </button>
+            </div>
+            <div class="card-body p-2">
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <small class="text-muted">
+                        <i class="bi bi-info-circle"></i> 提示：双击Y轴重置Y轴，双击X轴重置X轴，双击图表区域重置全部
+                    </small>
+                </div>
+                <div id="historyChart" style="width: 100%;"></div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+<script src="{{ url_for('static', filename='js/chart-zoom-utils.js') }}"></script>
+<script>
+(function() {
+    'use strict';
+
+    // ========== 状态变量 ==========
+    let selectedNodeId = '';
+    let selectedChannel = 'voltage_pos';
+    let historyData = [];  // 当前加载的历史数据
+    let allNodes = [];     // 所有节点（用于搜索过滤）
+    let chart = null;
+
+    // localStorage 键名
+    const STORAGE_KEY = 'edgewind_history_settings';
+
+    // 通道配置
+    const CHANNEL_CONFIG = {
+        voltage_pos: { label: '直流母线(+)', unit: 'V', color: '#0d6efd' },
+        voltage_neg: { label: '直流母线(-)', unit: 'V', color: '#dc3545' },
+        current: { label: '负载电流', unit: 'A', color: '#0dcaf0' },
+        leakage: { label: '漏电流', unit: 'mA', color: '#ffc107' }
+    };
+
+    // ========== DOM 元素 ==========
+    const elNodeList = document.getElementById('nodeList');
+    const elNodeSearch = document.getElementById('nodeSearch');
+    const elNodeCount = document.getElementById('nodeCount');
+    const elHistoryLimit = document.getElementById('historyLimit');
+    const elHistoryStart = document.getElementById('historyStart');
+    const elHistoryEnd = document.getElementById('historyEnd');
+    const elBtnLoad = document.getElementById('btnLoad');
+    const elBtnClearRange = document.getElementById('btnClearRange');
+    const elBtnResetZoom = document.getElementById('btnResetZoom');
+    const elBtnDeleteNodeHistory = document.getElementById('btnDeleteNodeHistory');
+    const elStatLoaded = document.getElementById('stat-loaded');
+    const elStatTotal = document.getElementById('stat-total');
+    const elStatLatest = document.getElementById('stat-latest');
+    const elChartTitle = document.getElementById('chart-title');
+    const elChartContainer = document.getElementById('historyChart');
+
+    // ========== localStorage 设置管理 ==========
+    function loadSettings() {
+        try {
+            const saved = localStorage.getItem(STORAGE_KEY);
+            if (saved) {
+                const settings = JSON.parse(saved);
+                if (settings.limit) elHistoryLimit.value = settings.limit;
+                if (settings.startTime) elHistoryStart.value = settings.startTime;
+                if (settings.endTime) elHistoryEnd.value = settings.endTime;
+                if (settings.nodeId) selectedNodeId = settings.nodeId;
+                if (settings.channel) selectedChannel = settings.channel;
+            }
+        } catch (e) {
+            console.warn('加载历史设置失败:', e);
+        }
+    }
+
+    function saveSettings() {
+        try {
+            const settings = {
+                limit: elHistoryLimit.value,
+                startTime: elHistoryStart.value,
+                endTime: elHistoryEnd.value,
+                nodeId: selectedNodeId,
+                channel: selectedChannel
+            };
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
+        } catch (e) {
+            console.warn('保存历史设置失败:', e);
+        }
+    }
+
+    // ========== 初始化 ==========
+    function init() {
+        // 从 localStorage 加载设置
+        loadSettings();
+
+        // 初始化图表
+        chart = echarts.init(elChartContainer);
+        initChartOption();
+
+        // 加载节点列表
+        loadNodeList();
+
+        // 绑定事件
+        bindEvents();
+
+        // 应用已保存的通道选择
+        if (selectedChannel) {
+            selectChannel(selectedChannel);
+        }
+
+        // 窗口大小变化时重绘图表
+        window.addEventListener('resize', () => {
+            if (chart) chart.resize();
+        });
+    }
+
+    // ========== 加载节点列表（包含离线节点）==========
+    async function loadNodeList() {
+        try {
+            const response = await fetch('/api/history_nodes');
+            const result = await response.json();
+            
+            if (result.success && result.nodes) {
+                allNodes = result.nodes;
+                renderNodeList(allNodes);
+                elNodeCount.textContent = `${allNodes.length} 个节点`;
+                
+                // 如果有保存的节点ID，自动选中并高亮
+                if (selectedNodeId) {
+                    const nodeExists = allNodes.some(n => (n.node_id || n.device_id) === selectedNodeId);
+                    if (nodeExists) {
+                        highlightSelectedNode();
+                        loadHistoryData();
+                    }
+                }
+            } else {
+                elNodeList.innerHTML = '<div class="text-center text-muted py-3">暂无历史数据</div>';
+                elNodeCount.textContent = '0 个节点';
+            }
+        } catch (error) {
+            console.error('加载节点列表失败:', error);
+            elNodeList.innerHTML = '<div class="text-center text-danger py-3">加载失败</div>';
+        }
+    }
+
+    function escapeHtml(s) {
+        // 防止 nodeId 含特殊字符导致 HTML/属性注入
+        return String(s ?? '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    function renderNodeList(nodes) {
+        if (!nodes || nodes.length === 0) {
+            elNodeList.innerHTML = '<div class="text-center text-muted py-3">暂无匹配节点</div>';
+            return;
+        }
+
+        let html = '';
+        nodes.forEach(node => {
+            const nodeId = node.node_id || node.device_id;
+            const status = node.status || 'offline';
+            const isOnline = status === 'online';
+            const badgeClass = isOnline ? 'bg-success' : 'bg-secondary';
+            const badgeText = isOnline ? '在线' : '离线';
+            const recordCount = node.record_count || 0;
+            const isActive = nodeId === selectedNodeId;
+            const activeClass = isActive ? 'active' : '';
+            const nodeIdEsc = escapeHtml(nodeId);
+            
+            html += `
+                <a href="javascript:void(0)" class="list-group-item list-group-item-action node-item ${activeClass}" 
+                   data-node-id="${nodeIdEsc}">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <div class="text-truncate" style="max-width: 150px;" title="${nodeIdEsc}">
+                            <i class="bi bi-hdd-network me-1"></i>${nodeIdEsc}
+                        </div>
+                        <div class="d-flex align-items-center gap-1">
+                            <small class="text-muted">${recordCount}条</small>
+                            <span class="badge ${badgeClass}">${badgeText}</span>
+                        </div>
+                    </div>
+                </a>
+            `;
+        });
+        elNodeList.innerHTML = html;
+    }
+
+    function highlightSelectedNode() {
+        document.querySelectorAll('.node-item').forEach(el => {
+            el.classList.remove('active');
+            if (el.dataset.nodeId === selectedNodeId) {
+                el.classList.add('active');
+            }
+        });
+    }
+
+    // ========== 节点搜索过滤 ==========
+    function filterNodes(keyword) {
+        if (!keyword) {
+            renderNodeList(allNodes);
+            return;
+        }
+        
+        const kw = keyword.toLowerCase();
+        const filtered = allNodes.filter(node => {
+            const nodeId = (node.node_id || node.device_id || '').toLowerCase();
+            return nodeId.includes(kw);
+        });
+        renderNodeList(filtered);
+    }
+
+    // ========== 选择节点 ==========
+    window.selectNode = function(nodeId) {
+        selectedNodeId = nodeId;
+        saveSettings();
+        highlightSelectedNode();
+        // 启用删除按钮
+        if (elBtnDeleteNodeHistory) {
+            elBtnDeleteNodeHistory.disabled = false;
+        }
+        loadHistoryData();
+    };
+
+    // ========== 选择通道 ==========
+    window.selectChannel = function(channel) {
+        selectedChannel = channel;
+        saveSettings();
+        
+        // 更新卡片高亮
+        document.querySelectorAll('.card-select').forEach(card => {
+            card.classList.remove('card-active');
+        });
+        const activeCard = document.getElementById(`card-${channel}`);
+        if (activeCard) activeCard.classList.add('card-active');
+
+        // 更新图表标题
+        const config = CHANNEL_CONFIG[channel];
+        elChartTitle.textContent = `历史曲线 - ${config.label}`;
+
+        // 重绘图表
+        updateChart();
+    };
+
+    // ========== 加载历史数据 ==========
+    async function loadHistoryData() {
+        if (!selectedNodeId) {
+            window.showToast && showToast('请先选择一个节点', 'warning');
+            return;
+        }
+
+        // 保存当前设置
+        saveSettings();
+
+        const limit = parseInt(elHistoryLimit.value) || 600;
+        const startTime = elHistoryStart.value.trim();
+        const endTime = elHistoryEnd.value.trim();
+
+        let url = `/api/history_data?device_id=${encodeURIComponent(selectedNodeId)}&limit=${limit}`;
+        if (startTime) url += `&start_time=${encodeURIComponent(startTime)}`;
+        if (endTime) url += `&end_time=${encodeURIComponent(endTime)}`;
+
+        try {
+            elBtnLoad.disabled = true;
+            elBtnLoad.innerHTML = '<span class="spinner-border spinner-border-sm"></span> 加载中...';
+
+            const response = await fetch(url);
+            const result = await response.json();
+
+            if (result.success) {
+                historyData = result.data || [];
+                
+                // 更新统计
+                elStatLoaded.textContent = historyData.length;
+                elStatTotal.textContent = result.total || 0;
+                
+                if (historyData.length > 0) {
+                    elStatLatest.textContent = historyData[historyData.length - 1].timestamp || '--';
+                } else {
+                    elStatLatest.textContent = '--';
+                }
+
+                // 更新卡片值（显示最新值）
+                updateCardValues();
+
+                // 更新图表
+                updateChart();
+
+                if (historyData.length > 0) {
+                    window.showToast && showToast(`已加载 ${historyData.length} 条记录`, 'success');
+                } else {
+                    window.showToast && showToast('该节点暂无历史数据', 'info');
+                }
+            } else {
+                window.showToast && showToast(result.error || '加载失败', 'danger');
+            }
+        } catch (error) {
+            console.error('加载历史数据失败:', error);
+            window.showToast && showToast('加载失败: ' + error.message, 'danger');
+        } finally {
+            elBtnLoad.disabled = false;
+            elBtnLoad.innerHTML = '<i class="bi bi-arrow-clockwise me-1"></i>加载数据';
+        }
+    }
+
+    // ========== 更新卡片值 ==========
+    function updateCardValues() {
+        if (historyData.length === 0) {
+            ['voltage_pos', 'voltage_neg', 'current', 'leakage'].forEach(ch => {
+                document.getElementById(`val-${ch}`).textContent = '--';
+            });
+            return;
+        }
+
+        const latest = historyData[historyData.length - 1];
+        document.getElementById('val-voltage_pos').textContent = (latest.voltage_pos || 0).toFixed(2);
+        document.getElementById('val-voltage_neg').textContent = (latest.voltage_neg || 0).toFixed(2);
+        document.getElementById('val-current').textContent = (latest.current || 0).toFixed(2);
+        document.getElementById('val-leakage').textContent = (latest.leakage || 0).toFixed(3);
+    }
+
+    // ========== 初始化图表配置 ==========
+    function initChartOption() {
+        const option = {
+            tooltip: {
+                trigger: 'axis',
+                axisPointer: { type: 'cross' },
+                formatter: function(params) {
+                    if (!params || params.length === 0) return '';
+                    const p = params[0];
+                    const config = CHANNEL_CONFIG[selectedChannel];
+                    const time = new Date(p.value[0]);
+                    const timeStr = time.toLocaleString('zh-CN', { hour12: false });
+                    return `<strong>${timeStr}</strong><br/>` +
+                           `${config.label}: <strong>${p.value[1].toFixed(3)}</strong> ${config.unit}`;
+                }
+            },
+            grid: {
+                left: 60,
+                right: 30,
+                bottom: 80,
+                top: 50,
+                containLabel: false
+            },
+            xAxis: {
+                type: 'time',
+                axisLabel: {
+                    formatter: '{HH}:{mm}:{ss}'
+                },
+                splitLine: { show: false }
+            },
+            yAxis: {
+                type: 'value',
+                name: 'V',
+                nameLocation: 'end',
+                splitLine: {
+                    lineStyle: { type: 'dashed', opacity: 0.3 }
+                }
+            },
+            // 与实时监测一致：X/Y 轴独立缩放 + Grab 拖拽
+            dataZoom: [
+                {
+                    // X 轴缩放（由 setupChartZoom 控制）
+                    type: 'inside',
+                    xAxisIndex: [0],
+                    filterMode: 'none',
+                    zoomOnMouseWheel: false,  // 禁用默认滚轮，由 setupChartZoom 接管
+                    moveOnMouseMove: false,
+                    moveOnMouseWheel: false
+                },
+                {
+                    // Y 轴缩放（由 setupChartZoom 控制）
+                    type: 'inside',
+                    yAxisIndex: [0],
+                    filterMode: 'none',
+                    zoomOnMouseWheel: false,
+                    moveOnMouseMove: false,
+                    moveOnMouseWheel: false
+                },
+                {
+                    // 底部滑块（用于快速定位时间范围）
+                    type: 'slider',
+                    xAxisIndex: 0,
+                    height: 25,
+                    bottom: 10,
+                    borderColor: 'transparent',
+                    backgroundColor: 'rgba(255,255,255,0.1)',
+                    fillerColor: 'rgba(13,110,253,0.2)',
+                    handleStyle: { color: '#0d6efd' }
+                }
+            ],
+            series: [{
+                name: '历史曲线',
+                type: 'line',
+                smooth: false,
+                symbol: 'none',
+                lineStyle: { width: 1.5 },
+                areaStyle: {
+                    opacity: 0.1
+                },
+                data: []
+            }]
+        };
+        chart.setOption(option);
+        
+        // 设置统一的缩放交互（与实时监测一致）
+        if (typeof setupChartZoom === 'function') {
+            setupChartZoom(chart, elChartContainer, {
+                xDataZoomIndex: 0,
+                yDataZoomIndex: 1
+            });
+        }
+    }
+
+    // ========== 更新图表 ==========
+    function updateChart() {
+        if (!chart) return;
+
+        const config = CHANNEL_CONFIG[selectedChannel];
+        
+        // 准备数据
+        const seriesData = historyData.map(item => {
+            const ts = new Date(item.timestamp).getTime();
+            const val = item[selectedChannel] || 0;
+            return [ts, val];
+        });
+
+        // 设置全量 X 范围（供缩放工具使用，确保缩小能回到全范围）
+        if (seriesData.length > 0) {
+            chart.__edgewindFullExtentX = {
+                min: seriesData[0][0],
+                max: seriesData[seriesData.length - 1][0]
+            };
+        }
+
+        chart.setOption({
+            yAxis: {
+                name: config.unit
+            },
+            series: [{
+                name: config.label,
+                data: seriesData,
+                itemStyle: { color: config.color },
+                lineStyle: { color: config.color },
+                areaStyle: { color: config.color, opacity: 0.1 }
+            }]
+        });
+    }
+
+    // ========== 绑定事件 ==========
+    function bindEvents() {
+        // 节点列表点击（事件委托，避免把 nodeId 拼进 onclick 导致引号问题）
+        elNodeList.addEventListener('click', (e) => {
+            const a = e.target.closest && e.target.closest('.node-item');
+            if (!a) return;
+            const nodeId = a.dataset && a.dataset.nodeId ? a.dataset.nodeId : '';
+            if (nodeId) {
+                window.selectNode(nodeId);
+            }
+        });
+
+        // 节点搜索（实时过滤）
+        let searchTimeout = null;
+        elNodeSearch.addEventListener('input', () => {
+            clearTimeout(searchTimeout);
+            searchTimeout = setTimeout(() => {
+                filterNodes(elNodeSearch.value.trim());
+            }, 200);
+        });
+
+        // 加载数据按钮
+        elBtnLoad.addEventListener('click', loadHistoryData);
+
+        // 清空时段（同时保存设置）
+        elBtnClearRange.addEventListener('click', () => {
+            elHistoryStart.value = '';
+            elHistoryEnd.value = '';
+            saveSettings();
+        });
+
+        // 重置缩放（与实时监测一致）
+        elBtnResetZoom.addEventListener('click', () => {
+            if (chart && typeof resetChartZoom === 'function') {
+                resetChartZoom(chart);
+            }
+        });
+
+        // 快捷时段按钮
+        document.querySelectorAll('[data-range-min]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const minutes = parseInt(btn.dataset.rangeMin);
+                const now = new Date();
+                const start = new Date(now.getTime() - minutes * 60 * 1000);
+                
+                elHistoryStart.value = formatDateTime(start);
+                elHistoryEnd.value = formatDateTime(now);
+                saveSettings();
+                
+                // 自动加载
+                if (selectedNodeId) loadHistoryData();
+            });
+        });
+
+        // 回车键加载
+        [elHistoryLimit, elHistoryStart, elHistoryEnd].forEach(el => {
+            el.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') loadHistoryData();
+            });
+        });
+
+        // 输入框失焦时保存设置
+        [elHistoryLimit, elHistoryStart, elHistoryEnd].forEach(el => {
+            el.addEventListener('blur', saveSettings);
+        });
+
+        // 删除节点历史数据
+        if (elBtnDeleteNodeHistory) {
+            elBtnDeleteNodeHistory.addEventListener('click', deleteNodeHistory);
+        }
+    }
+
+    // ========== 删除节点历史数据 ==========
+    async function deleteNodeHistory() {
+        if (!selectedNodeId) {
+            window.showToast && showToast('请先选择一个节点', 'warning');
+            return;
+        }
+
+        // 确认对话框
+        const confirmMsg = `确定要删除节点「${selectedNodeId}」的所有历史数据吗？\n\n此操作不可恢复！`;
+        if (!confirm(confirmMsg)) {
+            return;
+        }
+
+        try {
+            elBtnDeleteNodeHistory.disabled = true;
+            elBtnDeleteNodeHistory.innerHTML = '<span class="spinner-border spinner-border-sm"></span> 删除中...';
+
+            const response = await fetch('/api/delete_node_history', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ device_id: selectedNodeId })
+            });
+            const result = await response.json();
+
+            if (result.success) {
+                window.showToast && showToast(result.message || `已删除 ${result.deleted_count} 条记录`, 'success');
+                
+                // 清空当前数据和图表
+                historyData = [];
+                updateCardValues();
+                updateChart();
+                elStatLoaded.textContent = '0';
+                elStatTotal.textContent = '0';
+                elStatLatest.textContent = '--';
+                
+                // 重新加载节点列表（该节点可能已无数据）
+                loadNodeList();
+                
+                // 清除选中状态
+                selectedNodeId = '';
+                saveSettings();
+                elBtnDeleteNodeHistory.disabled = true;
+            } else {
+                window.showToast && showToast(result.error || '删除失败', 'danger');
+            }
+        } catch (error) {
+            console.error('删除历史数据失败:', error);
+            window.showToast && showToast('删除失败: ' + error.message, 'danger');
+        } finally {
+            elBtnDeleteNodeHistory.innerHTML = '<i class="bi bi-trash me-1"></i>删除该节点历史';
+            // 如果还有选中节点，重新启用按钮
+            if (selectedNodeId) {
+                elBtnDeleteNodeHistory.disabled = false;
+            }
+        }
+    }
+
+    // ========== 工具函数 ==========
+    function formatDateTime(date) {
+        const y = date.getFullYear();
+        const m = String(date.getMonth() + 1).padStart(2, '0');
+        const d = String(date.getDate()).padStart(2, '0');
+        const h = String(date.getHours()).padStart(2, '0');
+        const min = String(date.getMinutes()).padStart(2, '0');
+        return `${y}-${m}-${d} ${h}:${min}`;
+    }
+
+    // ========== 启动 ==========
+    init();
+})();
+</script>
+{% endblock %}

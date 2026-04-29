@@ -1,0 +1,22 @@
+idf_component_register(SRCS
+                       "main.c"
+                       "app_config.c"
+                       "board_support.c"
+                       "cloud_client.c"
+                       "comm_protocol.c"
+                       "report_buffer.c"
+                       "report_codec.c"
+                       "spi_link.c"
+                       "wifi_manager.c"
+                       PRIV_REQUIRES
+                       esp_driver_gpio
+                       esp_driver_spi
+                       esp_event
+                       esp_http_client
+                       esp_netif
+                       esp_timer
+                       esp_wifi
+                       json
+                       nvs_flash
+                       esp_hw_support
+                       INCLUDE_DIRS "")

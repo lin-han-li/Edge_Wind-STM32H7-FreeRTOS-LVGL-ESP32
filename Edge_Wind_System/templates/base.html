@@ -1,0 +1,1710 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- CSRF Token（用于前端 fetch POST 的安全校验） -->
+    <meta name="csrf-token" content="{{ csrf_token() }}">
+    <title>{% block title %}风电场DC系统故障监测与智能诊断平台{% endblock %}</title>
+    
+    <!-- Bootstrap 5 CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Bootstrap Icons -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.2/font/bootstrap-icons.css">
+    <!-- ECharts 5.0 -->
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+    <!-- Socket.IO Client -->
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    
+    <style>
+        :root {
+            --sidebar-dark: #1e293b;
+            --sidebar-dark-hover: #334155;
+            --primary-blue: #2563eb;
+            --bg-light: #f8fafc;
+            --success-green: #10b981;
+            --warning-orange: #f59e0b;
+            --danger-red: #ef4444;
+            --text-gray: #64748b;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Microsoft YaHei', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: #ffffff;
+            background-color: #ffffff;
+            overflow-x: hidden;
+            color: #1f2937;
+        }
+
+        /* ========== 左侧导航栏 ========== */
+        .sidebar {
+            position: fixed;
+            left: 0;
+            top: 0;
+            width: 260px;
+            height: 100vh;
+            background: var(--sidebar-dark);
+            color: white;
+            z-index: 1000;
+            display: flex;
+            flex-direction: column;
+            box-shadow: 2px 0 10px rgba(0,0,0,0.1);
+        }
+
+        .sidebar-header {
+            padding: 24px 20px;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .sidebar-logo {
+            width: 40px;
+            height: 40px;
+            background: var(--primary-blue);
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 20px;
+            font-weight: bold;
+            color: white;
+        }
+
+        .sidebar-title {
+            font-size: 18px;
+            font-weight: 600;
+        }
+
+        .sidebar-subtitle {
+            font-size: 12px;
+            opacity: 0.8;
+            margin-top: 2px;
+        }
+
+        .sidebar-nav {
+            flex: 1;
+            padding: 20px 0;
+            overflow-y: auto;
+        }
+
+        .nav-item {
+            padding: 12px 20px;
+            cursor: pointer;
+            transition: all 0.3s;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            color: rgba(255,255,255,0.7);
+            border-left: 3px solid transparent;
+            text-decoration: none;
+        }
+
+        .nav-item:hover {
+            background: var(--sidebar-dark-hover);
+            color: white;
+            border-left-color: var(--primary-blue);
+        }
+
+        .nav-item.active {
+            background: rgba(37, 99, 235, 0.2);
+            color: white;
+            border-left-color: var(--primary-blue);
+        }
+
+        .nav-item i {
+            width: 20px;
+            font-size: 18px;
+        }
+
+        .sidebar-footer {
+            padding: 20px;
+            border-top: 1px solid rgba(255,255,255,0.1);
+            font-size: 12px;
+        }
+
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 16px;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--success-green);
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .project-info {
+            opacity: 0.7;
+            line-height: 1.6;
+        }
+
+        /* ========== 主内容区 ========== */
+        .main-content {
+            margin-left: 260px;
+            min-height: 100vh;
+            background: transparent;
+        }
+
+        /* 顶部栏 */
+        .topbar {
+            background: #ffffff;
+            border-bottom: 1px solid #e5e7eb;
+            padding: 16px 32px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .topbar-left {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .page-title {
+            font-size: 20px;
+            font-weight: 700;
+            color: #1f2937 !important;
+            letter-spacing: 1px;
+        }
+
+        .system-status-badge {
+            background: var(--success-green);
+            color: white;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .topbar-center {
+            flex: 1;
+            max-width: 400px;
+            margin: 0 32px;
+        }
+
+        .search-box {
+            position: relative;
+            width: 100%;
+        }
+
+        .search-box input {
+            width: 100%;
+            padding: 10px 16px 10px 40px;
+            border: 1px solid #d1d5db;
+            border-radius: 8px;
+            font-size: 14px;
+            background: #ffffff;
+            color: #1f2937;
+            transition: border-color 0.2s ease, box-shadow 0.2s ease;
+        }
+        
+        .search-box input::placeholder {
+            color: #9ca3af;
+        }
+
+        .search-box input:focus {
+            outline: none;
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+            background: #ffffff;
+        }
+
+        .search-box i {
+            position: absolute;
+            left: 14px;
+            top: 50%;
+            transform: translateY(-50%);
+            color: #6b7280;
+            pointer-events: none;
+            z-index: 1;
+        }
+
+        /* 搜索建议下拉框 */
+        .search-dropdown {
+            position: absolute;
+            top: calc(100% + 4px);
+            left: 0;
+            right: 0;
+            background: white;
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+            display: none;
+            z-index: 9999;
+            max-height: 400px;
+            overflow-y: auto;
+            margin-top: 4px;
+        }
+
+        .search-dropdown.show {
+            display: block;
+        }
+
+        .search-item {
+            padding: 12px 16px;
+            cursor: pointer;
+            border-bottom: 1px solid #f5f5f5;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            transition: background-color 0.15s ease;
+        }
+
+        .search-item:last-child {
+            border-bottom: none;
+        }
+
+        .search-item:hover,
+        .search-item.highlighted {
+            background: #f8f9fa;
+        }
+
+        .search-item-name {
+            font-size: 14px;
+            color: #1e293b;
+            font-weight: 500;
+            flex: 1;
+        }
+
+        .search-item-category {
+            font-size: 11px;
+            color: #94a3b8;
+            background: #f1f5f9;
+            padding: 2px 8px;
+            border-radius: 4px;
+            margin-left: 12px;
+            white-space: nowrap;
+        }
+
+        .search-item-icon {
+            font-size: 12px;
+            color: var(--text-gray);
+            margin-right: 8px;
+        }
+
+        .search-section-header {
+            padding: 8px 16px;
+            font-size: 11px;
+            font-weight: 600;
+            color: #64748b;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            background: #f8fafc;
+            border-bottom: 1px solid #e5e7eb;
+            position: sticky;
+            top: 0;
+            z-index: 1;
+        }
+
+        .search-empty {
+            padding: 24px;
+            text-align: center;
+            color: #94a3b8;
+            font-size: 14px;
+        }
+
+        .topbar-right {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+        }
+
+        .notification-icon {
+            position: relative;
+            cursor: pointer;
+            font-size: 20px;
+            color: var(--text-gray);
+        }
+
+        .notification-badge {
+            position: absolute;
+            top: -4px;
+            right: -4px;
+            width: 8px;
+            height: 8px;
+            background: var(--danger-red);
+            border-radius: 50%;
+            border: 2px solid white;
+        }
+
+        /* ========== 消息中心样式 ========== */
+        .nav-message-center {
+            position: relative;
+            cursor: pointer;
+            font-size: 20px;
+            color: var(--text-gray);
+            margin-right: 20px;
+            transition: color 0.2s ease;
+        }
+
+        .nav-message-center:hover {
+            color: var(--primary-blue);
+        }
+
+        .msg-badge {
+            position: absolute;
+            top: -5px;
+            right: -5px;
+            background: #ff4d4f;
+            color: white;
+            border-radius: 10px;
+            padding: 2px 6px;
+            font-size: 10px;
+            font-weight: 600;
+            min-width: 18px;
+            text-align: center;
+            display: none;
+            line-height: 14px;
+        }
+
+        .msg-badge.show {
+            display: block;
+        }
+
+        .msg-dropdown {
+            position: absolute;
+            top: calc(100% + 10px);
+            right: 0;
+            width: 320px;
+            background: white;
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+            display: none;
+            max-height: 400px;
+            overflow: hidden;
+            z-index: 9999;
+        }
+
+        .msg-dropdown.show {
+            display: block;
+        }
+
+        .msg-item {
+            padding: 12px 16px;
+            border-bottom: 1px solid #f5f5f5;
+            font-size: 13px;
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
+            transition: background-color 0.15s ease;
+        }
+
+        .msg-item:last-child {
+            border-bottom: none;
+        }
+
+        .msg-item:hover {
+            background: #f8fafc;
+        }
+
+        .msg-item-icon {
+            font-size: 16px;
+            flex-shrink: 0;
+            margin-top: 2px;
+        }
+
+        .msg-item-content {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .msg-item-text {
+            color: #1e293b;
+            line-height: 1.5;
+            word-break: break-word;
+        }
+
+        .msg-time {
+            color: #94a3b8;
+            font-size: 11px;
+            margin-top: 4px;
+        }
+
+        .msg-item.online .msg-item-icon {
+            color: #10b981;
+        }
+
+        .msg-item.offline .msg-item-icon {
+            color: #f59e0b;
+        }
+
+        .msg-item.fault .msg-item-icon {
+            color: #ef4444;
+        }
+
+        .msg-item.info .msg-item-icon {
+            color: #3b82f6;
+        }
+
+        .user-profile {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            cursor: pointer;
+        }
+
+        .user-avatar {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            background: var(--primary-blue);
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 600;
+        }
+
+        .user-info {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .user-name {
+            font-size: 14px;
+            font-weight: 500;
+            color: #1f2937;
+        }
+
+        .user-role {
+            font-size: 12px;
+            color: var(--text-gray);
+        }
+
+        /* 内容区域 */
+        .content-area {
+            padding: 32px;
+        }
+
+        /* 卡片样式 */
+        .card {
+            border: none;
+            border-radius: 12px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            margin-bottom: 24px;
+        }
+
+        .card-header {
+            background: #f8fafc;
+            border-bottom: 1px solid #e2e8f0;
+            padding: 16px 24px;
+            font-weight: 600;
+            color: #1e293b;
+        }
+
+        .card-body {
+            padding: 24px;
+        }
+
+        /* 响应式 */
+        @media (max-width: 768px) {
+            .sidebar {
+                transform: translateX(-100%);
+                transition: transform 0.3s;
+            }
+
+            .main-content {
+                margin-left: 0;
+            }
+        }
+
+        /* ========== Toast 通知样式 ========== */
+        .toast-container {
+            position: fixed;
+            /* 顶部居中：比右下角更醒目，且不遮挡左侧导航 */
+            top: 88px; /* 避开 topbar（sticky） */
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 9999;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            /* 放大两倍视觉尺寸：更宽、更醒目 */
+            width: min(900px, calc(100% - 24px));
+            /* 避免遮挡页面交互，但允许 Toast 自身可点击 */
+            pointer-events: none;
+        }
+        
+        .custom-toast {
+            background: #fff;
+            border-radius: 12px;
+            padding: 22px 28px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+            border-left: 4px solid #28a745;
+            animation: slideIn 0.3s ease;
+            width: 100%;
+            min-height: 76px;
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            pointer-events: auto;
+        }
+        
+        .custom-toast.success {
+            border-left-color: #28a745;
+        }
+        
+        .custom-toast.warning {
+            border-left-color: #ffc107;
+        }
+        
+        .custom-toast.error {
+            border-left-color: #dc3545;
+        }
+        
+        .custom-toast.info {
+            border-left-color: #0dcaf0;
+        }
+        
+        .custom-toast-icon {
+            font-size: 28px;
+            flex-shrink: 0;
+        }
+        
+        .custom-toast-content {
+            flex: 1;
+        }
+        
+        .custom-toast-title {
+            font-weight: 600;
+            font-size: 14px;
+            margin-bottom: 4px;
+            color: #1e293b;
+        }
+        
+        .custom-toast-message {
+            font-size: 16px;
+            color: #64748b;
+            line-height: 1.45;
+        }
+        
+        .custom-toast-close {
+            cursor: pointer;
+            color: #94a3b8;
+            font-size: 24px;
+            flex-shrink: 0;
+            padding: 6px;
+            line-height: 1;
+            pointer-events: auto;
+        }
+        
+        .custom-toast-close:hover {
+            color: #64748b;
+        }
+        
+        @keyframes slideIn {
+            from {
+                transform: translateY(-12px);
+                opacity: 0;
+            }
+            to {
+                transform: translateY(0);
+                opacity: 1;
+            }
+        }
+        
+        @keyframes slideOut {
+            from {
+                transform: translateY(0);
+                opacity: 1;
+            }
+            to {
+                transform: translateY(-12px);
+                opacity: 0;
+            }
+        }
+        
+        .custom-toast.fade-out {
+            animation: slideOut 0.3s ease forwards;
+        }
+    </style>
+    
+    {% block extra_css %}{% endblock %}
+    
+    {% block extra_head %}{% endblock %}
+</head>
+<body>
+    <!-- 左侧导航栏 -->
+    <div class="sidebar">
+        <div class="sidebar-header">
+            <div class="sidebar-logo">W</div>
+            <div>
+                <div class="sidebar-title">EdgeWind</div>
+                <div class="sidebar-subtitle">智能边缘监测系统</div>
+            </div>
+        </div>
+        <div class="sidebar-nav">
+            <a href="/overview" class="nav-item" data-page="overview">
+                <i class="bi bi-grid"></i>
+                <span>系统概览</span>
+            </a>
+            <a href="/monitor" class="nav-item" data-page="monitor">
+                <i class="bi bi-graph-up"></i>
+                <span>实时监测</span>
+            </a>
+            <a href="/history" class="nav-item" data-page="history">
+                <i class="bi bi-clock-history"></i>
+                <span>历史曲线</span>
+            </a>
+            <a href="/faults" class="nav-item" data-page="faults">
+                <i class="bi bi-exclamation-triangle"></i>
+                <span>故障管理</span>
+            </a>
+            <a href="/snapshots" class="nav-item" data-page="snapshots">
+                <i class="bi bi-camera"></i>
+                <span>故障快照</span>
+            </a>
+            <a href="/settings" class="nav-item" data-page="settings">
+                <i class="bi bi-gear"></i>
+                <span>系统设置</span>
+            </a>
+        </div>
+        <div class="sidebar-footer">
+            <div class="status-indicator">
+                <div class="status-dot"></div>
+                <span>边缘节点在线 (<span id="sidebar-online-count">0</span>/<span id="sidebar-total-count">0</span>)</span>
+            </div>
+            <div class="project-info">
+                <div><i class="bi bi-mortarboard" style="margin-right: 6px;"></i>大学生创新创业项目</div>
+                <div style="margin-top: 8px;">基于边缘计算的风力电场直流系统监测</div>
+                <div style="margin-top: 4px; opacity: 0.6;">No.: 202510595037</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 主内容区 -->
+    <div class="main-content">
+        <!-- 顶部栏 -->
+        <div class="topbar">
+            <div class="topbar-left">
+                <h1 class="page-title">{% block page_title %}系统概览{% endblock %}</h1>
+                <div class="system-status-badge">
+                    <i class="bi bi-wifi"></i>
+                    <span>系统在线</span>
+                </div>
+            </div>
+            <div class="topbar-center">
+                <div class="search-box">
+                    <i class="bi bi-search"></i>
+                    <input type="text" id="globalSearchInput" placeholder="全局搜索..." autocomplete="off" />
+                    <div id="searchSuggestions" class="search-dropdown"></div>
+                </div>
+            </div>
+            <div class="topbar-right">
+                <!-- 消息中心（通知铃铛） -->
+                <div class="nav-message-center" id="messageBell">
+                    <i class="bi bi-bell"></i>
+                    <span class="msg-badge" id="msgCount">0</span>
+                    <div class="msg-dropdown" id="msgDropdown">
+                        <div class="p-2 border-bottom d-flex justify-content-between align-items-center" style="background: #f8fafc;">
+                            <strong style="font-size: 14px;">系统消息</strong>
+                            <a href="#" id="clearMsgs" style="font-size: 12px; color: #64748b; text-decoration: none;">清空全部</a>
+                        </div>
+                        <div id="msgListContent" style="max-height: 350px; overflow-y: auto;">
+                            <div class="text-center text-muted py-4" id="msgEmptyState">
+                                <i class="bi bi-inbox"></i><br>
+                                <small>暂无新消息</small>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="user-profile dropdown">
+                    <a class="dropdown-toggle" href="#" role="button" id="userDropdown" data-bs-toggle="dropdown" aria-expanded="false" style="text-decoration: none; color: inherit; display: flex; align-items: center; gap: 12px;">
+                        <div class="user-avatar">{{ current_user.username[0].upper() if current_user.is_authenticated else 'U' }}</div>
+                        <div class="user-info">
+                            <div class="user-name">{{ current_user.username if current_user.is_authenticated else 'Guest' }}</div>
+                            <div class="user-role">运维主管</div>
+                        </div>
+                        <i class="bi bi-chevron-down" style="font-size: 12px; color: var(--text-gray);"></i>
+                    </a>
+                    <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="userDropdown" style="min-width: 200px;">
+                        <li><h6 class="dropdown-header">{{ current_user.username if current_user.is_authenticated else 'Guest' }}</h6></li>
+                        <li><hr class="dropdown-divider"></li>
+                        <li><a class="dropdown-item" href="{{ url_for('auth.logout') }}"><i class="bi bi-box-arrow-right me-2"></i>登出</a></li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+
+        <!-- 内容区域 -->
+        <div class="content-area">
+            {% block content %}{% endblock %}
+        </div>
+    </div>
+    
+    <!-- Toast 通知容器 -->
+    <div id="toast-container" class="toast-container"></div>
+
+    <!-- Bootstrap 5 JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    
+    <!-- 基础JavaScript -->
+    <script>
+        // 更新侧边栏节点状态
+        async function updateSidebarStatus() {
+            try {
+                const response = await fetch('/api/dashboard/stats');
+                const data = await response.json();
+                document.getElementById('sidebar-online-count').textContent = data.online_nodes || 0;
+                document.getElementById('sidebar-total-count').textContent = data.total_nodes || 0;
+            } catch (error) {
+                console.error('Failed to update sidebar status:', error);
+            }
+        }
+
+        // 设置当前页面导航高亮
+        function setActiveNav() {
+            const currentPath = window.location.pathname;
+            document.querySelectorAll('.nav-item').forEach(item => {
+                item.classList.remove('active');
+                if (item.getAttribute('href') === currentPath) {
+                    item.classList.add('active');
+                }
+            });
+        }
+
+        // ========== 全局搜索自动补全功能 ==========
+        let searchSuggestions = [];  // 存储所有建议项
+        let activeNodeSuggestions = [];  // 存储活动节点建议
+        let currentHighlightIndex = -1;  // 当前高亮索引
+
+        // 静态导航目标
+        const staticNavTargets = [
+            // 页面级别
+            { name: '系统概览', url: '/overview', category: '页面', icon: 'bi-grid' },
+            { name: '实时监测', url: '/monitor', category: '页面', icon: 'bi-graph-up' },
+            { name: '故障管理', url: '/faults', category: '页面', icon: 'bi-exclamation-triangle' },
+            { name: '系统设置', url: '/settings', category: '页面', icon: 'bi-gear' },
+            
+            // 监测组件 - 内部页面导航
+            { name: '时域分析图表', url: '/monitor?tab=time', category: '监测组件', icon: 'bi-graph-up', keywords: ['波形', '实时数据', '时域', 'time domain', 'waveform'] },
+            { name: '频域分析 (FFT)', url: '/monitor?tab=fft', category: '监测组件', icon: 'bi-bar-chart', keywords: ['频谱', '频率', '频域', 'fft', 'spectrum'] },
+            { name: '节点列表', url: '/monitor?focus=sidebar', category: '监测组件', icon: 'bi-list-ul', keywords: ['节点', '设备列表', 'sidebar'] },
+            
+            // 监测参数 - 通道选择
+            { name: '直流母线(+)', url: '/monitor?channel=0', category: '监测参数', icon: 'bi-lightning-charge', keywords: ['DC+', '直流正', '母线正'] },
+            { name: '直流母线(-)', url: '/monitor?channel=1', category: '监测参数', icon: 'bi-lightning-charge-fill', keywords: ['DC-', '直流负', '母线负'] },
+            { name: '负载电流', url: '/monitor?channel=2', category: '监测参数', icon: 'bi-arrow-right-circle', keywords: ['电流', 'load current', 'current'] },
+            { name: '漏电流', url: '/monitor?channel=3', category: '监测参数', icon: 'bi-shield-exclamation', keywords: ['漏电', 'leakage', '绝缘'] },
+            
+            // 故障代码查询
+            { name: 'E01 交流窜入', url: '/faults?search=E01', category: '故障查询', icon: 'bi-bug', keywords: ['交流窜入', 'AC intrusion'] },
+            { name: 'E02 绝缘故障', url: '/faults?search=E02', category: '故障查询', icon: 'bi-bug', keywords: ['绝缘', 'insulation'] },
+            { name: 'E03 电容老化', url: '/faults?search=E03', category: '故障查询', icon: 'bi-bug', keywords: ['电容', 'capacitor'] },
+            { name: 'E04 IGBT开路', url: '/faults?search=E04', category: '故障查询', icon: 'bi-bug', keywords: ['IGBT', '开路', 'open circuit'] },
+            { name: 'E05 接地故障', url: '/faults?search=E05', category: '故障查询', icon: 'bi-bug', keywords: ['接地', 'ground fault'] }
+        ];
+
+        // 从API获取活动节点并更新建议
+        async function updateNodeSuggestions() {
+            try {
+                const response = await fetch('/api/get_active_nodes');
+
+                // 兼容：登录失效时后端可能返回 HTML（302 跳转/登录页），此时 response.json() 会报错
+                const ct = (response.headers.get('Content-Type') || '').toLowerCase();
+                if (!response.ok || !ct.includes('application/json')) {
+                    activeNodeSuggestions = [];
+                    return;
+                }
+
+                const result = await response.json();
+                
+                // 处理API响应格式：{success: true, nodes: [...]}
+                const nodes = result.success ? (result.nodes || []) : [];
+                
+                activeNodeSuggestions = nodes.map(node => {
+                    const nodeId = node.node_id || node.device_id || node.id;
+                    if (!nodeId) return null;
+                    
+                    const status = node.status || 'offline';
+                    const statusText = status === 'online' ? '在线' : status === 'fault' || status === 'faulty' ? '故障' : '离线';
+                    const faultCode = node.fault_code && node.fault_code !== 'E00' ? ` [${node.fault_code}]` : '';
+                    
+                    return {
+                        name: `${nodeId}${faultCode} (${statusText})`,
+                        url: `/monitor?select=${encodeURIComponent(nodeId)}`,
+                        category: '节点',
+                        icon: 'bi-cpu',
+                        nodeId: nodeId,
+                        status: status,
+                        keywords: [nodeId.toLowerCase(), '节点', 'node']
+                    };
+                }).filter(item => item !== null); // 过滤掉null值
+            } catch (error) {
+                console.error('Failed to fetch active nodes for suggestions:', error);
+                activeNodeSuggestions = [];
+            }
+        }
+
+        // 过滤建议项（支持关键词匹配）
+        function filterSuggestions(query) {
+            if (!query || query.trim() === '') {
+                return [];
+            }
+
+            const queryLower = query.toLowerCase().trim();
+            const allSuggestions = [...staticNavTargets, ...activeNodeSuggestions];
+            
+            return allSuggestions.filter(item => {
+                const nameLower = item.name.toLowerCase();
+                
+                // 1. 匹配名称
+                if (nameLower.includes(queryLower)) return true;
+                
+                // 2. 匹配关键词（keywords字段）
+                if (item.keywords && Array.isArray(item.keywords)) {
+                    const keywordMatch = item.keywords.some(keyword => 
+                        keyword.toLowerCase().includes(queryLower) || 
+                        queryLower.includes(keyword.toLowerCase())
+                    );
+                    if (keywordMatch) return true;
+                }
+                
+                // 3. 匹配节点ID（如果是节点）
+                if (item.nodeId && item.nodeId.toLowerCase().includes(queryLower)) return true;
+                
+                // 4. 匹配URL路径
+                if (item.url.toLowerCase().includes(queryLower)) return true;
+                
+                return false;
+            });
+        }
+
+        // 渲染建议下拉框
+        function renderSuggestions(filtered) {
+            const dropdown = document.getElementById('searchSuggestions');
+            if (!dropdown) return;
+
+            // 安全：防止节点ID/位置等字符串中包含HTML导致XSS
+            const escapeHtml = (s) => {
+                const str = String(s ?? '');
+                return str
+                    .replace(/&/g, '&amp;')
+                    .replace(/</g, '&lt;')
+                    .replace(/>/g, '&gt;')
+                    .replace(/"/g, '&quot;')
+                    .replace(/'/g, '&#39;');
+            };
+
+            if (filtered.length === 0) {
+                dropdown.innerHTML = '<div class="search-empty">未找到匹配项</div>';
+                dropdown.classList.add('show');
+                return;
+            }
+
+            // 按类别分组
+            const grouped = {
+                '页面': [],
+                '监测组件': [],
+                '监测参数': [],
+                '节点': [],
+                '故障查询': []
+            };
+
+            filtered.forEach(item => {
+                if (grouped[item.category]) {
+                    grouped[item.category].push(item);
+                }
+            });
+
+            let html = '';
+            
+            let itemIndex = 0;  // 全局索引计数器
+
+            // 渲染页面
+            if (grouped['页面'].length > 0) {
+                html += '<div class="search-section-header">页面</div>';
+                grouped['页面'].forEach((item) => {
+                    html += `
+                        <div class="search-item" data-index="${itemIndex++}" data-url="${escapeHtml(item.url)}">
+                            <div style="display: flex; align-items: center; flex: 1;">
+                                <i class="bi ${item.icon} search-item-icon"></i>
+                                <span class="search-item-name">${escapeHtml(item.name)}</span>
+                            </div>
+                            <span class="search-item-category">${escapeHtml(item.category)}</span>
+                        </div>
+                    `;
+                });
+            }
+
+            // 渲染节点
+            if (grouped['节点'].length > 0) {
+                html += '<div class="search-section-header">节点</div>';
+                grouped['节点'].forEach((item) => {
+                    const statusClass = item.status === 'online' ? 'text-success' : 
+                                       (item.status === 'fault' || item.status === 'faulty') ? 'text-danger' : 'text-secondary';
+                    html += `
+                        <div class="search-item" data-index="${itemIndex++}" data-url="${escapeHtml(item.url)}">
+                            <div style="display: flex; align-items: center; flex: 1;">
+                                <i class="bi ${item.icon} search-item-icon ${statusClass}"></i>
+                                <span class="search-item-name">${escapeHtml(item.name)}</span>
+                            </div>
+                            <span class="search-item-category">${escapeHtml(item.category)}</span>
+                        </div>
+                    `;
+                });
+            }
+
+            // 渲染监测组件
+            if (grouped['监测组件'].length > 0) {
+                html += '<div class="search-section-header">监测组件</div>';
+                grouped['监测组件'].forEach((item) => {
+                    html += `
+                        <div class="search-item" data-index="${itemIndex++}" data-url="${escapeHtml(item.url)}">
+                            <div style="display: flex; align-items: center; flex: 1;">
+                                <i class="bi ${item.icon} search-item-icon"></i>
+                                <span class="search-item-name">${escapeHtml(item.name)}</span>
+                            </div>
+                            <span class="search-item-category">${escapeHtml(item.category)}</span>
+                        </div>
+                    `;
+                });
+            }
+
+            // 渲染监测参数
+            if (grouped['监测参数'].length > 0) {
+                html += '<div class="search-section-header">监测参数</div>';
+                grouped['监测参数'].forEach((item) => {
+                    html += `
+                        <div class="search-item" data-index="${itemIndex++}" data-url="${escapeHtml(item.url)}">
+                            <div style="display: flex; align-items: center; flex: 1;">
+                                <i class="bi ${item.icon} search-item-icon"></i>
+                                <span class="search-item-name">${escapeHtml(item.name)}</span>
+                            </div>
+                            <span class="search-item-category">${escapeHtml(item.category)}</span>
+                        </div>
+                    `;
+                });
+            }
+
+            // 渲染故障查询
+            if (grouped['故障查询'].length > 0) {
+                html += '<div class="search-section-header">故障查询</div>';
+                grouped['故障查询'].forEach((item) => {
+                    html += `
+                        <div class="search-item" data-index="${itemIndex++}" data-url="${escapeHtml(item.url)}">
+                            <div style="display: flex; align-items: center; flex: 1;">
+                                <i class="bi ${item.icon} search-item-icon"></i>
+                                <span class="search-item-name">${escapeHtml(item.name)}</span>
+                            </div>
+                            <span class="search-item-category">${escapeHtml(item.category)}</span>
+                        </div>
+                    `;
+                });
+            }
+
+            dropdown.innerHTML = html;
+            dropdown.classList.add('show');
+            currentHighlightIndex = -1;
+
+            // 绑定点击事件
+            dropdown.querySelectorAll('.search-item').forEach((item, index) => {
+                item.addEventListener('click', function() {
+                    const url = this.getAttribute('data-url');
+                    if (url) {
+                        window.location.href = url;
+                    }
+                });
+            });
+        }
+
+        // 处理键盘导航
+        function handleKeyboardNavigation(e, filtered) {
+            const dropdown = document.getElementById('searchSuggestions');
+            const items = dropdown ? dropdown.querySelectorAll('.search-item') : [];
+            
+            if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                currentHighlightIndex = Math.min(currentHighlightIndex + 1, items.length - 1);
+                updateHighlight(items);
+            } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                currentHighlightIndex = Math.max(currentHighlightIndex - 1, -1);
+                updateHighlight(items);
+            } else if (e.key === 'Enter') {
+                e.preventDefault();
+                if (currentHighlightIndex >= 0 && items[currentHighlightIndex]) {
+                    const url = items[currentHighlightIndex].getAttribute('data-url');
+                    if (url) {
+                        window.location.href = url;
+                    }
+                } else {
+                    // 如果没有高亮项，执行原来的搜索逻辑
+                    executeSearch(searchInput.value.trim());
+                }
+            } else if (e.key === 'Escape') {
+                hideSuggestions();
+            }
+        }
+
+        // 更新高亮
+        function updateHighlight(items) {
+            items.forEach((item, index) => {
+                if (index === currentHighlightIndex) {
+                    item.classList.add('highlighted');
+                    item.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+                } else {
+                    item.classList.remove('highlighted');
+                }
+            });
+        }
+
+        // 隐藏建议
+        function hideSuggestions() {
+            const dropdown = document.getElementById('searchSuggestions');
+            if (dropdown) {
+                dropdown.classList.remove('show');
+                currentHighlightIndex = -1;
+            }
+        }
+
+        // 执行搜索（原来的逻辑）
+        function executeSearch(query) {
+            if (!query) return;
+
+            const queryLower = query.toLowerCase();
+
+            // Logic 1: 页面导航
+            if (queryLower.includes('概览') || queryLower.includes('overview')) {
+                window.location.href = '/overview';
+                return;
+            }
+            if (queryLower.includes('监测') || queryLower.includes('波形') || queryLower.includes('monitor')) {
+                window.location.href = '/monitor';
+                return;
+            }
+            if (queryLower.includes('故障') || queryLower.includes('日志') || queryLower.includes('fault')) {
+                window.location.href = '/faults';
+                return;
+            }
+            if (queryLower.includes('设置') || queryLower.includes('settings')) {
+                window.location.href = '/settings';
+                return;
+            }
+
+            // Logic 2: 节点识别
+            const nodePattern = /^(stm32[_\s]?node[_\s]?)?(\d{3})$/i;
+            const nodeMatch = query.match(nodePattern);
+            if (nodeMatch) {
+                const nodeNum = nodeMatch[2].padStart(3, '0');
+                const nodeId = `STM32_Node_${nodeNum}`;
+                window.location.href = `/monitor?select=${encodeURIComponent(nodeId)}`;
+                return;
+            }
+            if (query.toUpperCase().includes('STM32_NODE_')) {
+                const nodeId = query.toUpperCase().replace(/[^A-Z0-9_]/g, '');
+                window.location.href = `/monitor?select=${encodeURIComponent(nodeId)}`;
+                return;
+            }
+
+            // Logic 3: 故障代码识别
+            const faultCodePattern = /^e\d{2}$/i;
+            if (faultCodePattern.test(query)) {
+                window.location.href = `/faults?search=${encodeURIComponent(query.toUpperCase())}`;
+                return;
+            }
+
+            // Default: 在故障日志中搜索
+            window.location.href = `/faults?search=${encodeURIComponent(query)}`;
+        }
+
+        // 初始化全局搜索
+        function initGlobalSearch() {
+            const searchInput = document.getElementById('globalSearchInput');
+            if (!searchInput) return;
+
+            // 输入事件：显示建议
+            searchInput.addEventListener('input', function(e) {
+                const query = this.value.trim();
+                
+                if (query.length > 0) {
+                    const filtered = filterSuggestions(query);
+                    renderSuggestions(filtered);
+                } else {
+                    hideSuggestions();
+                }
+            });
+
+            // 键盘事件：导航和确认
+            searchInput.addEventListener('keydown', function(e) {
+                const query = this.value.trim();
+                const filtered = filterSuggestions(query);
+                handleKeyboardNavigation(e, filtered);
+            });
+
+            // 回车键（如果没有建议显示，执行搜索）
+            searchInput.addEventListener('keypress', function(e) {
+                if (e.key === 'Enter') {
+                    const dropdown = document.getElementById('searchSuggestions');
+                    const isVisible = dropdown && dropdown.classList.contains('show');
+                    if (!isVisible) {
+                        executeSearch(this.value.trim());
+                    }
+                }
+            });
+
+            // 点击外部区域隐藏建议
+            document.addEventListener('click', function(e) {
+                const searchBox = document.querySelector('.search-box');
+                if (searchBox && !searchBox.contains(e.target)) {
+                    hideSuggestions();
+                }
+            });
+
+            // 初始加载节点建议
+            updateNodeSuggestions();
+            // 定期更新节点建议（每10秒）
+            setInterval(updateNodeSuggestions, 10000);
+        }
+
+        // ========== 消息中心功能 ==========
+        const MESSAGE_STORAGE_KEY = 'edgewind_message_history';
+        const MAX_MESSAGES = 500; // 最多存储500条消息，但显示时超过99显示"99+"
+
+        // 获取消息历史
+        function getMessageHistory() {
+            try {
+                const stored = localStorage.getItem(MESSAGE_STORAGE_KEY);
+                return stored ? JSON.parse(stored) : [];
+            } catch (e) {
+                console.error('Failed to load message history:', e);
+                return [];
+            }
+        }
+
+        // 保存消息历史
+        function saveMessageHistory(messages) {
+            try {
+                localStorage.setItem(MESSAGE_STORAGE_KEY, JSON.stringify(messages));
+            } catch (e) {
+                console.error('Failed to save message history:', e);
+            }
+        }
+
+        // 格式化相对时间
+        function formatRelativeTime(timestamp) {
+            const now = Date.now();
+            const diff = now - timestamp;
+            const seconds = Math.floor(diff / 1000);
+            const minutes = Math.floor(seconds / 60);
+            const hours = Math.floor(minutes / 60);
+            const days = Math.floor(hours / 24);
+
+            if (seconds < 60) {
+                return '刚刚';
+            } else if (minutes < 60) {
+                return `${minutes}分钟前`;
+            } else if (hours < 24) {
+                return `${hours}小时前`;
+            } else if (days < 7) {
+                return `${days}天前`;
+            } else {
+                const date = new Date(timestamp);
+                // 统一使用北京时间展示（不受本机时区影响）
+                return date.toLocaleString('zh-CN', {
+                    timeZone: 'Asia/Shanghai',
+                    month: '2-digit',
+                    day: '2-digit',
+                    hour: '2-digit',
+                    minute: '2-digit'
+                });
+            }
+        }
+
+        // 添加消息到历史
+        function addMessageToHistory(title, type = 'info') {
+            const messages = getMessageHistory();
+            const newMessage = {
+                id: Date.now(),
+                title: title,
+                type: type,
+                timestamp: Date.now()
+            };
+
+            // 添加到开头，限制最多50条
+            messages.unshift(newMessage);
+            if (messages.length > MAX_MESSAGES) {
+                messages.splice(MAX_MESSAGES);
+            }
+
+            saveMessageHistory(messages);
+            updateMessageUI();
+        }
+
+        // 更新消息UI
+        function updateMessageUI() {
+            const messages = getMessageHistory();
+            const badge = document.getElementById('msgCount');
+            const dropdown = document.getElementById('msgDropdown');
+            const content = document.getElementById('msgListContent');
+            const emptyState = document.getElementById('msgEmptyState');
+
+            // 更新徽章计数
+            if (badge) {
+                const unreadCount = messages.length;
+                if (unreadCount > 0) {
+                    badge.textContent = unreadCount > 99 ? '99+' : unreadCount;
+                    badge.classList.add('show');
+                } else {
+                    badge.classList.remove('show');
+                }
+            }
+
+            // 渲染消息列表
+            if (content) {
+                if (messages.length === 0) {
+                    content.innerHTML = `
+                        <div class="text-center text-muted py-4" id="msgEmptyState">
+                            <i class="bi bi-inbox"></i><br>
+                            <small>暂无新消息</small>
+                        </div>
+                    `;
+                } else {
+                    const typeConfig = {
+                        'success': { icon: 'bi-circle-fill', class: 'online' },
+                        'warning': { icon: 'bi-circle-fill', class: 'offline' },
+                        'error': { icon: 'bi-circle-fill', class: 'fault' },
+                        'fault': { icon: 'bi-circle-fill', class: 'fault' },
+                        'info': { icon: 'bi-circle-fill', class: 'info' }
+                    };
+
+                    const html = messages.map(msg => {
+                        const config = typeConfig[msg.type] || typeConfig['info'];
+                        return `
+                            <div class="msg-item ${config.class}">
+                                <i class="bi ${config.icon} msg-item-icon"></i>
+                                <div class="msg-item-content">
+                                    <div class="msg-item-text">${msg.title}</div>
+                                    <div class="msg-time">${formatRelativeTime(msg.timestamp)}</div>
+                                </div>
+                            </div>
+                        `;
+                    }).join('');
+
+                    content.innerHTML = html;
+                }
+            }
+        }
+
+        // 清空所有消息
+        function clearAllMessages() {
+            if (confirm('确定要清空所有消息吗？')) {
+                saveMessageHistory([]);
+                updateMessageUI();
+            }
+        }
+
+        // 初始化消息中心
+        function initMessageCenter() {
+            const bell = document.getElementById('messageBell');
+            const dropdown = document.getElementById('msgDropdown');
+            const clearBtn = document.getElementById('clearMsgs');
+
+            if (!bell || !dropdown) return;
+
+            // 点击铃铛切换下拉菜单
+            bell.addEventListener('click', function(e) {
+                e.stopPropagation();
+                dropdown.classList.toggle('show');
+            });
+
+            // 点击外部关闭下拉菜单
+            document.addEventListener('click', function(e) {
+                if (!bell.contains(e.target) && !dropdown.contains(e.target)) {
+                    dropdown.classList.remove('show');
+                }
+            });
+
+            // 清空按钮
+            if (clearBtn) {
+                clearBtn.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    clearAllMessages();
+                });
+            }
+
+            // 初始化UI
+            updateMessageUI();
+        }
+
+        // 全局函数：供其他页面调用
+        window.addMessageToHistory = addMessageToHistory;
+        
+        // ========== 全局 Toast 通知函数 ==========
+        // 确保在所有页面都可用
+        window.showToast = function(message, type = 'info') {
+            const container = document.getElementById('toast-container');
+            if (!container) {
+                console.log(`[Toast] ${type}: ${message}`);
+                return;
+            }
+            
+            // 类型映射
+            const typeConfig = {
+                'success': { icon: '✅', color: 'success' },
+                'warning': { icon: '⚠️', color: 'warning' },
+                'error': { icon: '❌', color: 'error' },
+                'info': { icon: 'ℹ️', color: 'info' }
+            };
+            
+            const config = typeConfig[type] || typeConfig['info'];
+            
+            // 创建 Toast 元素
+            const toast = document.createElement('div');
+            toast.className = `custom-toast ${config.color}`;
+            toast.innerHTML = `
+                <span class="custom-toast-icon">${config.icon}</span>
+                <div class="custom-toast-content">
+                    <div class="custom-toast-message">${message}</div>
+                </div>
+                <span class="custom-toast-close" role="button" aria-label="关闭通知">×</span>
+            `;
+            
+            // 优化：立即添加到DOM，然后使用requestAnimationFrame触发显示动画
+            container.appendChild(toast);
+            
+            // 优化：使用requestAnimationFrame立即触发显示动画，减少延迟
+            requestAnimationFrame(() => {
+                // 强制重排，确保动画立即生效
+                toast.offsetHeight; // 触发重排
+                // 直接设置样式，避免CSS动画延迟
+                toast.style.opacity = '1';
+                toast.style.transform = 'translateY(0)';
+            });
+            
+            // 自动移除（5秒后）
+            setTimeout(() => {
+                toast.classList.add('fade-out');
+                setTimeout(() => {
+                    if (toast.parentElement) {
+                        toast.remove();
+                    }
+                }, 300);
+            }, 5000);
+        };
+
+        // ========== Toast 关闭按钮：事件委托（修复“× 点了没反应”）==========
+        document.addEventListener('click', function(e) {
+            const btn = e.target && e.target.closest ? e.target.closest('.custom-toast-close') : null;
+            if (!btn) return;
+            const toast = btn.closest('.custom-toast');
+            if (toast) {
+                e.preventDefault();
+                e.stopPropagation();
+                toast.remove();
+            }
+        }, true);
+
+        // ========== 节点变化通知：供各页面立即刷新（监测页等）==========
+        function _notifyNodesChanged(addedIds, removedIds) {
+            try {
+                window.dispatchEvent(new CustomEvent('edgewind:nodes-changed', {
+                    detail: { added: addedIds || [], removed: removedIds || [] }
+                }));
+            } catch (e) {}
+            // 兼容：允许页面注册回调（例如 monitor 页面直接拉取新节点列表）
+            try {
+                if (typeof window.edgewindOnNodesChanged === 'function') {
+                    window.edgewindOnNodesChanged({ added: addedIds || [], removed: removedIds || [] });
+                }
+            } catch (e) {}
+        }
+        
+        // ========== 统一系统事件发布函数（带去重逻辑）==========
+        // 优化：智能去重 - 只对真正的重复消息去重（相同节点+相同故障代码在1秒内）
+        const recentFaultMessages = new Map();  // 存储最近的故障消息：key = "nodeId_faultCode", value = timestamp
+        const DEBOUNCE_TIME = 1000;  // 1秒去重窗口（只防止WebSocket和轮询同时触发时的重复，确保快速响应）
+        
+        window.publishSystemEvent = function(message, type = 'info') {
+            const now = Date.now();
+            
+            // ========== 智能去重：提取 node_id 和 fault_code ==========
+            // 对于故障消息，使用 node_id + fault_code 作为去重键
+            if (type === 'error' || type === 'fault') {
+                // 尝试从消息中提取节点ID和故障代码
+                // 消息格式示例: "⚠️ 节点 STM32_Node_001 检测到故障: 交流窜入 (E01)"
+                const nodeIdMatch = message.match(/节点\s+(\S+)\s+检测到故障/);
+                const faultCodeMatch = message.match(/\(([E]\d{2})\)/);
+                
+                if (nodeIdMatch && faultCodeMatch) {
+                    const nodeId = nodeIdMatch[1];
+                    const faultCode = faultCodeMatch[1];
+                    const faultKey = `${nodeId}_${faultCode}`;
+                    
+                    const lastTime = recentFaultMessages.get(faultKey);
+                    if (lastTime && (now - lastTime) < DEBOUNCE_TIME) {
+                        // 在去重窗口内，忽略重复故障消息
+                        console.log(`[系统事件] 去重: 忽略重复故障消息 (节点: ${nodeId}, 故障: ${faultCode}, ${Math.round((now - lastTime) / 1000)}秒前已显示)`);
+                        return;
+                    }
+                    
+                    // 记录故障消息时间戳
+                    recentFaultMessages.set(faultKey, now);
+                    
+                    // 清理过期的故障消息记录（保留最近2分钟的记录）
+                    const twoMinutesAgo = now - 120000;
+                    for (const [key, timestamp] of recentFaultMessages.entries()) {
+                        if (timestamp < twoMinutesAgo) {
+                            recentFaultMessages.delete(key);
+                        }
+                    }
+                }
+            }
+            
+            // 通用消息去重（基于完整消息内容）
+            const messageKey = `${message}_${type}`;
+            const recentMessages = window._recentMessages || new Map();
+            window._recentMessages = recentMessages;
+            const lastTime = recentMessages.get(messageKey);
+            
+            if (lastTime && (now - lastTime) < DEBOUNCE_TIME) {
+                // 在去重窗口内，忽略重复消息
+                console.log(`[系统事件] 去重: 忽略重复消息 "${message}" (${Math.round((now - lastTime) / 1000)}秒前已显示)`);
+                return;
+            }
+            
+            // 记录消息时间戳
+            recentMessages.set(messageKey, now);
+            
+            // 清理过期的消息记录（保留最近2分钟的记录）
+            const twoMinutesAgo = now - 120000;
+            for (const [key, timestamp] of recentMessages.entries()) {
+                if (timestamp < twoMinutesAgo) {
+                    recentMessages.delete(key);
+                }
+            }
+            
+            // 1. 保存到消息中心历史（立即执行）
+            addMessageToHistory(message, type);
+            
+            // 2. 显示 Toast 通知（优化：使用requestAnimationFrame立即显示，确保最快响应）
+            if (typeof window.showToast === 'function') {
+                // 使用requestAnimationFrame确保在下一帧立即显示，减少延迟
+                requestAnimationFrame(() => {
+                    window.showToast(message, type);
+                });
+            } else {
+                console.log(`[系统事件] ${type}: ${message}`);
+            }
+        };
+
+        // ========== 全局节点监控系统 ==========
+        let globalLastNodeIds = null;  // 存储上一次的节点ID数组，null表示第一次加载
+        let globalLastNodeStates = {};  // 存储上一次的节点状态（故障代码），用于检测状态变化
+        // 优化：暴露到全局，供WebSocket实时更新使用
+        window.globalLastNodeStates = globalLastNodeStates;
+        
+        // 全局节点监控函数（在所有页面运行）
+        async function globalNodeMonitor() {
+            try {
+                const response = await fetch('/api/get_active_nodes');
+                const result = await response.json();
+                
+                if (!result.success) {
+                    console.error('[全局监控] 获取节点列表失败:', result.error);
+                    return;
+                }
+                
+                const nodes = result.nodes || [];
+                
+                // 提取节点ID数组和状态
+                const currentIds = nodes.map(node => node.node_id || node.device_id || node.id).filter(Boolean);
+                const currentStates = {};
+                nodes.forEach(node => {
+                    const nodeId = node.node_id || node.device_id || node.id;
+                    if (nodeId) {
+                        currentStates[nodeId] = {
+                            fault_code: node.fault_code || 'E00',
+                            status: node.status || 'online'
+                        };
+                    }
+                });
+                
+                // 首次加载：建立基线，不显示通知
+                if (globalLastNodeIds === null) {
+                    globalLastNodeIds = currentIds;
+                    globalLastNodeStates = currentStates;
+                    return;
+                }
+                
+                // 检测新节点（出现在当前列表但不在上一次列表中）
+                const addedIds = [];
+                currentIds.forEach(id => {
+                    if (!globalLastNodeIds.includes(id)) {
+                        addedIds.push(id);
+                        if (typeof window.publishSystemEvent === 'function') {
+                            window.publishSystemEvent(`[系统动态] 新节点 ${id} 已通过自注册接入系统`, 'success');
+                        } else {
+                            console.log(`[全局监控] 新节点: ${id}`);
+                        }
+                    }
+                });
+                
+                // 检测断开节点（出现在上一次列表但不在当前列表中）
+                const removedIds = [];
+                globalLastNodeIds.forEach(id => {
+                    if (!currentIds.includes(id)) {
+                        removedIds.push(id);
+                        if (typeof window.publishSystemEvent === 'function') {
+                            window.publishSystemEvent(`[系统动态] 节点 ${id} 通信超时，已自动注销`, 'warning');
+                        } else {
+                            console.log(`[全局监控] 节点断开: ${id}`);
+                        }
+                    }
+                });
+
+                // 若节点集合发生变化，通知页面立即刷新
+                if (addedIds.length > 0 || removedIds.length > 0) {
+                    _notifyNodesChanged(addedIds, removedIds);
+                }
+                
+                // ========== 检测故障状态变化（全局统一处理，避免重复）==========
+                currentIds.forEach(id => {
+                    const lastState = globalLastNodeStates[id];
+                    const currentState = currentStates[id];
+                    
+                    if (lastState && currentState) {
+                        const lastFaultCode = lastState.fault_code || 'E00';
+                        const currentFaultCode = currentState.fault_code || 'E00';
+                        
+                        // 检测从正常到故障的状态变化
+                        if (lastFaultCode === 'E00' && currentFaultCode !== 'E00') {
+                            const faultTypeName = getFaultTypeNameFromCode(currentFaultCode);
+                            // 使用 publishSystemEvent（自带去重逻辑）
+                            if (typeof window.publishSystemEvent === 'function') {
+                                window.publishSystemEvent(
+                                    `⚠️ 节点 ${id} 检测到故障: ${faultTypeName} (${currentFaultCode})`,
+                                    'error'
+                                );
+                            }
+                        }
+                        // 检测从故障到正常的状态恢复
+                        else if (lastFaultCode !== 'E00' && currentFaultCode === 'E00') {
+                            // 使用 publishSystemEvent（自带去重逻辑）
+                            if (typeof window.publishSystemEvent === 'function') {
+                                window.publishSystemEvent(
+                                    `✅ 节点 ${id} 故障已清除，恢复正常状态`,
+                                    'success'
+                                );
+                            }
+                        }
+                    }
+                });
+                
+                // 更新上一次的节点ID集合和状态
+                globalLastNodeIds = currentIds;
+                globalLastNodeStates = currentStates;
+            } catch (e) {
+                console.error('[全局监控] 轮询失败:', e);
+            }
+        }
+        
+        // 辅助函数：从故障代码获取故障类型名称
+        function getFaultTypeNameFromCode(faultCode) {
+            const faultNames = {
+                'E01': '交流窜入',
+                'E02': '绝缘故障',
+                'E03': '直流母线电容老化',
+                'E04': '变流器IGBT开路',
+                'E05': '直流母线接地故障'
+            };
+            return faultNames[faultCode] || `故障 ${faultCode}`;
+        }
+        
+        // ========== 跨标签页存储同步 ==========
+        // 监听 localStorage 变化（跨标签页同步）
+        window.addEventListener('storage', function(e) {
+            if (e.key === MESSAGE_STORAGE_KEY) {
+                // 消息历史在其他标签页更新，刷新UI
+                updateMessageUI();
+            }
+        });
+        
+        // ========== 全局故障诊断弹窗函数 ==========
+        // 如果页面有故障诊断功能，则打开；否则跳转到故障管理页面
+        window.openFaultDiagnosis = function(nodeId) {
+            // 修复：禁用自动重定向，只在用户明确点击"查看诊断"按钮时才跳转
+            // 在 Monitor 页面，只显示 Toast 通知，不自动跳转
+            if (window.location.pathname === '/monitor' || window.location.pathname.includes('monitor')) {
+                // 在 Monitor 页面，只记录日志，不执行任何跳转
+                console.log(`[故障诊断] 节点 ${nodeId} 检测到故障，当前在监测页面，不自动跳转`);
+                // 可选：显示一个非阻塞的提示，提示用户可以点击查看详情
+                if (typeof window.showToast === 'function') {
+                    window.showToast(`节点 ${nodeId} 检测到故障，可在故障管理页面查看详情`, 'info');
+                }
+                return;  // 直接返回，不执行任何跳转
+            }
+            
+            // 检查是否在故障管理页面
+            if (window.location.pathname === '/faults' || window.location.pathname.includes('faults')) {
+                // 在故障管理页面，也不自动填充搜索框
+                // 只在用户明确点击"查看诊断"按钮时才执行搜索
+                console.log(`[故障诊断] 节点 ${nodeId} 需要诊断，当前在故障管理页面，但不自动填充搜索框`);
+                // 不执行任何操作，保持搜索框为空
+                return;
+            }
+            
+            // 其他页面（如 Overview），也不自动跳转，只记录日志
+            console.log(`[故障诊断] 节点 ${nodeId} 检测到故障，当前在 ${window.location.pathname}，不自动跳转`);
+        };
+        
+        // 初始化
+        document.addEventListener('DOMContentLoaded', function() {
+            setActiveNav();
+            updateSidebarStatus();
+            initGlobalSearch(); // 初始化全局搜索
+            
+            // 清理可能过期的 localStorage 状态（防止阻塞新消息）
+            try {
+                const messageHistory = getMessageHistory();
+                if (messageHistory.length > MAX_MESSAGES) {
+                    // 只保留最新的消息
+                    const recentMessages = messageHistory.slice(0, MAX_MESSAGES);
+                    saveMessageHistory(recentMessages);
+                    console.log('[消息中心] 已清理过期消息历史');
+                }
+            } catch (e) {
+                console.warn('[消息中心] 清理消息历史时出错:', e);
+            }
+            
+            initMessageCenter(); // 初始化消息中心
+            
+            // 启动全局节点监控（快速轮询模式：从localStorage读取设置，默认800ms）
+            const fastPollingEnabled = localStorage.getItem('fastPollingEnabled') !== 'false';
+            const globalPollingInterval = fastPollingEnabled ? 800 : 3000;
+            globalNodeMonitor(); // 立即执行一次
+            setInterval(globalNodeMonitor, globalPollingInterval);
+            
+            setInterval(updateSidebarStatus, 1000); // 每1秒更新一次（优化响应速度）
+        });
+    </script>
+    
+    {% block extra_js %}{% endblock %}
+</body>
+</html>
+

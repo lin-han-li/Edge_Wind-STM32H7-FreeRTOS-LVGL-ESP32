@@ -1,0 +1,3997 @@
+{% extends "base.html" %}
+
+{% block title %}实时监测 - EdgeWind{% endblock %}
+{% block page_title %}实时监测{% endblock %}
+
+{% block extra_css %}
+<style>
+    /* 实时监测页面背景色 - 更淡的蓝色调，不影响波形观看 */
+    body {
+        background: radial-gradient(circle at 50% -20%, #2d5a8a 0%, #1a2d4a 100%) fixed !important;
+        background-color: #1a2d4a !important;
+    }
+    
+    .main-content {
+        background: transparent !important;
+    }
+
+    /* 故障日志：未处理红点标记（尽量轻量，避免内联样式） */
+    .ws-fault-dot {
+        width: 8px;
+        height: 8px;
+        display: inline-block;
+        border-radius: 50%;
+        vertical-align: middle;
+    }
+
+    /* 阈值告警红点（复用同一尺寸，避免引入额外自定义样式体系） */
+    .ws-alarm-dot {
+        width: 8px;
+        height: 8px;
+        display: inline-block;
+        border-radius: 50%;
+        vertical-align: middle;
+    }
+
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="row">
+    <!-- 左侧：边缘节点列表 (侧边栏) -->
+    <div class="col-lg-3">
+        <div class="card mb-3">
+            <div class="card-header bg-dark text-white">
+                <h6 class="mb-0">
+                    <i class="bi bi-diagram-3"></i> 边缘节点列表
+                </h6>
+            </div>
+            <div class="card-body p-0">
+                <div class="list-group list-group-flush" id="nodeList" style="max-height: 150px; overflow-y: auto;">
+                    <!-- 边缘节点列表将通过JavaScript动态生成 -->
+                    <div class="text-center text-muted py-4">
+                        <i class="bi bi-hourglass-split"></i> 加载中...
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- 性能监控面板 -->
+        <div class="card border-success mb-3">
+            <div class="card-header bg-success text-white py-2">
+                <h6 class="mb-0 small">
+                    <i class="bi bi-speedometer2"></i> 性能监控
+                </h6>
+            </div>
+            <div class="card-body p-2">
+                <div class="row g-2 small">
+                    <div class="col-6">
+                        <div class="text-muted">数据刷新率</div>
+                        <div class="fw-bold text-success" id="perf-refresh-rate">-- Hz</div>
+                    </div>
+                    <div class="col-6">
+                        <div class="text-muted">WebSocket</div>
+                        <div class="fw-bold" id="perf-ws-status">
+                            <span class="badge bg-secondary">未连接</span>
+                        </div>
+                    </div>
+                    <div class="col-6">
+                        <div class="text-muted">订阅节点</div>
+                        <div class="fw-bold text-info" id="perf-subscribed-node">无</div>
+                    </div>
+                    <div class="col-6">
+                        <div class="text-muted">渲染延迟</div>
+                        <div class="fw-bold text-warning" id="perf-render-time">-- ms</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 系统故障日志（移到左侧边栏） -->
+        <div class="card border-warning">
+            <div class="card-header bg-warning text-dark py-2">
+                <h6 class="mb-0 small">
+                    <i class="bi bi-clock-history"></i> 系统故障日志
+                </h6>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive" style="max-height: 380px; overflow-y: auto;">
+                    <table class="table table-sm table-hover align-middle mb-0 small">
+                        <thead class="table-light sticky-top">
+                            <tr>
+                                <th style="width: 30%;">时间</th>
+                                <th style="width: 35%;">节点</th>
+                                <th style="width: 35%;">状态</th>
+                            </tr>
+                        </thead>
+                        <tbody id="fault-log-body">
+                            <!-- 日志条目将通过JavaScript动态添加 -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 右侧：主内容区 -->
+    <div class="col-lg-9">
+        <div class="row g-3 mb-4">
+            <div class="col-md-3 col-6">
+                <div class="card h-100 shadow-sm card-select card-active" id="card-voltage" 
+                     onclick="selectSource('voltage')" style="border-top: 4px solid #0d6efd; cursor:pointer;">
+                    <div class="card-body text-center p-3 d-flex flex-column justify-content-center">
+                        <h6 class="text-muted small fw-bold mb-1">直流母线(+)
+                            <span id="alarm-dot-voltage" class="ws-alarm-dot bg-danger ms-1 d-none" title="电压超过阈值"></span>
+                        </h6>
+                        <h3 class="fw-bold text-primary mb-0" id="val-voltage">--</h3>
+                        <small class="text-muted">V</small>
+                        <div class="select-badge text-primary mt-2">
+                            <i class="bi bi-check-circle-fill me-1"></i>已选中
+                        </div>
+                </div>
+            </div>
+        </div>
+        
+            <div class="col-md-3 col-6">
+                <div class="card h-100 shadow-sm card-select" id="card-voltage_neg" 
+                     onclick="selectSource('voltage_neg')" style="border-top: 4px solid #dc3545; cursor:pointer;">
+                    <div class="card-body text-center p-3 d-flex flex-column justify-content-center">
+                        <h6 class="text-muted small fw-bold mb-1">直流母线(-)
+                            <span id="alarm-dot-voltage-neg" class="ws-alarm-dot bg-danger ms-1 d-none" title="电压超过阈值"></span>
+                        </h6>
+                        <h3 class="fw-bold text-danger mb-0" id="val-voltage-neg">--</h3>
+                        <small class="text-muted">V</small>
+                        <div class="select-badge text-danger mt-2">
+                            <i class="bi bi-check-circle-fill me-1"></i>已选中
+                    </div>
+                </div>
+            </div>
+        </div>
+
+            <div class="col-md-3 col-6">
+                <div class="card h-100 shadow-sm card-select" id="card-current" 
+                     onclick="selectSource('current')" style="border-top: 4px solid #0dcaf0; cursor:pointer;">
+                    <div class="card-body text-center p-3 d-flex flex-column justify-content-center">
+                        <h6 class="text-muted small fw-bold mb-1">负载电流</h6>
+                        <h3 class="fw-bold text-info mb-0" id="val-current">--</h3>
+                        <small class="text-muted">A</small>
+                        <div class="select-badge text-info mt-2">
+                            <i class="bi bi-check-circle-fill me-1"></i>已选中
+                    </div>
+                </div>
+            </div>
+        </div>
+
+            <div class="col-md-3 col-6">
+                <div class="card h-100 shadow-sm card-select" id="card-leakage" 
+                     onclick="selectSource('leakage')" style="border-top: 4px solid #ffc107; cursor:pointer;">
+                    <div class="card-body text-center p-3 d-flex flex-column justify-content-center">
+                        <h6 class="text-muted small fw-bold mb-1">漏电流
+                            <span id="alarm-dot-leakage" class="ws-alarm-dot bg-danger ms-1 d-none" title="漏电流超过阈值"></span>
+                        </h6>
+                        <h3 class="fw-bold text-warning mb-0" id="val-leakage">--</h3>
+                        <small class="text-muted">mA</small>
+                        <div class="select-badge text-warning mt-2">
+                            <i class="bi bi-check-circle-fill me-1"></i>已选中
+                    </div>
+                </div>
+            </div>
+                    </div>
+                </div>
+
+        <!-- 底部：波形监控 (标签页界面) -->
+        <div class="card mb-3">
+            <div class="card-header bg-dark text-white">
+                <div class="d-flex flex-wrap align-items-center justify-content-between gap-2">
+                    <ul class="nav nav-tabs card-header-tabs border-0" role="tablist">
+                        <li class="nav-item" role="presentation">
+                            <button class="nav-link active text-white" 
+                                    id="timeTab" 
+                                    data-bs-toggle="tab" 
+                                    data-bs-target="#timeChartPane" 
+                                    type="button" 
+                                    role="tab" 
+                                    aria-controls="timeChartPane" 
+                                    aria-selected="true"
+                                    onclick="switchChartTab('time')">
+                                <i class="bi bi-graph-up"></i> 时域分析 (Time Domain)
+                            </button>
+                        </li>
+                        <li class="nav-item" role="presentation">
+                            <button class="nav-link text-white" 
+                                    id="freqTab" 
+                                    data-bs-toggle="tab" 
+                                    data-bs-target="#freqChartPane" 
+                                    type="button" 
+                                    role="tab" 
+                                    aria-controls="freqChartPane" 
+                                    aria-selected="false"
+                                    onclick="switchChartTab('freq')">
+                                <i class="bi bi-bar-chart"></i> 频域分析 (FFT Spectrum)
+                            </button>
+                        </li>
+                    </ul>
+                    <div class="input-group input-group-sm" style="width: 280px;">
+                        <span class="input-group-text">上传点数</span>
+                        <input
+                            class="form-control"
+                            id="upload-points-input"
+                            type="number"
+                            min="256"
+                            max="4096"
+                            step="256"
+                            value="4096"
+                            aria-label="Upload Points">
+                        <button class="btn btn-outline-light" id="btn-send-upload-points" type="button">
+                            下发
+                        </button>
+                    </div>
+                    <div class="btn-group btn-group-sm" role="group" aria-label="Report mode controls">
+                        <button class="btn btn-outline-light" id="btn-request-full" type="button">
+                            <i class="bi bi-cloud-download"></i> 请求全量
+                        </button>
+                        <button class="btn btn-outline-light" id="btn-request-summary" type="button">
+                            <i class="bi bi-slash-circle"></i> 关闭请求
+                        </button>
+                    </div>
+                    <div class="input-group input-group-sm" style="width: 250px;">
+                        <span class="input-group-text">降采样</span>
+                        <input
+                            class="form-control"
+                            id="downsample-step-input"
+                            type="number"
+                            min="1"
+                            max="64"
+                            step="1"
+                            value="1"
+                            aria-label="Downsample Step">
+                        <button class="btn btn-outline-light" id="btn-send-downsample" type="button">
+                            下发
+                        </button>
+                    </div>
+                    <span class="small text-light" id="report-mode-indicator">当前模式：摘要</span>
+                </div>
+            </div>
+            <div class="card-body p-0">
+                <div class="tab-content">
+                    <!-- 时域分析标签页 -->
+                    <div class="tab-pane fade show active" 
+                         id="timeChartPane" 
+                         role="tabpanel" 
+                         aria-labelledby="timeTab">
+                        <div class="card-body" id="time-domain-chart-container">
+                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                <small class="text-muted">
+                                    <i class="bi bi-info-circle"></i> 提示：双击Y轴重置Y轴，双击X轴重置X轴，双击图表区域重置全部
+                                </small>
+                                <button class="btn btn-sm btn-outline-secondary" onclick="resetTimeDomainZoom()" title="重置所有缩放">
+                                    <i class="bi bi-arrow-counterclockwise"></i> 重置缩放
+                                </button>
+                    </div>
+                            <!-- 视觉优化：时域波形更高一些，便于观察细节 -->
+                            <div id="time-domain-chart" style="width: 100%; height: 600px;"></div>
+                </div>
+            </div>
+                    <!-- 频域分析标签页 -->
+                    <div class="tab-pane fade" 
+                         id="freqChartPane" 
+                         role="tabpanel" 
+                         aria-labelledby="freqTab">
+                        <div class="card-body" id="frequency-domain-chart-container">
+                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                <small class="text-muted">
+                                    <i class="bi bi-info-circle"></i> 提示：双击Y轴重置Y轴，双击X轴重置X轴，双击图表区域重置全部
+                                </small>
+                                <button class="btn btn-sm btn-outline-secondary" onclick="resetFrequencyDomainZoom()" title="重置所有缩放">
+                                    <i class="bi bi-arrow-counterclockwise"></i> 重置缩放
+                                </button>
+                            </div>
+                            <!-- 频域图与时域保持一致的高度与交互 -->
+                            <div id="frequency-domain-chart" style="width: 100%; height: 600px;"></div>
+            </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<!-- 加版本号避免浏览器缓存导致“改了没效果” -->
+<script src="{{ url_for('static', filename='js/chart-zoom-utils.js') }}?v=20260107_7"></script>
+<script>
+    // ========== 动态边缘节点配置 (从后端实时获取) ==========
+    let NODE_CONFIGS = {};  // 从后端API动态获取
+    let isFirstLoad = true;  // 标记是否为首次加载
+    let autoFocusHandled = false;  // 标记是否已处理自动聚焦
+    
+    // ========== WebSocket 连接 ==========
+    let socket = null;
+
+    // ========== 辅助函数：获取URL查询参数 ==========
+    function getQueryParam(param) {
+        const urlParams = new URLSearchParams(window.location.search);
+        return urlParams.get(param);
+    }
+
+    function getCsrfToken() {
+        const el = document.querySelector('meta[name="csrf-token"]');
+        return el ? (el.getAttribute('content') || '') : '';
+    }
+
+    // ========== 全局状态 ==========
+    let currentNodeId = null;
+    // Global State: Default to viewing positive voltage
+    let currentSource = 'voltage';
+    let currentChannelIndex = 0;
+    let nodeData = {};
+    let timeDomainChart = null;
+    let frequencyDomainChart = null;
+    let updateInterval = null;
+    let nodeListInterval = null;
+    let activeTab = 'time';  // 当前激活的标签页：'time' 或 'freq'
+    let lastCachedData = null;  // 关键修复：缓存最新数据包，用于即时切换
+    let nodeFaultHistory = {};  // 存储每个边缘节点的最后已知故障代码：{ "STM32_Node_001": "E00" }
+    let reportModeByNode = {};  // {nodeId: 'summary'|'full'}
+    let downsampleStepByNode = {};  // {nodeId: 1..64}
+    let downsampleDraftByNode = {};  // {nodeId: string}
+    let downsampleAppliedNodeId = null;
+    let uploadPointsByNode = {};  // {nodeId: 256..4096 step=256}
+    let uploadPointsDraftByNode = {};  // {nodeId: string}
+    let uploadPointsAppliedNodeId = null;
+    let currentReportMode = 'summary';
+
+    // ========== 报警阈值（来自系统设置）==========
+    // 说明：
+    // - 设置页保存键：voltage_max / leakage_threshold
+    // - 这里用于“超阈值提示”（红点 + 事件提示），不改变项目定义的 E01-E05 故障码逻辑
+    const alarmThresholds = {
+        voltageMax: 400,        // V
+        leakageThreshold: 30    // mA
+    };
+    const alarmState = {
+        voltageHighPos: false,
+        voltageHighNeg: false,
+        leakageHigh: false
+    };
+
+    function normalizeDownsampleStep(value) {
+        const n = Number.parseInt(value, 10);
+        if (Number.isInteger(n) && n >= 1 && n <= 64) {
+            return n;
+        }
+        return null;
+    }
+
+    function normalizeUploadPoints(value) {
+        const n = Number.parseInt(value, 10);
+        if (Number.isInteger(n) && n >= 256 && n <= 4096 && (n % 256) === 0) {
+            return n;
+        }
+        return null;
+    }
+
+    function setReportModeButtonState(mode) {
+        const btnFull = document.getElementById('btn-request-full');
+        const btnSummary = document.getElementById('btn-request-summary');
+        const indicator = document.getElementById('report-mode-indicator');
+        if (!btnFull || !btnSummary) return;
+
+        const normalized = (mode || 'summary').toLowerCase();
+        const isFull = normalized === 'full';
+
+        btnFull.classList.toggle('btn-light', isFull);
+        btnFull.classList.toggle('text-dark', isFull);
+        btnFull.classList.toggle('btn-outline-light', !isFull);
+
+        btnSummary.classList.toggle('btn-light', !isFull);
+        btnSummary.classList.toggle('text-dark', !isFull);
+        btnSummary.classList.toggle('btn-outline-light', isFull);
+
+        if (indicator) {
+            indicator.textContent = `当前模式：${isFull ? '全量' : '摘要'}`;
+        }
+    }
+
+    function setReportModeButtonsEnabled(enabled) {
+        const btnFull = document.getElementById('btn-request-full');
+        const btnSummary = document.getElementById('btn-request-summary');
+        if (btnFull) btnFull.disabled = !enabled;
+        if (btnSummary) btnSummary.disabled = !enabled;
+    }
+
+    function setDownsampleControlsEnabled(enabled) {
+        const input = document.getElementById('downsample-step-input');
+        const btn = document.getElementById('btn-send-downsample');
+        const disabled = !enabled;
+        if (input) {
+            input.disabled = disabled;
+            input.title = disabled ? '请先请求全量模式' : '';
+        }
+        if (btn) {
+            btn.disabled = disabled;
+            btn.title = disabled ? '请先请求全量模式' : '';
+        }
+    }
+
+    function setUploadPointsControlsEnabled(enabled) {
+        const input = document.getElementById('upload-points-input');
+        const btn = document.getElementById('btn-send-upload-points');
+        const disabled = !enabled;
+        if (input) {
+            input.disabled = disabled;
+            input.title = disabled ? '请先请求全量模式' : '';
+        }
+        if (btn) {
+            btn.disabled = disabled;
+            btn.title = disabled ? '请先请求全量模式' : '';
+        }
+    }
+
+    function applyDownsampleForNode(nodeId, options = {}) {
+        const { force = false, fallbackToDefault = false } = options;
+        const input = document.getElementById('downsample-step-input');
+        if (!input) return;
+        if (!force && document.activeElement === input) return;
+
+        const v = normalizeDownsampleStep(downsampleStepByNode[nodeId]);
+        if (v !== null) {
+            input.value = String(v);
+            return;
+        }
+        const draft = nodeId ? downsampleDraftByNode[nodeId] : undefined;
+        if (typeof draft === 'string' && draft.length > 0) {
+            input.value = draft;
+            return;
+        }
+        if (fallbackToDefault) {
+            input.value = '1';
+        }
+    }
+
+    function applyUploadPointsForNode(nodeId, options = {}) {
+        const { force = false, fallbackToDefault = false } = options;
+        const input = document.getElementById('upload-points-input');
+        if (!input) return;
+        if (!force && document.activeElement === input) return;
+
+        const v = normalizeUploadPoints(uploadPointsByNode[nodeId]);
+        if (v !== null) {
+            input.value = String(v);
+            return;
+        }
+        const draft = nodeId ? uploadPointsDraftByNode[nodeId] : undefined;
+        if (typeof draft === 'string' && draft.length > 0) {
+            input.value = draft;
+            return;
+        }
+        if (fallbackToDefault) {
+            input.value = '4096';
+        }
+    }
+
+    function applyReportModeForNode(nodeId) {
+        if (!nodeId) {
+            currentReportMode = 'summary';
+            setReportModeButtonState(currentReportMode);
+            setReportModeButtonsEnabled(false);
+            setUploadPointsControlsEnabled(false);
+            setDownsampleControlsEnabled(false);
+            applyUploadPointsForNode(nodeId, { force: true, fallbackToDefault: true });
+            applyDownsampleForNode(nodeId, { force: true, fallbackToDefault: true });
+            downsampleAppliedNodeId = null;
+            uploadPointsAppliedNodeId = null;
+            return;
+        }
+        const switchedNode = downsampleAppliedNodeId !== nodeId;
+        const switchedUpload = uploadPointsAppliedNodeId !== nodeId;
+        currentReportMode = reportModeByNode[nodeId] || 'summary';
+        setReportModeButtonState(currentReportMode);
+        setReportModeButtonsEnabled(true);
+        setUploadPointsControlsEnabled(currentReportMode === 'full');
+        setDownsampleControlsEnabled(currentReportMode === 'full');
+        applyUploadPointsForNode(nodeId, { force: switchedUpload, fallbackToDefault: switchedUpload });
+        applyDownsampleForNode(nodeId, { force: switchedNode, fallbackToDefault: switchedNode });
+        downsampleAppliedNodeId = nodeId;
+        uploadPointsAppliedNodeId = nodeId;
+    }
+
+    async function requestReportMode(mode) {
+        if (!currentNodeId) {
+            if (typeof window.showToast === 'function') {
+                window.showToast('请先选择一个边缘节点', 'warning');
+            }
+            return;
+        }
+        const targetMode = (mode || '').toLowerCase();
+        if (!['summary', 'full'].includes(targetMode)) return;
+        if (currentReportMode === targetMode) return;
+
+        try {
+            const csrfToken = getCsrfToken();
+            const resp = await fetch('/api/nodes/report_mode', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(csrfToken ? { 'X-CSRFToken': csrfToken } : {})
+                },
+                body: JSON.stringify({ node_id: currentNodeId, mode: targetMode })
+            });
+
+            if (!resp.ok) {
+                if (resp.status === 401) {
+                    const next = encodeURIComponent(window.location.pathname + window.location.search);
+                    window.location.href = `/login?next=${next}`;
+                    return;
+                }
+                throw new Error(`HTTP ${resp.status}`);
+            }
+            const data = await resp.json();
+            if (!data.success) {
+                throw new Error(data.error || '请求失败');
+            }
+
+            const newMode = data.report_mode || targetMode;
+            reportModeByNode[currentNodeId] = newMode;
+            applyReportModeForNode(currentNodeId);
+            if (typeof window.showToast === 'function') {
+                const msg = newMode === 'full' ? '已请求全量数据' : '已关闭全量请求';
+                window.showToast(msg, 'success');
+            }
+        } catch (e) {
+            console.error('[requestReportMode] 失败:', e);
+            if (typeof window.showToast === 'function') {
+                window.showToast('请求失败，请稍后重试', 'error');
+            }
+        }
+    }
+
+    async function requestDownsampleStep() {
+        if (!currentNodeId) {
+            if (typeof window.showToast === 'function') {
+                window.showToast('请先选择一个边缘节点', 'warning');
+            }
+            return;
+        }
+        if (currentReportMode !== 'full') {
+            if (typeof window.showToast === 'function') {
+                window.showToast('请先切换到全量模式后再下发降采样', 'warning');
+            }
+            return;
+        }
+
+        const input = document.getElementById('downsample-step-input');
+        if (!input) return;
+        const step = normalizeDownsampleStep(input.value);
+        if (step === null) {
+            if (typeof window.showToast === 'function') {
+                window.showToast('降采样范围应为 1~64 的整数', 'warning');
+            }
+            return;
+        }
+
+        try {
+            const csrfToken = getCsrfToken();
+            const resp = await fetch('/api/nodes/downsample_step', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(csrfToken ? { 'X-CSRFToken': csrfToken } : {})
+                },
+                body: JSON.stringify({ node_id: currentNodeId, step })
+            });
+
+            if (!resp.ok) {
+                if (resp.status === 401) {
+                    const next = encodeURIComponent(window.location.pathname + window.location.search);
+                    window.location.href = `/login?next=${next}`;
+                    return;
+                }
+                const errorData = await resp.json().catch(() => ({}));
+                if (resp.status === 409 && errorData?.report_mode) {
+                    reportModeByNode[currentNodeId] = String(errorData.report_mode).toLowerCase();
+                    applyReportModeForNode(currentNodeId);
+                }
+                throw new Error(errorData.error || `HTTP ${resp.status}`);
+            }
+
+            const data = await resp.json();
+            if (!data.success) {
+                throw new Error(data.error || '请求失败');
+            }
+
+            const newStep = normalizeDownsampleStep(data.downsample_step ?? step) ?? step;
+            downsampleStepByNode[currentNodeId] = newStep;
+            downsampleDraftByNode[currentNodeId] = String(newStep);
+            applyDownsampleForNode(currentNodeId, { force: true });
+            if (typeof window.showToast === 'function') {
+                window.showToast(`已下发降采样 step=${newStep}`, 'success');
+            }
+        } catch (e) {
+            console.error('[requestDownsampleStep] 失败:', e);
+            if (typeof window.showToast === 'function') {
+                window.showToast(String(e?.message || '下发失败，请稍后重试'), 'error');
+            }
+        }
+    }
+
+    async function requestUploadPoints() {
+        if (!currentNodeId) {
+            if (typeof window.showToast === 'function') {
+                window.showToast('请先选择一个边缘节点', 'warning');
+            }
+            return;
+        }
+        if (currentReportMode !== 'full') {
+            if (typeof window.showToast === 'function') {
+                window.showToast('请先切换到全量模式后再下发上传点数', 'warning');
+            }
+            return;
+        }
+
+        const input = document.getElementById('upload-points-input');
+        if (!input) return;
+        const points = normalizeUploadPoints(input.value);
+        if (points === null) {
+            if (typeof window.showToast === 'function') {
+                window.showToast('上传点数应为 256~4096 且 256 步进', 'warning');
+            }
+            return;
+        }
+
+        try {
+            const csrfToken = getCsrfToken();
+            const resp = await fetch('/api/nodes/upload_points', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(csrfToken ? { 'X-CSRFToken': csrfToken } : {})
+                },
+                body: JSON.stringify({ node_id: currentNodeId, points })
+            });
+
+            if (!resp.ok) {
+                if (resp.status === 401) {
+                    const next = encodeURIComponent(window.location.pathname + window.location.search);
+                    window.location.href = `/login?next=${next}`;
+                    return;
+                }
+                const errorData = await resp.json().catch(() => ({}));
+                if (resp.status === 409 && errorData?.report_mode) {
+                    reportModeByNode[currentNodeId] = String(errorData.report_mode).toLowerCase();
+                    applyReportModeForNode(currentNodeId);
+                }
+                throw new Error(errorData.error || `HTTP ${resp.status}`);
+            }
+
+            const data = await resp.json();
+            if (!data.success) {
+                throw new Error(data.error || '请求失败');
+            }
+
+            const newPoints = normalizeUploadPoints(data.upload_points ?? points) ?? points;
+            uploadPointsByNode[currentNodeId] = newPoints;
+            uploadPointsDraftByNode[currentNodeId] = String(newPoints);
+            applyUploadPointsForNode(currentNodeId, { force: true });
+            if (typeof window.showToast === 'function') {
+                window.showToast(`已下发上传点数 N=${newPoints}`, 'success');
+            }
+        } catch (e) {
+            console.error('[requestUploadPoints] 失败:', e);
+            if (typeof window.showToast === 'function') {
+                window.showToast(String(e?.message || '下发失败，请稍后重试'), 'error');
+            }
+        }
+    }
+    // 故障日志：是否已从后端回填历史记录（避免“长期空白”）
+    let faultLogHistoryLoaded = false;
+    // 故障日志：统一维护一份“可排序的列表”，避免直接 DOM insert 导致顺序不可控
+    // key 优先用工单 id；没有 id 时使用 `${timeStr}|${nodeId}|${faultCode}`
+    // 重要：同一工单状态变化（pending->processing->resolved）必须“更新同一条记录”，不能被去重挡住。
+    const faultLogMap = new Map();  // key -> {id,nodeId,faultCode,timeStr,status,tsMs}
+
+    function normalizeFaultStatus(status) {
+        const s = String(status || '').trim().toLowerCase();
+        if (!s) return 'pending';
+        if (s === 'fixed') return 'resolved';
+        if (s === 'resolved') return 'resolved';
+        if (s === 'processing') return 'processing';
+        if (s === 'pending') return 'pending';
+        return 'pending';
+    }
+
+    function statusRank(status) {
+        // 未处理 -> 处理中 -> 已处理
+        const s = normalizeFaultStatus(status);
+        if (s === 'pending') return 0;
+        if (s === 'processing') return 1;
+        return 2; // resolved
+    }
+
+    function statusBadge(status) {
+        const s = normalizeFaultStatus(status);
+        if (s === 'pending') return { text: '未处理', cls: 'bg-danger' };
+        if (s === 'processing') return { text: '处理中', cls: 'bg-warning text-dark' };
+        return { text: '已处理', cls: 'bg-success' };
+    }
+
+    function parseBeijingTimeToMs(timeStr) {
+        // 兼容：timeStr 可能是 "YYYY-MM-DD HH:MM:SS"（北京时间）或 ISO
+        const t = String(timeStr || '').trim();
+        if (!t) return 0;
+        // ISO
+        const iso = Date.parse(t);
+        if (!Number.isNaN(iso)) return iso;
+        // "YYYY-MM-DD HH:MM:SS" -> ISO +08:00（避免本机时区影响）
+        const norm = t.replace(' ', 'T') + '+08:00';
+        const ms = Date.parse(norm);
+        return Number.isNaN(ms) ? 0 : ms;
+    }
+
+    function renderFaultLogTable(limit = 50) {
+        const tbody = document.getElementById('fault-log-body');
+        if (!tbody) return;
+
+        const rows = Array.from(faultLogMap.values());
+        rows.sort((a, b) => {
+            const ra = statusRank(a.status);
+            const rb = statusRank(b.status);
+            if (ra !== rb) return ra - rb;
+            // 同一状态内：按时间排序（默认最新在前）
+            return (b.tsMs || 0) - (a.tsMs || 0);
+        });
+
+        const top = rows.slice(0, limit);
+        tbody.innerHTML = '';
+
+        if (top.length === 0) {
+            renderFaultLogEmptyState();
+            return;
+        }
+
+        for (const it of top) {
+            const { nodeId, faultCode, timeStr, status } = it;
+            const deviceId = nodeId;
+            const ts = String(timeStr || '').trim();
+            const canJump = faultCode && faultCode !== 'E00' && deviceId && ts;
+            const jumpUrl = canJump
+                ? `/snapshots?device_id=${encodeURIComponent(deviceId)}&fault_code=${encodeURIComponent(faultCode)}&timestamp=${encodeURIComponent(ts)}`
+                : '';
+
+            const isFault = faultCode !== 'E00';
+            const codeBadgeClass = isFault ? 'bg-danger' : 'bg-success';
+
+            const st = statusBadge(status);
+            const dotHtml = (normalizeFaultStatus(status) === 'pending')
+                ? `<span class="ws-fault-dot bg-danger me-1" title="未处理"></span>`
+                : ``;
+
+            const tr = document.createElement('tr');
+            // 安全：timeStr/nodeId 均可能来自数据库/设备上报，渲染到 innerHTML 前必须做 HTML 转义
+            // 紧凑格式：只显示时分秒
+            const safeTime = escapeHtml(timeStr ? timeStr.split(' ')[1] || timeStr : '');
+            // 节点名截断显示
+            const shortNodeId = nodeId && nodeId.length > 10 ? nodeId.substring(0, 10) + '...' : nodeId;
+            const safeNodeId = escapeHtml(shortNodeId);
+            const safeCode = escapeHtml(faultCode);
+            tr.innerHTML = `
+                <td title="${escapeHtml(timeStr)}">${safeTime}</td>
+                <td title="${escapeHtml(nodeId)}">${safeNodeId}</td>
+                <td>
+                    ${dotHtml}
+                    ${canJump ? `<a href="${jumpUrl}" class="text-decoration-none" title="点击跳转故障快照">
+                        <span class="badge ${codeBadgeClass}">${safeCode}</span>
+                    </a>` : `<span class="badge ${codeBadgeClass}">${safeCode}</span>`}
+                    <span class="badge ${st.cls}">${st.text}</span>
+                </td>
+            `;
+            tbody.appendChild(tr);
+        }
+    }
+
+    // ========== 处理URL参数（从全局搜索跳转） ==========
+    let pendingNodeSelection = null;  // 存储待选择的边缘节点ID
+    
+    function handleURLParams() {
+        const urlParams = new URLSearchParams(window.location.search);
+        
+        // 1. 处理边缘节点选择
+        const selectNodeId = urlParams.get('select');
+        if (selectNodeId) {
+            pendingNodeSelection = selectNodeId;
+            // 尝试立即选择（如果数据已加载）
+            trySelectPendingNode();
+        }
+        
+        // 2. 处理标签页切换
+        const tab = urlParams.get('tab');
+        if (tab === 'time' || tab === 'fft') {
+            // 延迟执行，确保页面已完全加载
+            setTimeout(() => {
+                switchChartTab(tab === 'fft' ? 'freq' : 'time');
+            }, 300);
+        }
+        
+        // 3. 处理通道选择
+        const channel = urlParams.get('channel');
+        if (channel !== null) {
+            const channelIndex = parseInt(channel);
+            if (!isNaN(channelIndex) && channelIndex >= 0 && channelIndex < 4) {
+                // 延迟执行，确保边缘节点已选择
+                setTimeout(() => {
+                    if (currentNodeId) {
+                        selectChannel(channelIndex);
+                    }
+                }, 500);
+            }
+        }
+        
+        // 4. 处理侧边栏聚焦
+        const focus = urlParams.get('focus');
+        if (focus === 'sidebar') {
+            const nodeListGroup = document.getElementById('nodeList');
+            if (nodeListGroup) {
+                // 添加高亮动画效果
+                nodeListGroup.style.transition = 'all 0.3s ease';
+                nodeListGroup.style.boxShadow = '0 0 20px rgba(37, 99, 235, 0.5)';
+                nodeListGroup.style.border = '2px solid #2563eb';
+                
+                // 滚动到边缘节点列表
+                nodeListGroup.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                
+                // 3秒后移除高亮
+                setTimeout(() => {
+                    nodeListGroup.style.boxShadow = '';
+                    nodeListGroup.style.border = '';
+                }, 3000);
+            }
+        }
+        
+        // 清除URL参数（但不包括focus=fault，因为它需要在数据加载后处理）
+        const hasParams = selectNodeId || tab || channel !== null || (focus && focus !== 'fault');
+        if (hasParams) {
+            window.history.replaceState({}, '', '/monitor');
+        }
+    }
+    
+    // 尝试选择待选择的边缘节点（在边缘节点数据加载后调用）
+    function trySelectPendingNode() {
+        if (pendingNodeSelection && NODE_CONFIGS && Object.keys(NODE_CONFIGS).length > 0) {
+            const nodeId = pendingNodeSelection;
+            if (NODE_CONFIGS[nodeId]) {
+                selectNode(nodeId);
+                pendingNodeSelection = null;  // 清除待选择标记
+                console.log(`✅ 已自动选择边缘节点: ${nodeId}`);
+            } else {
+                console.warn(`⚠️ 边缘节点 ${nodeId} 不存在或未在线`);
+                pendingNodeSelection = null;  // 清除无效的待选择标记
+            }
+        }
+    }
+
+    // ========== 初始化 ==========
+    document.addEventListener('DOMContentLoaded', function() {
+        timeDomainChart = echarts.init(document.getElementById('time-domain-chart'));
+        frequencyDomainChart = echarts.init(document.getElementById('frequency-domain-chart'));
+
+        // 初始化配置标记
+        if (timeDomainChart) {
+            timeDomainChart._configInitialized = false;
+        }
+        if (frequencyDomainChart) {
+            frequencyDomainChart._configInitialized = false;
+        }
+
+        // 设置示波器式交互（轴独立缩放）- 使用统一的缩放工具函数
+        const timeChartDom = document.getElementById('time-domain-chart');
+        if (timeDomainChart && timeChartDom) {
+            setupChartZoom(timeDomainChart, timeChartDom);
+            timeChartDom._zoomApplied = true;
+        }
+
+        // 频域图也启用同样的缩放/拖拽交互（与时域保持一致）
+        const freqChartDom = document.getElementById('frequency-domain-chart');
+        if (frequencyDomainChart && freqChartDom) {
+            setupChartZoom(frequencyDomainChart, freqChartDom);
+            freqChartDom._zoomApplied = true;
+        }
+        
+        // 检查是否有从系统概览页面传来的节点ID
+        const selectedNodeId = localStorage.getItem('selectedNodeId');
+        if (selectedNodeId) {
+            console.log(`📍 检测到从系统概览传来的节点ID: ${selectedNodeId}`);
+            pendingNodeSelection = selectedNodeId;
+            // 清除localStorage，避免下次进入时误选
+            localStorage.removeItem('selectedNodeId');
+        }
+        
+        // 首次加载活动边缘节点
+        fetchActiveNodes();
+        initializeAllNodeData();
+        
+        // 初始化边缘节点列表
+        renderNodeList();
+
+        // 绑定上报请求按钮
+        const btnFull = document.getElementById('btn-request-full');
+        const btnSummary = document.getElementById('btn-request-summary');
+        const btnSendUploadPoints = document.getElementById('btn-send-upload-points');
+        const btnSendDownsample = document.getElementById('btn-send-downsample');
+        if (btnFull) {
+            btnFull.addEventListener('click', () => requestReportMode('full'));
+        }
+        if (btnSummary) {
+            btnSummary.addEventListener('click', () => requestReportMode('summary'));
+        }
+        if (btnSendUploadPoints) {
+            btnSendUploadPoints.addEventListener('click', requestUploadPoints);
+        }
+        if (btnSendDownsample) {
+            btnSendDownsample.addEventListener('click', requestDownsampleStep);
+        }
+        const uploadPointsInput = document.getElementById('upload-points-input');
+        if (uploadPointsInput) {
+            uploadPointsInput.addEventListener('input', () => {
+                if (currentNodeId) {
+                    uploadPointsDraftByNode[currentNodeId] = uploadPointsInput.value;
+                }
+            });
+            uploadPointsInput.addEventListener('keydown', (event) => {
+                if (event.key === 'Enter' && !event.isComposing) {
+                    event.preventDefault();
+                    requestUploadPoints();
+                }
+            });
+        }
+        const downsampleInput = document.getElementById('downsample-step-input');
+        if (downsampleInput) {
+            downsampleInput.addEventListener('input', () => {
+                if (currentNodeId) {
+                    downsampleDraftByNode[currentNodeId] = downsampleInput.value;
+                }
+            });
+            downsampleInput.addEventListener('keydown', (event) => {
+                if (event.key === 'Enter' && !event.isComposing) {
+                    event.preventDefault();
+                    requestDownsampleStep();
+                }
+            });
+        }
+        setReportModeButtonState('summary');
+        setReportModeButtonsEnabled(false);
+        setUploadPointsControlsEnabled(false);
+        setDownsampleControlsEnabled(false);
+
+        // 处理URL参数（全局搜索跳转）
+        handleURLParams();
+
+        // 初始化WebSocket连接（替代轮询）
+        initWebSocket();
+
+        // 加载系统设置的报警阈值（用于“超阈值红点/提示”）
+        loadAlarmThresholds();
+
+        // 故障日志：加载历史记录，避免表格长期空白
+        loadFaultLogHistory();
+        // 故障日志：轮询兜底（覆盖 /api/upload 等不推送 WebSocket 的链路）
+        startFaultLogPolling();
+
+        // 监听Bootstrap标签页切换事件（Bootstrap 5事件绑定在按钮上）
+        const timeTab = document.getElementById('timeTab');
+        const freqTab = document.getElementById('freqTab');
+        
+        if (timeTab) {
+            timeTab.addEventListener('shown.bs.tab', function() {
+                activeTab = 'time';
+                setTimeout(() => {
+                    if (timeDomainChart) timeDomainChart.resize();
+                }, 150);
+                updateCharts();
+            });
+        }
+        
+        if (freqTab) {
+            freqTab.addEventListener('shown.bs.tab', function() {
+                activeTab = 'freq';
+                setTimeout(() => {
+                    if (frequencyDomainChart) frequencyDomainChart.resize();
+                }, 150);
+                updateCharts();
+            });
+        }
+        
+        window.addEventListener('resize', function() {
+            // 只调整当前可见的图表
+            if (activeTab === 'time' && timeDomainChart) {
+                timeDomainChart.resize();
+            } else if (activeTab === 'freq' && frequencyDomainChart) {
+                frequencyDomainChart.resize();
+            }
+        });
+    });
+
+    // ========== 从系统设置读取报警阈值（优先服务器，其次 localStorage）==========
+    async function loadAlarmThresholds() {
+        // 1) 服务器优先（与 settings.html 对齐）
+        try {
+            const resp = await fetch('/api/admin/config', { method: 'GET' });
+            if (resp.ok) {
+                const result = await resp.json();
+                if (result && result.success && result.data) {
+                    const cfg = result.data;
+                    if (cfg.voltage_max !== undefined && cfg.voltage_max !== null) {
+                        const v = Number(cfg.voltage_max);
+                        if (Number.isFinite(v) && v > 0) alarmThresholds.voltageMax = v;
+                    }
+                    if (cfg.leakage_threshold !== undefined && cfg.leakage_threshold !== null) {
+                        const v = Number(cfg.leakage_threshold);
+                        if (Number.isFinite(v) && v >= 0) alarmThresholds.leakageThreshold = v;
+                    }
+                    console.log('[AlarmThresholds] 已从服务器加载:', alarmThresholds);
+                    return;
+                }
+            }
+        } catch (e) {
+            console.warn('[AlarmThresholds] 从服务器加载失败，回退本地:', e);
+        }
+
+        // 2) 本地兜底（settings.html 会写入 localStorage）
+        try {
+            const v1 = Number(localStorage.getItem('voltLimit'));
+            if (Number.isFinite(v1) && v1 > 0) alarmThresholds.voltageMax = v1;
+            const v2 = Number(localStorage.getItem('currLimit'));
+            if (Number.isFinite(v2) && v2 >= 0) alarmThresholds.leakageThreshold = v2;
+            console.log('[AlarmThresholds] 已从本地加载:', alarmThresholds);
+        } catch (e) {}
+    }
+
+    // ========== 阈值告警（红点 + 提示）==========
+    function applyThresholdAlarms(d) {
+        // 电压：用直流母线(+)做上限判定
+        const voltage = Number(d && d.voltage !== undefined ? d.voltage : 0);
+        const voltageNeg = Number(d && d.voltage_neg !== undefined ? d.voltage_neg : 0);
+        const leakage = Number(d && d.leakage !== undefined ? d.leakage : 0);
+
+        const voltageHighPos = Number.isFinite(voltage) && voltage > alarmThresholds.voltageMax;
+        // 负母线：按幅值判断（等价于 voltageNeg < -voltageMax）
+        const voltageHighNeg = Number.isFinite(voltageNeg) && (Math.abs(voltageNeg) > alarmThresholds.voltageMax);
+        const leakageHigh = Number.isFinite(leakage) && leakage > alarmThresholds.leakageThreshold;
+
+        // UI：红点显示/隐藏
+        const dotV = document.getElementById('alarm-dot-voltage');
+        if (dotV) dotV.classList.toggle('d-none', !voltageHighPos);
+        const dotVn = document.getElementById('alarm-dot-voltage-neg');
+        if (dotVn) dotVn.classList.toggle('d-none', !voltageHighNeg);
+        const dotL = document.getElementById('alarm-dot-leakage');
+        if (dotL) dotL.classList.toggle('d-none', !leakageHigh);
+
+        // 事件提示：只在“状态变化”时提示，避免刷屏
+        if (voltageHighPos !== alarmState.voltageHighPos) {
+            alarmState.voltageHighPos = voltageHighPos;
+            if (typeof window.publishSystemEvent === 'function') {
+                if (voltageHighPos) {
+                    window.publishSystemEvent(`⚠️ 直流母线(+)电压超限：${voltage.toFixed(2)}V > 阈值${alarmThresholds.voltageMax}V`, 'warning');
+                } else {
+                    window.publishSystemEvent(`✅ 直流母线(+)电压已恢复：${voltage.toFixed(2)}V`, 'success');
+                }
+            }
+        }
+
+        if (voltageHighNeg !== alarmState.voltageHighNeg) {
+            alarmState.voltageHighNeg = voltageHighNeg;
+            if (typeof window.publishSystemEvent === 'function') {
+                if (voltageHighNeg) {
+                    window.publishSystemEvent(`⚠️ 直流母线(-)电压超限：${voltageNeg.toFixed(2)}V（幅值>${alarmThresholds.voltageMax}V）`, 'warning');
+                } else {
+                    window.publishSystemEvent(`✅ 直流母线(-)电压已恢复：${voltageNeg.toFixed(2)}V`, 'success');
+                }
+            }
+        }
+
+        if (leakageHigh !== alarmState.leakageHigh) {
+            alarmState.leakageHigh = leakageHigh;
+            if (typeof window.publishSystemEvent === 'function') {
+                if (leakageHigh) {
+                    window.publishSystemEvent(`⚠️ 漏电流超限：${leakage.toFixed(3)}mA > 阈值${alarmThresholds.leakageThreshold}mA`, 'warning');
+                } else {
+                    window.publishSystemEvent(`✅ 漏电流已恢复：${leakage.toFixed(3)}mA`, 'success');
+                }
+            }
+        }
+    }
+
+    // ========== 获取活动边缘节点 (心跳发现系统) ==========
+    // 注意：边缘节点注册/注销通知已移至全局脚本（base.html），这里只负责监测页面的数据更新
+    
+    async function fetchActiveNodes() {
+        try {
+            const response = await fetch('/api/get_active_nodes');
+            
+            // 处理 HTTP 错误（500, 404 等）
+            if (!response.ok) {
+                // 登录态过期：后端会对 /api/* 返回 401 JSON（不会 302 跳转）
+                // 如果不处理，前端会表现为“节点停机/一直等待”，但实际上是需要重新登录。
+                if (response.status === 401) {
+                    console.warn('[fetchActiveNodes] 401 未登录或登录态失效，跳转登录页');
+                    try {
+                        const next = encodeURIComponent(window.location.pathname + window.location.search);
+                        window.location.href = `/login?next=${next}`;
+                    } catch (e) {
+                        window.location.href = '/login';
+                    }
+                    return;
+                }
+                console.error(`[fetchActiveNodes] HTTP错误: ${response.status} ${response.statusText}`);
+                // 即使出错也继续轮询，不中断
+                return;
+            }
+
+            // 兼容：登录失效时可能返回 HTML（重定向到登录页），避免 response.json() 抛错导致轮询中断
+            const ct = (response.headers.get('Content-Type') || '').toLowerCase();
+            if (!ct.includes('application/json')) {
+                console.warn('[fetchActiveNodes] 响应非JSON，可能登录已失效，跳过本轮更新');
+                return;
+            }
+
+            const result = await response.json();
+            
+            if (!result.success) {
+                console.error('[fetchActiveNodes] API返回失败:', result.error);
+                // 显示加载状态
+                if (timeDomainChart && !timeDomainChart._loadingShown) {
+                    timeDomainChart.showLoading('default', {
+                        text: '获取数据中...',
+                        color: '#0d6efd',
+                        textColor: '#666',
+                        maskColor: 'rgba(255, 255, 255, 0.8)',
+                        zlevel: 0
+                    });
+                    timeDomainChart._loadingShown = true;
+                }
+                if (frequencyDomainChart && !frequencyDomainChart._loadingShown) {
+                    frequencyDomainChart.showLoading('default', {
+                        text: '获取数据中...',
+                        color: '#8e44ad',
+                        textColor: '#666',
+                        maskColor: 'rgba(255, 255, 255, 0.8)',
+                        zlevel: 0
+                    });
+                    frequencyDomainChart._loadingShown = true;
+                }
+                // 即使出错也继续轮询，不中断
+                return;
+            }
+            
+            // 成功获取数据，清除加载状态标志
+            if (timeDomainChart) {
+                timeDomainChart._loadingShown = false;
+            }
+            if (frequencyDomainChart) {
+                frequencyDomainChart._loadingShown = false;
+            }
+            
+            const nodes = result.nodes || [];
+            
+            // 注意：不再在这里调用 syncNodeEvents，因为全局监控已经在 base.html 中处理
+            
+            // 将后端数据转换为前端格式
+            const newConfigs = {};
+            nodes.forEach(node => {
+                const nodeId = node.node_id || node.device_id;
+                if (!nodeId) return;
+                
+                // 转换通道数据格式（从后端接收完整数据）
+                const channels = (node.channels || []).map((ch, index) => {
+                    // 根据通道类型确定颜色
+                    let color = "primary";
+                    
+                    if (ch.type === "DC") {
+                        color = ch.value < 0 ? "danger" : "primary";
+                    } else if (ch.type === "Current") {
+                        color = "info";
+                    } else if (ch.type === "Leakage") {
+                        color = "warning";
+                    } else if (ch.type === "ISO") {
+                        color = "success";
+                    } else if (ch.type === "Temp") {
+                        color = "danger";
+                    }
+                    
+                    // 确定范围（基于通道类型和单位）
+                    let defaultRange = [0, 1000];
+                    if (ch.unit === "V") defaultRange = ch.value < 0 ? [-800, 0] : [0, 800];
+                    else if (ch.unit === "A") defaultRange = [0, 60];
+                    else if (ch.unit === "mA") defaultRange = [0, 50];
+                    else if (ch.unit === "MΩ") defaultRange = [0, 100];
+                    else if (ch.unit === "°C") defaultRange = [0, 100];
+                    
+                    const currentValue = ch.value !== undefined ? ch.value : 0;
+                    
+                    return {
+                        id: ch.id !== undefined ? ch.id : index,
+                        label: ch.label || `通道${index + 1}`,
+                        unit: ch.unit || "",
+                        type: ch.type || "DC",
+                        range: ch.range || defaultRange,
+                        color: color,
+                        currentValue: currentValue,  // 当前瞬时值（从后端接收）
+                        waveform: ch.waveform || [],  // 波形数组（从后端接收，120个采样点）
+                        fft_spectrum: ch.fft_spectrum || []  // FFT频谱数组（从后端接收，30个频率bin）
+                    };
+                });
+                
+                newConfigs[nodeId] = {
+                    status: node.status || "online",
+                    fault_code: node.fault_code || "E00",  // 保存故障代码
+                    channels: channels,
+                    report_mode: (node.report_mode || 'summary').toLowerCase()
+                };
+                reportModeByNode[nodeId] = newConfigs[nodeId].report_mode;
+                const ds = normalizeDownsampleStep(node.downsample_step);
+                if (ds !== null) {
+                    newConfigs[nodeId].downsample_step = ds;
+                    downsampleStepByNode[nodeId] = ds;
+                }
+                const up = normalizeUploadPoints(node.upload_points);
+                if (up !== null) {
+                    newConfigs[nodeId].upload_points = up;
+                    uploadPointsByNode[nodeId] = up;
+                }
+            });
+            
+            // 检查配置是否发生变化
+            const configChanged = JSON.stringify(NODE_CONFIGS) !== JSON.stringify(newConfigs);
+            
+            // ========== 检测故障状态变化（触发弹窗和消息）==========
+            const faultStateChanges = {};
+            Object.keys(newConfigs).forEach(nodeId => {
+                const oldNode = NODE_CONFIGS[nodeId];
+                const newNode = newConfigs[nodeId];
+                
+                if (oldNode) {
+                    const oldFaultCode = oldNode.fault_code || 'E00';
+                    const newFaultCode = newNode.fault_code || 'E00';
+                    
+                    // 检测从正常到故障的状态变化
+                    if (oldFaultCode === 'E00' && newFaultCode !== 'E00') {
+                        faultStateChanges[nodeId] = {
+                            from: oldFaultCode,
+                            to: newFaultCode,
+                            status: newNode.status
+                        };
+                    }
+                }
+            });
+            
+            if (configChanged) {
+                // 更新配置
+                NODE_CONFIGS = newConfigs;
+            
+            // 更新边缘节点列表显示
+            renderNodeList();
+            
+                // ========== 故障状态变化检测（仅记录日志，不触发通知）==========
+                // 修复：移除重复通知逻辑，因为全局监控（base.html）已经统一处理故障通知
+                // 这里只记录日志，避免双重弹窗
+                Object.keys(faultStateChanges).forEach(nodeId => {
+                    const change = faultStateChanges[nodeId];
+                    const faultTypeName = getFaultTypeName(change.to);
+                    
+                    // 只记录日志，不触发任何通知（全局监控已处理）
+                    console.log(`[Monitor页面] 边缘节点 ${nodeId} 故障状态变化: ${change.from} -> ${change.to} (${faultTypeName})`);
+                    // 注意：不再调用 showToast，因为全局监控的 publishSystemEvent 已经处理了通知
+                });
+                
+                // 如果有待选择的边缘节点（从URL参数），优先选择它
+                if (pendingNodeSelection) {
+                    trySelectPendingNode();
+                }
+                // 如果当前选中的边缘节点已不存在，选择第一个可用边缘节点
+                else if (currentNodeId && !NODE_CONFIGS[currentNodeId]) {
+                    const firstNode = Object.keys(NODE_CONFIGS)[0];
+                    if (firstNode) {
+                        selectNode(firstNode);
+                    } else {
+                        currentNodeId = null;
+                        renderChannelCards();
+                    }
+                } else if (currentNodeId) {
+                    // 刷新当前边缘节点的显示
+                renderChannelCards();
+                updateCharts();
+                }
+                
+                // 处理自动聚焦逻辑（优先于首次加载）
+                if (!autoFocusHandled && Object.keys(NODE_CONFIGS).length > 0) {
+                    handleAutoFocus();
+                }
+                
+                // 首次加载时自动选择第一个边缘节点（如果没有自动聚焦）
+                if (isFirstLoad && Object.keys(NODE_CONFIGS).length > 0 && !autoFocusHandled) {
+                    const firstNode = Object.keys(NODE_CONFIGS)[0];
+                    if (firstNode && !currentNodeId) {
+                        selectNode(firstNode);
+                        isFirstLoad = false;
+                    }
+                }
+            }
+
+            applyReportModeForNode(currentNodeId);
+            
+            // 辅助函数：获取故障类型名称
+            function getFaultTypeName(faultCode) {
+                const faultNames = {
+                    'E01': '交流窜入',
+                    'E02': '绝缘故障',
+                    'E03': '直流母线电容老化',
+                    'E04': '变流器IGBT开路',
+                    'E05': '直流母线接地故障'
+                };
+                return faultNames[faultCode] || `故障 ${faultCode}`;
+            }
+            
+        } catch (error) {
+            console.error('[fetchActiveNodes] 获取边缘节点列表时出错:', error);
+            // 即使出错也继续轮询，不中断
+            // 如果获取失败，显示等待提示
+            if (Object.keys(NODE_CONFIGS).length === 0) {
+            renderNodeList();
+            }
+        }
+    }
+
+    // 允许 base.html 的全局节点监控在节点变化时触发“立即刷新”
+    // 通过 window.edgewindOnNodesChanged 回调连接起来（避免互相强依赖）
+    (function attachNodeChangedHook() {
+        let t = null;
+        window.edgewindOnNodesChanged = function() {
+            clearTimeout(t);
+            t = setTimeout(() => {
+                // 立即拉取一次最新列表，保证“节点注册/注销”马上反映到侧边栏
+                fetchActiveNodes();
+            }, 50);
+        };
+    })();
+
+    // ========== 处理自动聚焦逻辑 ==========
+    function handleAutoFocus() {
+        if (autoFocusHandled) return;  // 只处理一次
+        
+        const focusType = getQueryParam('focus');
+        let targetNodeId = null;
+        
+        if (focusType === 'fault') {
+            // 查找第一个故障边缘节点
+            const faultyNode = Object.keys(NODE_CONFIGS).find(nodeId => {
+                const node = NODE_CONFIGS[nodeId];
+                return node && (node.status === 'fault' || node.status === 'faulty' || (node.fault_code && node.fault_code !== 'E00'));
+            });
+            if (faultyNode) {
+                targetNodeId = faultyNode;
+            }
+        } else if (getQueryParam('node_id')) {
+            // 支持直接链接: /monitor?node_id=STM32_Node_004
+            targetNodeId = getQueryParam('node_id');
+        }
+        
+        // 如果找到了目标边缘节点，则自动选择
+        if (targetNodeId) {
+            selectNode(targetNodeId);
+            autoFocusHandled = true;
+            
+            // 清除URL参数，防止刷新时重复选择
+            window.history.replaceState({}, document.title, '/monitor');
+            
+            // 滚动到边缘节点在侧边栏中的位置
+            // 注意：不要用 querySelector(`[data-node-id="${id}"]`) 直接拼接，
+            // 当 node_id 含引号等特殊字符时会导致选择器语法错误，从而“选不中”。
+            setTimeout(() => {
+                const nodeList = document.getElementById('nodeList');
+                const el = findNodeListItem(nodeList, targetNodeId);
+                if (el) {
+                    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                }
+            }, 300);
+            
+            console.log(`✅ 已自动聚焦到边缘节点: ${targetNodeId}`);
+        } else if (focusType && !targetNodeId) {
+            // 如果指定了focus但没有找到匹配的边缘节点，标记为已处理，避免重复尝试
+            autoFocusHandled = true;
+            window.history.replaceState({}, document.title, '/monitor');
+            console.log(`⚠️ 未找到匹配的边缘节点 (focus: ${focusType})`);
+        }
+    }
+
+    // ========== 渲染边缘节点列表 (左侧边栏) - 稳定就地更新版本 ==========
+    let nodeListFirstRender = true;  // 标记是否为首次渲染（用于控制自动滚动）
+
+    // 安全：避免把 node_id 等字段直接拼进 innerHTML 造成 XSS/选择器注入
+    function escapeHtml(s) {
+        const str = String(s ?? '');
+        return str
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    function sanitizeDomId(raw) {
+        // id 只能使用安全字符，避免 querySelector / CSS 选择器异常
+        return String(raw ?? '').replace(/[^A-Za-z0-9_-]/g, '_');
+    }
+
+    function badgeDomId(nodeId) {
+        return `badge-${sanitizeDomId(nodeId)}`;
+    }
+
+    function findNodeListItem(nodeListEl, nodeId) {
+        if (!nodeListEl) return null;
+        for (const child of Array.from(nodeListEl.children)) {
+            if (child && child.getAttribute && child.getAttribute('data-node-id') === nodeId) {
+                return child;
+            }
+        }
+        return null;
+    }
+    
+    function renderNodeList() {
+        const nodeList = document.getElementById('nodeList');
+        if (!nodeList) return;
+        
+        // 获取所有边缘节点并转换为数组，按 node_id 字母顺序排序（稳定排序）
+        const nodeArray = Object.keys(NODE_CONFIGS)
+            .map(nodeId => ({
+                node_id: nodeId,
+                ...NODE_CONFIGS[nodeId]
+            }))
+            .sort((a, b) => a.node_id.localeCompare(b.node_id));  // 固定排序，防止跳动
+        
+        // 如果没有边缘节点，显示等待提示
+        if (nodeArray.length === 0) {
+            // 只在首次渲染或边缘节点列表为空时清空
+            if (nodeListFirstRender || nodeList.children.length === 0) {
+                nodeList.innerHTML = `
+                    <div class="text-center text-muted py-5">
+                        <div class="spinner-border spinner-border-sm mb-2" role="status">
+                            <span class="visually-hidden">加载中...</span>
+                        </div>
+                        <div>等待边缘节点连接...</div>
+                        <small class="text-muted d-block mt-2">请确保模拟器正在运行</small>
+                    </div>
+                `;
+            }
+            nodeListFirstRender = false;
+            return;
+        }
+
+        // 清除等待提示（如果存在）
+        const waitingMsg = nodeList.querySelector('.text-center.text-muted');
+        if (waitingMsg) {
+            waitingMsg.remove();
+        }
+        
+        // 获取当前存在的所有边缘节点元素ID
+        const existingNodeIds = new Set();
+        Array.from(nodeList.children).forEach(child => {
+            const nodeId = child.getAttribute('data-node-id');
+            if (nodeId) {
+                existingNodeIds.add(nodeId);
+            }
+        });
+        
+        // 遍历排序后的边缘节点数组，进行差异更新
+        nodeArray.forEach((node, index) => {
+            const nodeId = node.node_id;
+            const status = node.status || 'offline';
+            const faultCode = node.fault_code || 'E00';
+            const isActive = nodeId === currentNodeId;
+            // 关键：以 fault_code 为准判断“是否故障”，避免出现在线/正常来回跳
+            // 后端在 node_status_update 中可能一直传 status=online，但 fault_code 会变化（E00/E01...）
+            const isFault = (faultCode && faultCode !== 'E00') || status === 'fault' || status === 'faulty';
+            
+            // 确定状态徽章样式（单一徽章：离线 / 正常 / 故障码）
+            let badgeClass, badgeText, badgeIcon;
+            if (isFault) {
+                badgeClass = 'bg-danger';
+                badgeText = faultCode;
+                badgeIcon = '⚠';
+            } else if (status === 'online') {
+                badgeClass = 'bg-success';
+                // 统一显示“正常”，避免“在线/正常”来回切换造成观感跳动
+                badgeText = '正常';
+                badgeIcon = '●';
+                } else {
+                badgeClass = 'bg-secondary';
+                badgeText = '离线';
+                badgeIcon = '○';
+            }
+            
+            // 查找现有元素
+            let listItem = findNodeListItem(nodeList, nodeId);
+            
+            if (!listItem) {
+                // A. 创建新元素（首次出现）
+                listItem = document.createElement('div');
+                listItem.setAttribute('data-node-id', nodeId);
+                listItem.className = 'list-group-item list-group-item-action';
+                listItem.style.cursor = 'pointer';
+                listItem.onclick = () => selectNode(nodeId);
+
+                const bid = badgeDomId(nodeId);
+                
+                listItem.innerHTML = `
+                    <div class="d-flex justify-content-between align-items-center">
+                        <div class="flex-grow-1 d-flex align-items-center">
+                            <div class="fw-bold">${escapeHtml(nodeId)}</div>
+                        </div>
+                        <span id="${bid}" class="badge rounded-pill ${badgeClass}">
+                            ${badgeIcon} ${badgeText}
+                        </span>
+                </div>
+            `;
+                
+                // 插入到正确的位置（保持排序）
+                // 找到应该插入的位置（按字母顺序）
+                let insertBefore = null;
+                for (let i = index + 1; i < nodeArray.length; i++) {
+                    const nextNodeId = nodeArray[i].node_id;
+                    const nextElement = findNodeListItem(nodeList, nextNodeId);
+                    if (nextElement) {
+                        insertBefore = nextElement;
+                        break;
+                    }
+                }
+                
+                if (insertBefore) {
+                    nodeList.insertBefore(listItem, insertBefore);
+            } else {
+                    nodeList.appendChild(listItem);
+                }
+            } else {
+                // B. 更新现有元素（就地更新，只修改变化的部分）
+                const badge = listItem.querySelector(`#${badgeDomId(nodeId)}`);
+                
+                if (badge) {
+                    // 获取当前badge的class和text
+                    const currentBadgeClass = badge.classList.contains('bg-danger') ? 'bg-danger' :
+                                             badge.classList.contains('bg-success') ? 'bg-success' : 'bg-secondary';
+                    const currentBadgeText = badge.textContent.trim();
+                    const targetBadgeText = `${badgeIcon} ${badgeText}`;
+                    
+                    // 只在状态变化时更新badge（避免不必要的DOM操作）
+                    if (currentBadgeClass !== badgeClass || currentBadgeText !== targetBadgeText) {
+                        // 更新badge class
+                        badge.classList.remove('bg-danger', 'bg-success', 'bg-secondary');
+                        badge.classList.add(badgeClass);
+                        // 更新badge text
+                        badge.textContent = targetBadgeText;
+                    }
+                }
+            }
+            
+            // 更新选中状态和样式（只在变化时更新）
+            const shouldBeActive = isActive;
+            const isCurrentlyActive = listItem.classList.contains('border-start') && 
+                                     listItem.classList.contains('border-primary');
+            
+            if (shouldBeActive !== isCurrentlyActive) {
+                if (shouldBeActive) {
+                    listItem.classList.add('border-start', 'border-4', 'border-primary', 'bg-light');
+                } else {
+                    listItem.classList.remove('border-start', 'border-4', 'border-primary', 'bg-light');
+                }
+            }
+            
+            // 更新故障脉冲动画（只在变化时更新）
+            const shouldHavePulse = isFault;
+            const hasPulse = listItem.classList.contains('fault-pulse');
+            
+            if (shouldHavePulse !== hasPulse) {
+                if (shouldHavePulse) {
+                    listItem.classList.add('fault-pulse');
+                } else {
+                    listItem.classList.remove('fault-pulse');
+                }
+            }
+            
+            // 从existingNodeIds中移除，标记为已处理
+            existingNodeIds.delete(nodeId);
+        });
+        
+        // C. 移除已断开的边缘节点（不再存在于NODE_CONFIGS中）
+        existingNodeIds.forEach(removedNodeId => {
+            const removedElement = findNodeListItem(nodeList, removedNodeId);
+            if (removedElement) {
+                removedElement.remove();
+            }
+        });
+        
+        // 标记首次渲染完成
+        if (nodeListFirstRender) {
+            nodeListFirstRender = false;
+        }
+    }
+
+    // ========== 渲染通道卡片 (顶部水平排列) ==========
+    // 缓存上次的通道卡片状态，用于选择性更新
+    let lastChannelCardStates = {};
+    
+    function renderChannelCards() {
+        // 兼容：页面顶部可能使用的是固定4卡片布局（card-voltage等），而不是 channelCardsRow 容器。
+        // 若容器不存在，直接跳过，避免报错导致整个前端更新循环中断（你看到的 innerHTML of null）。
+        const channelCardsRowEl = document.getElementById('channelCardsRow');
+        if (!channelCardsRowEl) {
+            return;
+        }
+
+        if (!currentNodeId) {
+            channelCardsRowEl.innerHTML = 
+                '<div class="col-12 text-center text-muted py-5">请先选择边缘节点</div>';
+            return;
+        }
+        
+        const node = NODE_CONFIGS[currentNodeId];
+        if (!node) return;
+        
+        const container = channelCardsRowEl;
+        const currentStates = {};
+        // 安全：currentNodeId 可能来自外部数据，用于 DOM id 时必须净化
+        const safeNodeIdForDom = sanitizeDomId(currentNodeId);
+        
+        // 检查是否需要完全重新渲染（边缘节点变化或首次渲染）
+        const needsFullRender = !lastChannelCardStates[currentNodeId] || 
+                                 Object.keys(lastChannelCardStates[currentNodeId]).length !== node.channels.length;
+        
+        if (needsFullRender) {
+            // 完全重新渲染
+        const html = node.channels.map((channel, index) => {
+            const channelData = nodeData[currentNodeId]?.[channel.id];
+                const currentValue = channelData?.currentValue || channel.currentValue || 0;
+            const displayValue = formatValue(currentValue, channel.unit);
+            const isSelected = index === currentChannelIndex;
+
+            // 安全：颜色仅允许 Bootstrap 语义色，避免把任意字符串拼进 CSS var
+            const allowedColors = new Set(['primary','danger','info','warning','success','secondary','dark','light']);
+            const safeColor = allowedColors.has(String(channel.color || '').trim()) ? String(channel.color).trim() : 'primary';
+            const safeLabel = escapeHtml(channel.label || channel.name || `通道${index + 1}`);
+            const gaugeDomId = `gauge-${safeNodeIdForDom}-${index}`;
+            
+            // 选中状态样式
+            const selectedClass = isSelected ? 'border-primary border-2 shadow-sm' : '';
+            const selectedBg = isSelected ? 'bg-light' : '';
+                
+                currentStates[index] = { value: currentValue, isSelected };
+            
+            return `
+                <div class="col-md-3 mb-3">
+                    <div class="card channel-card ${selectedClass} ${selectedBg}" 
+                         onclick="selectChannel(${index})"
+                         style="cursor: pointer; border-top: 4px solid var(--bs-${safeColor});">
+                            <div class="card-body text-center p-2">
+                                <div class="text-muted small mb-1">${safeLabel}</div>
+                                <div id="${gaugeDomId}" style="height: 160px; width: 100%;"></div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }).join('');
+        
+        container.innerHTML = html;
+            lastChannelCardStates[currentNodeId] = currentStates;
+            
+            // 初始化所有Gauge图表（延迟执行，确保DOM已渲染）
+            setTimeout(() => {
+                node.channels.forEach((channel, index) => {
+                    const gaugeId = `gauge-${safeNodeIdForDom}-${index}`;
+                    // 确保通道数据包含 currentValue（如果只有 value，则转换）
+                    const channelData = nodeData[currentNodeId]?.[channel.id];
+                    if (channelData) {
+                        if (channelData.currentValue === undefined && channelData.value !== undefined) {
+                            channelData.currentValue = channelData.value;
+                        }
+                        channel.currentValue = channelData.currentValue;
+                    } else if (channel.value !== undefined && channel.currentValue === undefined) {
+                        channel.currentValue = channel.value;
+                    }
+                    initOrUpdateGauge(gaugeId, channel, currentNodeId, index);
+                });
+            }, 200);
+        } else {
+            // 增量更新：只更新变化的值
+            node.channels.forEach((channel, index) => {
+                const channelData = nodeData[currentNodeId]?.[channel.id];
+                const currentValue = channelData?.currentValue || channel.currentValue || 0;
+                const displayValue = formatValue(currentValue, channel.unit);
+                const isSelected = index === currentChannelIndex;
+                
+                const lastState = lastChannelCardStates[currentNodeId][index];
+                const valueChanged = !lastState || lastState.value !== currentValue;
+                const selectionChanged = !lastState || lastState.isSelected !== isSelected;
+                
+                // 只在值或选中状态变化时更新DOM
+                if (valueChanged || selectionChanged) {
+                    const valueElement = document.getElementById(`channel-card-value-${currentNodeId}-${index}`);
+                    if (valueElement && valueChanged) {
+                        valueElement.textContent = displayValue;
+                    }
+                    
+                    // 更新选中状态
+                    if (selectionChanged) {
+                        const cardElement = valueElement?.closest('.card');
+                        if (cardElement) {
+                            if (isSelected) {
+                                cardElement.classList.add('border-primary', 'border-2', 'shadow-sm', 'bg-light');
+                                // 添加选中标记
+                                const cardBody = cardElement.querySelector('.card-body');
+                                if (cardBody && !cardBody.querySelector('.text-primary')) {
+                                    const selectedDiv = document.createElement('div');
+                                    selectedDiv.className = 'mt-2';
+                                    selectedDiv.innerHTML = '<small class="text-primary"><i class="bi bi-check-circle"></i> 已选中</small>';
+                                    cardBody.appendChild(selectedDiv);
+                                }
+                            } else {
+                                cardElement.classList.remove('border-primary', 'border-2', 'shadow-sm', 'bg-light');
+                                // 移除选中标记
+                                const selectedDiv = cardElement.querySelector('.text-primary')?.closest('.mt-2');
+                                if (selectedDiv) selectedDiv.remove();
+                            }
+                        }
+                    }
+                    
+                    currentStates[index] = { value: currentValue, isSelected };
+                } else {
+                    currentStates[index] = lastState;
+                }
+            });
+            
+            lastChannelCardStates[currentNodeId] = currentStates;
+        }
+    }
+
+    // ========== 选择边缘节点（优化版：添加订阅管理） ==========
+    function selectNode(nodeId) {
+        // 如果选择的是同一个节点，直接返回
+        if (currentNodeId === nodeId) {
+            return;
+        }
+        
+        // 取消订阅之前的节点（如果存在）
+        if (currentNodeId && socket && socket.connected) {
+            socket.emit('unsubscribe_node', { node_id: currentNodeId });
+            console.log(`📡 取消订阅节点: ${currentNodeId}`);
+        }
+        
+        // 更新当前节点ID
+        currentNodeId = nodeId;
+        currentChannelIndex = 0;
+        
+        // 订阅新节点的完整数据
+        if (socket && socket.connected) {
+            socket.emit('subscribe_node', { node_id: nodeId });
+            console.log(`📡 订阅节点: ${nodeId}`);
+        }
+        
+        // 应用故障模式视觉效果
+        const node = NODE_CONFIGS[nodeId];
+        const status = node && node.status ? node.status : 'offline';
+        applyFaultModeEffects(status);
+        
+        // 更新边缘节点列表（高亮当前选中）- 使用稳定的就地更新，不会导致跳动
+        renderNodeList();
+        
+        // 更新通道卡片
+        renderChannelCards();
+        
+        // 更新卡片高亮（默认选中第一个通道/voltage）
+        currentSource = 'voltage';
+        selectSource('voltage');
+        
+        // 更新图表
+        updateCharts();
+
+        // 更新上报请求按钮状态
+        applyReportModeForNode(currentNodeId);
+        
+        // 更新性能监控面板
+        if (typeof window.updatePerfPanel === 'function') {
+            window.updatePerfPanel();
+        }
+    }
+
+    // ========== 选择通道（保留兼容性）==========
+    function selectChannel(index) {
+        currentChannelIndex = index;
+        // Map index to source
+        const indexToSource = {0: 'voltage', 1: 'voltage_neg', 2: 'current', 3: 'leakage'};
+        const source = indexToSource[index] || 'voltage';
+        selectSource(source);
+    }
+    
+    // ========== 故障日志辅助函数 ==========
+    // timeStr: 建议传入 "YYYY-MM-DD HH:MM:SS"（便于跳转快照事件）
+    function addLogEntry(nodeId, faultCode, timeStr, status = 'pending', logId = null) {
+        const tbody = document.getElementById('fault-log-body');
+        if (!tbody) {
+            console.warn('[addLogEntry] 找不到故障日志表体元素');
+            return;
+        }
+
+        // 只记录真实故障（E01-E05），E00 不进入“系统故障日志”
+        if (!faultCode || faultCode === 'E00') {
+            return;
+        }
+
+        const normStatus = normalizeFaultStatus(status);
+        const dedupeKey = `${timeStr}|${nodeId}|${faultCode}`;
+        const idKey = (logId !== null && logId !== undefined) ? `id:${logId}` : null;
+
+        // 关键修复：如果轮询拿到了 id，而之前 WebSocket/实时链路写过“无 id 临时记录”，这里要合并到同一条
+        if (idKey && faultLogMap.has(dedupeKey)) {
+            const old = faultLogMap.get(dedupeKey);
+            if (old && (old.id === null || old.id === undefined)) {
+                faultLogMap.delete(dedupeKey);
+            }
+        }
+
+        const key = idKey || dedupeKey;
+        const prev = faultLogMap.get(key);
+        const next = {
+            id: (logId !== null && logId !== undefined) ? logId : (prev ? prev.id : null),
+            nodeId,
+            faultCode,
+            timeStr,
+            status: normStatus,
+            tsMs: parseBeijingTimeToMs(timeStr)
+        };
+
+        // 若已存在，允许状态更新；时间取更新后可解析的（通常一致）
+        faultLogMap.set(key, next);
+
+        // 统一排序渲染（未处理/处理中/已处理 + 时间）
+        renderFaultLogTable(50);
+    }
+
+    // ========== 故障日志：空状态提示 ==========
+    function renderFaultLogEmptyState() {
+        const tbody = document.getElementById('fault-log-body');
+        if (!tbody) return;
+        if (tbody.children.length > 0) return;
+
+        const row = document.createElement('tr');
+        row.setAttribute('data-empty', '1');
+        row.innerHTML = `
+            <td colspan="3" class="text-center text-muted py-2">
+                <small>暂无故障记录</small>
+            </td>
+        `;
+        tbody.appendChild(row);
+    }
+
+    // ========== 故障日志：历史回填（从后端拉取最近工单/故障记录）==========
+    async function loadFaultLogHistory(limit = 50) {
+        try {
+            const resp = await fetch('/api/faults');
+            if (!resp.ok) {
+                console.warn(`[loadFaultLogHistory] HTTP错误: ${resp.status} ${resp.statusText}`);
+                renderFaultLogEmptyState();
+                return;
+            }
+            const result = await resp.json();
+            const faults = Array.isArray(result.faults) ? result.faults : [];
+
+            // 仅展示“真实故障”（E01-E05）；E00 不写入故障日志
+            const faultOnly = faults.filter(f => (f.fault_code || 'E00') !== 'E00');
+
+            // 后端按时间倒序返回，这里反转后按“旧->新”写入，确保最新在顶部
+            const ordered = faultOnly.slice(0, limit).reverse();
+            for (const f of ordered) {
+                const nodeId = f.device_id || 'N/A';
+                const code = f.fault_code || 'E00';
+                const st = f.status || 'pending';
+                const logId = (f.id !== undefined && f.id !== null) ? f.id : null;
+
+                // 优先使用后端提供的展示字符串；否则解析 ISO 时间
+                let timeStr = f.time;
+                if (!timeStr && f.fault_time) {
+                    const dt = new Date(f.fault_time);
+                    timeStr = isNaN(dt.getTime()) ? String(f.fault_time) : formatDateTimeForSnapshot(dt);
+                }
+                if (!timeStr) {
+                    timeStr = formatDateTimeForSnapshot(new Date());
+                }
+
+                addLogEntry(nodeId, code, timeStr, st, logId);
+            }
+
+            faultLogHistoryLoaded = true;
+            renderFaultLogTable(50);
+        } catch (e) {
+            console.warn('[loadFaultLogHistory] 拉取故障日志失败:', e);
+            renderFaultLogEmptyState();
+        }
+    }
+
+    // ========== 故障日志：轮询兜底同步（即使没有 WebSocket 推送也能更新）==========
+    let faultLogPollTimer = null;
+
+    async function pollFaultLogFromApi() {
+        try {
+            const resp = await fetch('/api/faults');
+            if (!resp.ok) return;
+            const result = await resp.json();
+            const faults = Array.isArray(result.faults) ? result.faults : [];
+
+            // 只取最新20条即可，减少负载；倒序插入时保持“最新在顶部”
+            const latest = faults.slice(0, 20).reverse();
+            for (const f of latest) {
+                const code = f.fault_code || 'E00';
+                if (code === 'E00') continue;
+                const nodeId = f.device_id || 'N/A';
+                const timeStr = f.time || (f.fault_time ? formatDateTimeForSnapshot(new Date(f.fault_time)) : formatDateTimeForSnapshot(new Date()));
+                const st = f.status || 'pending';
+                const logId = (f.id !== undefined && f.id !== null) ? f.id : null;
+                addLogEntry(nodeId, code, timeStr, st, logId);
+            }
+            renderFaultLogTable(50);
+        } catch (e) {
+            // 静默失败，避免刷屏
+        }
+    }
+
+    function startFaultLogPolling() {
+        if (faultLogPollTimer) return;
+        // 每2秒同步一次（兼顾实时性与开销）
+        faultLogPollTimer = setInterval(pollFaultLogFromApi, 2000);
+    }
+    
+    // ========== 共享渲染逻辑（辅助函数） ==========
+    // ========== 性能：调试日志与图表更新调度 ==========
+    // 说明：
+    // - 你截图里 [renderDashboard]/[updateCharts] 的 console.log 属于“高频日志”，开着 DevTools 会导致日志堆积，
+    //   最终页面卡死（浏览器要渲染/保存海量 console 条目）。
+    // - WebSocket 高频推送下，每条消息都 requestAnimationFrame(updateCharts) 也会造成 ECharts 高频 setOption 重绘。
+    // 这里做两件事：默认关闭高频日志 + 合并/限频图表刷新（保留最新数据即可）。
+    const MONITOR_DEBUG_LOG = false;
+    function debugLog(...args) {
+        if (MONITOR_DEBUG_LOG) console.log(...args);
+    }
+
+    // 轻量性能辅助：用于定位“数据间隔卡顿” vs “渲染卡顿”
+    window.__edgewindPerfExtra = window.__edgewindPerfExtra || { lastMsgDeltaMs: 0, lastWaveLen: 0, lastSpecLen: 0 };
+
+    // ========== 性能优化：复用数组，减少 GC 抖动 ==========
+    // 说明：monitor_update 约 5Hz；如果每次都创建大量新数组/对象（尤其 1024 点波形 -> 1024 个 [x,y]），
+    // 浏览器会周期性触发 GC，表现为“刷新几次就卡 0.5~1s”。
+    const _edgewindSeriesCache = {
+        time: new Map(), // key: len -> { axis:number[], data:[number,number][] }
+        freq: new Map()
+    };
+
+    // ========== 采样参数（与下位机对齐）==========
+    // 下位机：4096 点 @ 25.6kHz；上传 FFT：2048 点（0..(Fs/2 - Fs/N)）
+    // 说明：前端用于把“数组索引”映射为真实时间/频率轴。
+    const EDGEWIND_SAMPLE_RATE_HZ = 25600;
+    const EDGEWIND_WAVEFORM_POINTS = 4096;
+    const EDGEWIND_FFT_BINS = 2048;
+
+    // 最后一个采样点的时间（ms）：(N-1)/Fs
+    const EDGEWIND_WAVEFORM_LAST_MS = ((EDGEWIND_WAVEFORM_POINTS - 1) / EDGEWIND_SAMPLE_RATE_HZ) * 1000.0;
+    // 频率分辨率（Hz/bin）：Fs/N，其中 N=2*FFT_BINS
+    const EDGEWIND_FREQ_RES_HZ = EDGEWIND_SAMPLE_RATE_HZ / (2 * EDGEWIND_FFT_BINS);
+
+    function _getTimeSeriesBuffer(len) {
+        let buf = _edgewindSeriesCache.time.get(len);
+        if (!buf) {
+            const axis = new Array(len);
+            const data = new Array(len);
+            // 关键：按下位机采样参数映射时间轴
+            // - 不管后端是否对波形做了抽取/降采样，前端都把当前数组“均匀铺满到 (N-1)/Fs 的时间窗口”
+            // - 这样显示的时间范围始终与下位机一致（约 159.961ms）
+            const dt = (len > 1) ? (EDGEWIND_WAVEFORM_LAST_MS / (len - 1)) : 0;
+            for (let i = 0; i < len; i++) {
+                const t = i * dt;
+                axis[i] = t;
+                data[i] = [t, 0];
+            }
+            buf = { axis, data };
+            _edgewindSeriesCache.time.set(len, buf);
+        }
+        return buf;
+    }
+
+    let _chartsUpdateScheduled = false;
+    let _lastChartsUpdateTs = 0;
+    const CHARTS_MAX_HZ = 0; // 0=不节流，全部更新（发多少显示多少）
+    function scheduleChartsUpdate() {
+        if (CHARTS_MAX_HZ <= 0) {
+            if (typeof updateCharts === 'function') updateCharts();
+            return;
+        }
+        if (_chartsUpdateScheduled) return;
+        _chartsUpdateScheduled = true;
+        const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+        const minInterval = 1000 / CHARTS_MAX_HZ;
+        const due = _lastChartsUpdateTs + minInterval;
+        const delay = Math.max(0, due - now);
+        setTimeout(() => {
+            requestAnimationFrame(() => {
+                _chartsUpdateScheduled = false;
+                _lastChartsUpdateTs = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+                if (typeof updateCharts === 'function') updateCharts();
+            });
+        }, delay);
+    }
+
+    function renderDashboard(d) {
+        if (!d) {
+            console.warn('[renderDashboard] 数据为空');
+            return;
+        }
+        
+        // A. 更新文本数值
+        const elV  = document.getElementById('val-voltage');
+        const elVn = document.getElementById('val-voltage-neg');
+        const elC  = document.getElementById('val-current');
+        const elL  = document.getElementById('val-leakage');
+
+        if(elV)  elV.innerText  = parseFloat(d.voltage || 0).toFixed(2);
+        if(elVn) elVn.innerText = parseFloat(d.voltage_neg || 0).toFixed(2);
+        if(elC)  elC.innerText  = parseFloat(d.current || 0).toFixed(2);
+        if(elL)  elL.innerText  = parseFloat(d.leakage || 0).toFixed(3);
+
+        // 阈值告警：红点 + 事件提示（不影响 E01-E05 故障码）
+        applyThresholdAlarms(d);
+
+        // B. 更新图表（基于 currentSource）
+        let waveKey = `${currentSource}_waveform`;
+        let specKey = `${currentSource}_spectrum`;
+
+        // 优先使用扁平化键（后端已解析）
+        let waveData = d[waveKey] || [];
+        let specData = d[specKey] || [];
+        
+        debugLog(`[renderDashboard] 数据源: ${currentSource}, 波形数据长度: ${waveData.length}, 频谱数据长度: ${specData.length}`);
+
+        // 记录当前数据量（用于定位 MCU 节点是否在周期性发空数组）
+        try {
+            window.__edgewindPerfExtra.lastWaveLen = Array.isArray(waveData) ? waveData.length : -1;
+            window.__edgewindPerfExtra.lastSpecLen = Array.isArray(specData) ? specData.length : -1;
+        } catch (e) {}
+        
+        // 如果扁平化键没有数据，从 channels 数组获取（向后兼容）
+        if ((!waveData || waveData.length === 0) && d.channels && Array.isArray(d.channels) && d.channels.length > 0) {
+            const sourceToIndex = {'voltage': 0, 'voltage_neg': 1, 'current': 2, 'leakage': 3};
+            const channelIndex = sourceToIndex[currentSource] || 0;
+            const channel = d.channels[channelIndex];
+            
+            if (channel) {
+                if (channel.waveform && Array.isArray(channel.waveform) && channel.waveform.length > 0) {
+                    waveData = channel.waveform;
+                    // 优化：减少日志输出
+                    // console.log(`[renderDashboard] 从channels数组获取波形数据，长度: ${waveData.length}`);
+                }
+                if (channel.fft_spectrum && Array.isArray(channel.fft_spectrum) && channel.fft_spectrum.length > 0) {
+                    specData = channel.fft_spectrum;
+                }
+            }
+        }
+        
+        // C. 更新 nodeData 缓存（供 updateCharts 使用）
+        if (currentNodeId) {
+            if (!nodeData[currentNodeId]) {
+                nodeData[currentNodeId] = {};
+            }
+            const sourceToIndex = {'voltage': 0, 'voltage_neg': 1, 'current': 2, 'leakage': 3};
+            currentChannelIndex = sourceToIndex[currentSource] || 0;
+            
+            if (!nodeData[currentNodeId][currentChannelIndex]) {
+                nodeData[currentNodeId][currentChannelIndex] = {};
+            }
+            nodeData[currentNodeId][currentChannelIndex].waveform = waveData;
+            nodeData[currentNodeId][currentChannelIndex].fft_spectrum = specData;
+            
+            // 优化：减少日志输出
+            // console.log(`[renderDashboard] 已更新nodeData缓存: 边缘节点=${currentNodeId}, 通道索引=${currentChannelIndex}, 波形长度=${waveData.length}`);
+        } else {
+            console.warn('[renderDashboard] currentNodeId为空，无法更新缓存');
+        }
+        
+        // D. 图表更新：合并/限频（避免高频推送导致 setOption 过密 + DevTools 卡死）
+        scheduleChartsUpdate();
+    }
+
+    // ========== 用户交互：即时切换（带视觉确认） ==========
+    window.selectSource = function(source) {
+        currentSource = source;
+        
+        // 1. 重置所有卡片
+        document.querySelectorAll('.card-select').forEach(el => {
+            el.classList.remove('card-active'); // 移除高亮
+        });
+        
+        // 2. 激活目标卡片
+        const activeId = source === 'voltage_neg' ? 'card-voltage_neg' : `card-${source}`;
+        const el = document.getElementById(activeId);
+        if(el) {
+            el.classList.add('card-active'); // 这会触发CSS显示徽章
+        }
+
+        console.log(`👁️ View switched to: ${source}`);
+
+        // 3. 立即渲染（使用缓存）
+        if (lastCachedData) {
+            renderDashboard(lastCachedData);
+        }
+    };
+
+    // ========== 初始化所有边缘节点数据 ==========
+    function initializeAllNodeData() {
+        Object.keys(NODE_CONFIGS).forEach(nodeId => {
+            if (!nodeData[nodeId]) {
+                nodeData[nodeId] = {};
+            }
+            const node = NODE_CONFIGS[nodeId];
+            
+            node.channels.forEach(channel => {
+                if (!nodeData[nodeId][channel.id]) {
+                    // 使用从后端接收的数据（如果可用），否则使用默认值
+                    nodeData[nodeId][channel.id] = {
+                        currentValue: channel.currentValue || 0,
+                        waveform: channel.waveform || [],  // 从后端接收的波形数据
+                        fft_spectrum: channel.fft_spectrum || []  // 从后端接收的FFT数据
+                    };
+                }
+            });
+        });
+    }
+
+    // ========== 注意：不再生成随机数据！所有数据都从后端接收 ==========
+    // 前端只负责渲染从后端接收的waveform和fft_spectrum数据
+
+    // ========== WebSocket 实时推送系统 ==========
+    function initWebSocket() {
+        if (typeof io === 'undefined') {
+            console.error('❌ Socket.IO未加载，回退到HTTP轮询模式');
+            // 回退到轮询模式
+            startPollingFallback();
+            return;
+        }
+        
+        // 连接到WebSocket服务器
+        socket = io();
+        
+        // ========== 性能监控变量 ==========
+        let perfStats = {
+            lastUpdateTime: 0,
+            updateCount: 0,
+            refreshRate: 0,
+            renderTimeTotal: 0,
+            renderCount: 0
+        };
+        
+        // 更新性能监控面板
+        function updatePerfPanel() {
+            // 更新刷新率
+            document.getElementById('perf-refresh-rate').textContent = 
+                perfStats.refreshRate.toFixed(1) + ' Hz';
+            
+            // 更新WebSocket状态
+            const wsStatus = document.getElementById('perf-ws-status');
+            if (socket && socket.connected) {
+                wsStatus.innerHTML = '<span class="badge bg-success">已连接</span>';
+            } else {
+                wsStatus.innerHTML = '<span class="badge bg-secondary">未连接</span>';
+            }
+            
+            // 更新订阅节点（附带 Δt/点数：用于定位 MCU 是否在周期性发空数组或收包间隔抖动）
+            {
+                const ex = window.__edgewindPerfExtra || {};
+                document.getElementById('perf-subscribed-node').textContent =
+                    (currentNodeId || '无') + ` | Δt=${ex.lastMsgDeltaMs || 0}ms wave=${ex.lastWaveLen || 0} spec=${ex.lastSpecLen || 0}`;
+            }
+            
+            // 更新渲染延迟
+            const avgRenderTime = perfStats.renderCount > 0 ? 
+                (perfStats.renderTimeTotal / perfStats.renderCount) : 0;
+            document.getElementById('perf-render-time').textContent = 
+                avgRenderTime.toFixed(1) + ' ms';
+        }
+        // 兼容：页面其他区域（例如 selectNode）会调用 updatePerfPanel()
+        // 这里显式挂到 window，避免 ReferenceError 打断 UI 逻辑。
+        window.updatePerfPanel = updatePerfPanel;
+        
+        // 每秒更新一次性能面板
+        setInterval(updatePerfPanel, 1000);
+        
+        socket.on('connect', () => {
+            console.log('⚡ [WebSocket] 实时推送连接已建立！');
+            if (typeof window.updatePerfPanel === 'function') window.updatePerfPanel();  // 立即更新状态
+            
+            // 如果已选择边缘节点，立即订阅
+            if (currentNodeId) {
+                console.log(`[WebSocket] 订阅节点: ${currentNodeId}`);
+                socket.emit('subscribe_node', { node_id: currentNodeId });
+            }
+        });
+        
+        socket.on('disconnect', () => {
+            console.warn('⚠️ [WebSocket] 连接断开，回退到HTTP轮询模式');
+            startPollingFallback();
+        });
+        
+        socket.on('connect_error', (error) => {
+            console.error('❌ [WebSocket] 连接错误:', error);
+            console.log('🔄 [WebSocket] 回退到HTTP轮询模式');
+            startPollingFallback();
+        });
+        
+        // 辅助函数：从故障代码获取故障类型名称（用于故障通知）
+        function getFaultTypeNameFromCode(faultCode) {
+            const faultNames = {
+                'E01': '交流窜入',
+                'E02': '绝缘故障',
+                'E03': '直流母线电容老化',
+                'E04': '变流器IGBT开路',
+                'E05': '直流母线接地故障'
+            };
+            return faultNames[faultCode] || `故障 ${faultCode}`;
+        }
+        
+        // ========== 性能优化：节流函数（Throttle） ==========
+        function throttle(func, delay) {
+            let lastCall = 0;
+            let timeout = null;
+            return function(...args) {
+                const now = Date.now();
+                if (now - lastCall >= delay) {
+                    lastCall = now;
+                    func.apply(this, args);
+                } else {
+                    // 确保最后一次调用能够执行
+                    clearTimeout(timeout);
+                    timeout = setTimeout(() => {
+                        lastCall = Date.now();
+                        func.apply(this, args);
+                    }, delay - (now - lastCall));
+                }
+            };
+        }
+        
+        // ========== 接收节点状态列表（连接时） ==========
+        socket.on('node_status_list', (msg) => {
+            console.log('📋 [WebSocket] 接收节点状态列表:', msg.nodes.length, '个节点');
+            // 批量更新节点列表（不触发重绘）
+            if (msg.nodes && msg.nodes.length > 0) {
+                msg.nodes.forEach(node => {
+                    if (NODE_CONFIGS[node.node_id]) {
+                        NODE_CONFIGS[node.node_id].status = node.status;
+                        NODE_CONFIGS[node.node_id].fault_code = node.fault_code;
+                        if (node.report_mode) {
+                            NODE_CONFIGS[node.node_id].report_mode = String(node.report_mode).toLowerCase();
+                            reportModeByNode[node.node_id] = NODE_CONFIGS[node.node_id].report_mode;
+                        }
+                        const ds = normalizeDownsampleStep(node.downsample_step);
+                        if (ds !== null) {
+                            NODE_CONFIGS[node.node_id].downsample_step = ds;
+                            downsampleStepByNode[node.node_id] = ds;
+                        }
+                        const up = normalizeUploadPoints(node.upload_points);
+                        if (up !== null) {
+                            NODE_CONFIGS[node.node_id].upload_points = up;
+                            uploadPointsByNode[node.node_id] = up;
+                        }
+                    }
+                    // 关键修复：初始化故障历史记录，避免误触发弹窗
+                    nodeFaultHistory[node.node_id] = node.fault_code || 'E00';
+                });
+                // 一次性重新渲染节点列表
+                renderNodeList();
+                applyReportModeForNode(currentNodeId);
+            }
+        });
+        
+        // ========== 轻量级状态更新（所有节点，仅状态） ==========
+        // 使用节流限制更新频率，避免频繁DOM操作
+        const throttledStatusUpdate = throttle((msg) => {
+            const nodeId = msg.node_id;
+            const currentCode = msg.fault_code || 'E00';
+            const lastCode = nodeFaultHistory[nodeId];
+            
+            // 更新内存中的状态
+            if (!NODE_CONFIGS[nodeId]) {
+                // 新节点：先插入一个最小占位（名称用 nodeId），并触发一次列表重绘
+                NODE_CONFIGS[nodeId] = {
+                    node_id: nodeId,
+                    device_id: nodeId,
+                    name: nodeId,
+                    location: '',
+                    status: msg.status || 'online',
+                    fault_code: msg.fault_code || 'E00',
+                    channels: [],
+                    report_mode: (msg.report_mode || 'summary').toLowerCase()
+                };
+                const createdStep = normalizeDownsampleStep(msg.downsample_step);
+                if (createdStep !== null) {
+                    NODE_CONFIGS[nodeId].downsample_step = createdStep;
+                    downsampleStepByNode[nodeId] = createdStep;
+                }
+                const createdPoints = normalizeUploadPoints(msg.upload_points);
+                if (createdPoints !== null) {
+                    NODE_CONFIGS[nodeId].upload_points = createdPoints;
+                    uploadPointsByNode[nodeId] = createdPoints;
+                }
+                renderNodeList();
+            } else {
+                NODE_CONFIGS[nodeId].status = msg.status;
+                NODE_CONFIGS[nodeId].fault_code = msg.fault_code;
+                if (msg.report_mode) {
+                    NODE_CONFIGS[nodeId].report_mode = String(msg.report_mode).toLowerCase();
+                }
+                const updateStep = normalizeDownsampleStep(msg.downsample_step);
+                if (updateStep !== null) {
+                    NODE_CONFIGS[nodeId].downsample_step = updateStep;
+                    downsampleStepByNode[nodeId] = updateStep;
+                }
+                const updatePoints = normalizeUploadPoints(msg.upload_points);
+                if (updatePoints !== null) {
+                    NODE_CONFIGS[nodeId].upload_points = updatePoints;
+                    uploadPointsByNode[nodeId] = updatePoints;
+                }
+            }
+
+            if (msg.report_mode) {
+                reportModeByNode[nodeId] = String(msg.report_mode).toLowerCase();
+                if (currentNodeId === nodeId) {
+                    applyReportModeForNode(nodeId);
+                }
+            }
+            if (currentNodeId === nodeId && normalizeDownsampleStep(msg.downsample_step) !== null) {
+                applyDownsampleForNode(nodeId);
+            }
+            if (currentNodeId === nodeId && normalizeUploadPoints(msg.upload_points) !== null) {
+                applyUploadPointsForNode(nodeId);
+            }
+            
+            // ========== 系统故障日志（全局）：对所有节点的故障码变化进行记录 ==========
+            // 说明：monitor_update 只对“当前订阅节点”推送，无法覆盖全系统。
+            // node_status_update 是全局推送（所有节点），因此系统故障日志应以它为准。
+            if (lastCode === undefined) {
+                // 首次见到该节点：若一上来就是故障态，直接记一条
+                if (currentCode !== 'E00') {
+                    addLogEntry(nodeId, currentCode, formatDateTimeForSnapshot(new Date()));
+                }
+            } else if (lastCode !== currentCode) {
+                // 状态变化：记录故障/恢复
+                addLogEntry(nodeId, currentCode, formatDateTimeForSnapshot(new Date()));
+            }
+
+            // 同步更新故障历史记录（放在日志记录之后，避免重复）
+            nodeFaultHistory[nodeId] = currentCode;
+            
+            // 只更新侧边栏中对应节点的徽章（局部更新，不重绘整个列表）
+            const nodeList = document.getElementById('nodeList');
+            const listItem = findNodeListItem(nodeList, nodeId);
+            if (listItem) {
+                // 注意：节点列表本身使用 renderNodeList() 渲染的是“单一徽章”(#badge-nodeId)
+                // 之前这里同时把同一个徽章当作“在线状态”和“故障状态”更新，导致文本在“在线/正常”之间跳动
+                const badge = listItem.querySelector(`#${badgeDomId(nodeId)}`);
+                
+                // 快速DOM更新（减少重排）
+                requestAnimationFrame(() => {
+                    if (!badge) return;
+                    
+                    const status = msg.status || 'offline';
+                    const faultCode = msg.fault_code || 'E00';
+                    const isFault = (faultCode && faultCode !== 'E00') || status === 'fault' || status === 'faulty';
+                    
+                    let badgeClass, badgeText, badgeIcon;
+                    if (isFault) {
+                        badgeClass = 'bg-danger';
+                        badgeText = faultCode;
+                        badgeIcon = '⚠';
+                    } else if (status === 'online') {
+                        badgeClass = 'bg-success';
+                        badgeText = '正常';
+                        badgeIcon = '●';
+                    } else {
+                        badgeClass = 'bg-secondary';
+                        badgeText = '离线';
+                        badgeIcon = '○';
+                    }
+                    
+                    const targetText = `${badgeIcon} ${badgeText}`;
+                    const currentText = badge.textContent.trim();
+                    const currentClass = badge.classList.contains('bg-danger') ? 'bg-danger' :
+                                         badge.classList.contains('bg-success') ? 'bg-success' : 'bg-secondary';
+                    
+                    if (currentClass !== badgeClass || currentText !== targetText) {
+                        badge.classList.remove('bg-danger', 'bg-success', 'bg-secondary');
+                        badge.classList.add(badgeClass);
+                        badge.textContent = targetText;
+                    }
+                });
+            }
+            
+            // 如果是当前选中节点，更新关键指标卡片
+            if (currentNodeId === nodeId && msg.metrics) {
+                updateMetricsCards(msg.metrics);
+            }
+        }, 200);  // 200ms节流间隔
+        
+        socket.on('node_status_update', throttledStatusUpdate);
+
+        // 后端主动推送：节点集合变化（注册/注销）
+        socket.on('nodes_changed', (msg) => {
+            try {
+                console.log('🔄 [WebSocket] nodes_changed:', msg);
+                // 立即拉取最新列表，确保新增/移除节点立刻体现在 UI
+                fetchActiveNodes();
+            } catch (e) {}
+        });
+        
+        // ========== 性能优化：批量更新关键指标卡片 ==========
+        function updateMetricsCards(metrics) {
+            const cards = {
+                'voltage': metrics.voltage,
+                'voltage_neg': metrics.voltage_neg,
+                'current': metrics.current,
+                'leakage': metrics.leakage
+            };
+            
+            // 使用DocumentFragment批量更新，减少重排
+            requestAnimationFrame(() => {
+                for (const [key, value] of Object.entries(cards)) {
+                    const element = document.getElementById(`current-${key}`);
+                    if (element) {
+                        element.textContent = (value || 0).toFixed(2);
+                    }
+                }
+            });
+        }
+        
+        // Global Socket Listener - 全量更新：发多少显示多少
+        
+        socket.on('monitor_update', (msg) => {
+            // 性能统计
+            const now = Date.now();
+            perfStats.updateCount++;
+            if (perfStats.lastUpdateTime > 0) {
+                const delta = now - perfStats.lastUpdateTime;
+                if (delta > 0) {
+                    // 计算移动平均刷新率
+                    const instantRate = 1000 / delta;
+                    perfStats.refreshRate = perfStats.refreshRate * 0.8 + instantRate * 0.2;
+                }
+            }
+            // 记录最近一次消息间隔（用于观察是否存在“收包停顿”）
+            try { window.__edgewindPerfExtra.lastMsgDeltaMs = perfStats.lastUpdateTime ? (now - perfStats.lastUpdateTime) : 0; } catch (e) {}
+            perfStats.lastUpdateTime = now;
+            
+            try {
+                // 注意：由于使用了房间机制，此事件只会接收到订阅节点的数据
+                // 因此不需要检查侧边栏更新
+
+                // 2. 故障检测和通知（立即执行，无延迟）-------------
+                const currentCode = msg.data.fault_code || msg.fault_code || 'E00';
+                const lastCode = nodeFaultHistory[msg.node_id];
+                const isInitial = msg.is_initial === true;  // 是否是初始订阅数据
+
+                // 若是初始数据且当前就是故障（E01-E05），也记录一次（避免“有故障但表为空”）
+                if (isInitial && currentCode !== 'E00' && !faultLogHistoryLoaded) {
+                    const timeStrInit = formatDateTimeForSnapshot(new Date());
+                    addLogEntry(msg.node_id, currentCode, timeStrInit);
+                }
+                
+                // 检测故障状态变化（立即触发，不等待轮询）
+                // 关键修复：排除初始订阅数据，避免误触发弹窗
+                if (!isInitial && lastCode !== undefined && lastCode !== currentCode) {
+                    const timeStr = formatDateTimeForSnapshot(new Date());
+                    addLogEntry(msg.node_id, currentCode, timeStr);
+                    
+                    // 关键优化：立即检测并触发故障弹窗（从正常到故障）
+                    if (lastCode === 'E00' && currentCode !== 'E00') {
+                        // 获取故障类型名称
+                        const faultTypeName = getFaultTypeNameFromCode(currentCode);
+                        // 立即触发故障通知，使用requestAnimationFrame确保最快显示
+                        if (typeof window.publishSystemEvent === 'function') {
+                            // 同步更新全局状态，避免轮询时重复通知
+                            if (window.globalLastNodeStates) {
+                                window.globalLastNodeStates[msg.node_id] = {
+                                    fault_code: currentCode,
+                                    status: 'fault'
+                                };
+                            }
+                            // 立即显示弹窗
+                            requestAnimationFrame(() => {
+                                window.publishSystemEvent(
+                                    `⚠️ 边缘节点 ${msg.node_id} 检测到故障: ${faultTypeName} (${currentCode})`,
+                                    'error'
+                                );
+                            });
+                        }
+                    }
+                    // 检测故障恢复（从故障到正常）
+                    else if (lastCode !== 'E00' && currentCode === 'E00') {
+                        if (typeof window.publishSystemEvent === 'function') {
+                            // 同步更新全局状态
+                            if (window.globalLastNodeStates) {
+                                window.globalLastNodeStates[msg.node_id] = {
+                                    fault_code: 'E00',
+                                    status: 'online'
+                                };
+                            }
+                            // 立即显示恢复通知
+                            requestAnimationFrame(() => {
+                                window.publishSystemEvent(
+                                    `✅ 边缘节点 ${msg.node_id} 故障已清除，恢复正常状态`,
+                                    'success'
+                                );
+                            });
+                        }
+                    }
+                }
+                // 更新历史记录（包括初始订阅数据）
+                nodeFaultHistory[msg.node_id] = currentCode;
+                // ------------------------------------------
+
+                // 3. Update Main View - 全量更新（不合并批处理）
+                if (currentNodeId && msg.node_id === currentNodeId) {
+                    const d = msg.data;
+                    
+                    // 缓存最新数据包
+                    lastCachedData = d;
+
+                    const renderStart = performance.now();
+                    renderDashboard(d);
+                    // 记录渲染时间
+                    const renderTime = performance.now() - renderStart;
+                    perfStats.renderTimeTotal += renderTime;
+                    perfStats.renderCount++;
+                    // 保持最近100次的平均值
+                    if (perfStats.renderCount > 100) {
+                        perfStats.renderTimeTotal *= 0.99;
+                        perfStats.renderCount *= 0.99;
+                    }
+                } else if (!currentNodeId) {
+                    // 自动选择第一个活动边缘节点
+                    currentNodeId = msg.node_id;
+                    lastCachedData = msg.data;
+                    renderDashboard(lastCachedData);
+                    if (typeof window.updatePerfPanel === 'function') window.updatePerfPanel();  // 更新性能面板
+                }
+            } catch (e) {
+                console.error("🔥 Monitor Update Error:", e);
+            }
+        });
+        
+        // 定期获取边缘节点列表（作为WebSocket的补充，确保边缘节点列表完整）
+        nodeListInterval = setInterval(fetchActiveNodes, 5000);  // 5秒获取一次边缘节点列表
+    }
+
+    // ========== 时间格式化：用于故障快照事件定位 ==========
+    // 统一使用北京时间（Asia/Shanghai），避免浏览器本地时区导致“差8小时/差7小时”
+    // 快照事件API使用本地时间字符串：YYYY-MM-DD HH:MM:SS
+    function formatDateTimeForSnapshot(dt) {
+        const d = (dt instanceof Date) ? dt : new Date(dt || Date.now());
+        const parts = new Intl.DateTimeFormat('zh-CN', {
+            timeZone: 'Asia/Shanghai',
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+            hour12: false
+        }).formatToParts(d);
+
+        const map = {};
+        parts.forEach(p => { map[p.type] = p.value; });
+        return `${map.year}-${map.month}-${map.day} ${map.hour}:${map.minute}:${map.second}`;
+    }
+    
+    // 回退到HTTP轮询模式（当WebSocket不可用时）- 优化：使用更快的轮询
+    function startPollingFallback() {
+        console.log('[Monitor] 使用HTTP轮询模式（回退）');
+        // 优化：使用更快的轮询间隔（50ms，接近模拟器的20ms上传频率）
+        const interval = parseInt(localStorage.getItem('pollInterval')) || 50;  // 从1000ms改为50ms
+        if (nodeListInterval) clearInterval(nodeListInterval);
+        if (updateInterval) clearInterval(updateInterval);
+        // 关键：当 WebSocket 不可用时，fetchActiveNodes 实际上也是“数据源”。
+        // 若仍按 5s 拉一次，会表现为“只有节点但不刷新波形/数据”。
+        // 设备侧默认约 5Hz（200ms）上报，因此这里下限设置为 200ms，避免过度压测后端。
+        const fetchInterval = Math.max(200, interval);
+        // 先立即拉一次，避免刚切换回退模式时等待间隔造成“卡住”的错觉
+        fetchActiveNodes();
+        nodeListInterval = setInterval(fetchActiveNodes, fetchInterval);
+        updateInterval = setInterval(updateAllNodesData, interval);  // 数据更新使用快速轮询
+    }
+    
+    // 暴露restartPolling函数到全局（向后兼容）
+    window.restartPolling = function() {
+        console.log('[Monitor] 重新初始化WebSocket连接...');
+        if (socket) {
+            socket.disconnect();
+        }
+        initWebSocket();
+    };
+    
+    
+    
+    // ========== 从WebSocket数据更新通道卡片 ==========
+    function updateChannelCardsFromData(data) {
+        if (!currentNodeId || !data) return;
+        
+        // 更新nodeData缓存
+        if (!nodeData[currentNodeId]) {
+            nodeData[currentNodeId] = {};
+        }
+        
+        // 优先使用 channels 数组（标准数据格式）
+        if (data.channels && Array.isArray(data.channels) && data.channels.length > 0) {
+            data.channels.forEach(channel => {
+                if (!nodeData[currentNodeId][channel.id]) {
+                    nodeData[currentNodeId][channel.id] = {};
+                }
+                // 支持多种字段名（currentValue 或 value）
+                const currentValue = channel.currentValue !== undefined ? channel.currentValue :
+                                   channel.value !== undefined ? channel.value : 0;
+                
+                nodeData[currentNodeId][channel.id].currentValue = parseFloat(currentValue) || 0;
+                nodeData[currentNodeId][channel.id].waveform = channel.waveform || [];
+                nodeData[currentNodeId][channel.id].fft_spectrum = channel.fft_spectrum || [];
+                
+                // 同时更新 NODE_CONFIGS 中的通道数据（确保数据同步）
+                if (NODE_CONFIGS[currentNodeId] && NODE_CONFIGS[currentNodeId].channels) {
+                    const configChannel = NODE_CONFIGS[currentNodeId].channels.find(ch => ch.id === channel.id);
+                    if (configChannel) {
+                        configChannel.currentValue = parseFloat(currentValue) || 0;
+                        configChannel.waveform = channel.waveform || [];
+                        configChannel.fft_spectrum = channel.fft_spectrum || [];
+                    }
+                }
+            });
+        } else {
+            // 向后兼容：如果没有 channels 数组，尝试使用直接字段
+            console.warn('[updateChannelCardsFromData] 未找到 channels 数组');
+        }
+    }
+    
+    // ========== 从WebSocket数据更新图表 ==========
+    function updateChartsFromData(data) {
+        if (!currentNodeId || !data || !data.channels) return;
+        
+        // 更新nodeData缓存
+        updateChannelCardsFromData(data);
+        
+        // 更新图表
+        updateCharts();
+    }
+    
+    // ========== 更新边缘节点列表状态（WebSocket推送时调用）==========
+    function updateNodeListStatus(nodeId, data) {
+        // 更新NODE_CONFIGS中的状态
+        if (NODE_CONFIGS[nodeId]) {
+            if (data.status) NODE_CONFIGS[nodeId].status = data.status;
+            if (data.fault_code) NODE_CONFIGS[nodeId].fault_code = data.fault_code;
+        }
+        
+        // 使用稳定的就地更新（不会导致列表跳动）
+        const nodeList = document.getElementById('nodeList');
+        const listItem = findNodeListItem(nodeList, nodeId);
+        if (listItem) {
+            const status = data.status || NODE_CONFIGS[nodeId]?.status || 'offline';
+            const faultCode = data.fault_code || NODE_CONFIGS[nodeId]?.fault_code || 'E00';
+            const isFault = status === 'fault' || status === 'faulty';
+            
+            // 确定状态徽章样式
+            let badgeClass, badgeText, badgeIcon;
+            if (isFault) {
+                badgeClass = 'bg-danger';
+                badgeText = faultCode;
+                badgeIcon = '⚠';
+            } else if (status === 'online') {
+                badgeClass = 'bg-success';
+                badgeText = '在线';
+                badgeIcon = '●';
+            } else {
+                badgeClass = 'bg-secondary';
+                badgeText = '离线';
+                badgeIcon = '○';
+            }
+            
+            // 只更新badge（最小化DOM操作）
+            const badge = listItem.querySelector(`#${badgeDomId(nodeId)}`);
+            if (badge) {
+                const currentBadgeClass = badge.classList.contains('bg-danger') ? 'bg-danger' :
+                                         badge.classList.contains('bg-success') ? 'bg-success' : 'bg-secondary';
+                const targetBadgeText = `${badgeIcon} ${badgeText}`;
+                
+                if (currentBadgeClass !== badgeClass) {
+                    badge.classList.remove('bg-danger', 'bg-success', 'bg-secondary');
+                    badge.classList.add(badgeClass);
+                }
+                if (badge.textContent.trim() !== targetBadgeText) {
+                    badge.textContent = targetBadgeText;
+                }
+            }
+            
+            // 更新故障脉冲动画
+            const shouldHavePulse = isFault;
+            const hasPulse = listItem.classList.contains('fault-pulse');
+            if (shouldHavePulse !== hasPulse) {
+                if (shouldHavePulse) {
+                    listItem.classList.add('fault-pulse');
+                } else {
+                    listItem.classList.remove('fault-pulse');
+                }
+            }
+        } else {
+            // 如果元素不存在，调用完整渲染（但会使用稳定排序）
+            renderNodeList();
+        }
+    }
+
+    // ========== 更新所有边缘节点数据（仅从后端接收的数据）==========
+    function updateAllNodesData() {
+        try {
+            // 从NODE_CONFIGS中读取数据（由心跳数据更新）
+        Object.keys(NODE_CONFIGS).forEach(nodeId => {
+            const node = NODE_CONFIGS[nodeId];
+                if (!node) return;
+                
+            node.channels.forEach(channel => {
+                if (!nodeData[nodeId]) nodeData[nodeId] = {};
+                    
+                    // 直接使用从后端接收的数据（不生成任何随机数据）
+                    const currentValue = channel.currentValue !== undefined ? channel.currentValue : 0;
+                    const waveform = channel.waveform || [];  // 从后端接收的波形数组
+                    const fft_spectrum = channel.fft_spectrum || [];  // 从后端接收的FFT数组
+                    
+                if (!nodeData[nodeId][channel.id]) {
+                    nodeData[nodeId][channel.id] = {
+                            currentValue: currentValue,
+                            waveform: waveform,
+                            fft_spectrum: fft_spectrum
+                    };
+                    } else {
+                        // 更新数据（直接使用后端数据，不生成）
+                        nodeData[nodeId][channel.id].currentValue = currentValue;
+                        nodeData[nodeId][channel.id].waveform = waveform;
+                        nodeData[nodeId][channel.id].fft_spectrum = fft_spectrum;
+                }
+            });
+        });
+        
+        // 只更新当前边缘节点的通道卡片显示
+            if (currentNodeId && NODE_CONFIGS[currentNodeId]) {
+            const node = NODE_CONFIGS[currentNodeId];
+            node.channels.forEach((channel, index) => {
+                const valueElement = document.getElementById(`channel-card-value-${currentNodeId}-${index}`);
+                if (valueElement) {
+                    const channelData = nodeData[currentNodeId][channel.id];
+                        if (channelData) {
+                    valueElement.textContent = formatValue(channelData.currentValue, channel.unit);
+                        }
+                }
+            });
+        }
+        
+            // 更新图表（仅在当前边缘节点存在时）
+        if (currentNodeId) {
+            updateCharts();
+            }
+        } catch (error) {
+            console.error('[updateAllNodesData] 更新边缘节点数据时出错:', error);
+            // 错误不影响后续更新，继续执行
+        }
+    }
+
+    // ========== 切换图表标签页 ==========
+    function switchChartTab(tab) {
+        activeTab = tab;
+        
+        // 切换标签页激活状态
+        const timeTab = document.getElementById('timeTab');
+        const freqTab = document.getElementById('freqTab');
+        const timePane = document.getElementById('timeChartPane');
+        const freqPane = document.getElementById('freqChartPane');
+        
+        if (tab === 'time') {
+            timeTab.classList.add('active');
+            timeTab.setAttribute('aria-selected', 'true');
+            freqTab.classList.remove('active');
+            freqTab.setAttribute('aria-selected', 'false');
+            timePane.classList.add('show', 'active');
+            freqPane.classList.remove('show', 'active');
+            
+            // 关键：显示后立即调整图表大小（ECharts无法在隐藏div中自动调整大小）
+            setTimeout(() => {
+                if (timeDomainChart) {
+                    timeDomainChart.resize();
+                    // 重新应用缩放（tab 切换导致尺寸变化时，gridRect 会变化）
+                    const timeChartDom = document.getElementById('time-domain-chart');
+                    if (timeChartDom && typeof setupChartZoom === 'function') {
+                        setupChartZoom(timeDomainChart, timeChartDom);
+                    }
+                }
+            }, 150);
+        } else {
+            freqTab.classList.add('active');
+            freqTab.setAttribute('aria-selected', 'true');
+            timeTab.classList.remove('active');
+            timeTab.setAttribute('aria-selected', 'false');
+            freqPane.classList.add('show', 'active');
+            timePane.classList.remove('show', 'active');
+            
+            // 关键：显示后立即调整图表大小（ECharts无法在隐藏div中自动调整大小）
+            setTimeout(() => {
+                if (frequencyDomainChart) {
+                    frequencyDomainChart.resize();
+                    // 重新应用缩放（tab 切换导致尺寸变化时，gridRect 会变化）
+                    const freqChartDom = document.getElementById('frequency-domain-chart');
+                    if (freqChartDom && typeof setupChartZoom === 'function') {
+                        setupChartZoom(frequencyDomainChart, freqChartDom);
+                    }
+                }
+            }, 150);
+        }
+        
+        // 立即更新当前显示的图表
+        updateCharts();
+    }
+
+    // ========== 更新图表 ==========
+    function updateCharts() {
+        try {
+            if (!currentNodeId) {
+                // 如果没有选中边缘节点，清空图表
+                if (timeDomainChart) {
+                    timeDomainChart.clear();
+                }
+                if (frequencyDomainChart) {
+                    frequencyDomainChart.clear();
+                }
+                return;
+            }
+        
+        const node = NODE_CONFIGS[currentNodeId];
+            if (!node || !node.channels || node.channels.length === 0) {
+                console.warn('[updateCharts] 边缘节点数据不完整:', currentNodeId);
+                return;
+            }
+            
+        // 根据 currentChannelIndex 获取对应的通道
+        const channel = node.channels[currentChannelIndex];
+            if (!channel) {
+                console.warn('[updateCharts] 通道不存在:', currentChannelIndex, '边缘节点:', currentNodeId, '可用通道数:', node.channels.length);
+                return;
+            }
+            
+        // 从缓存中获取当前选中通道的数据（关键：使用 channel.id 或 channel.index）
+        // 优先尝试使用 channel.id，如果没有则使用 currentChannelIndex
+        let channelId = channel.id !== undefined ? channel.id : currentChannelIndex;
+        let data = nodeData[currentNodeId]?.[channelId];
+        
+        // 如果使用 channel.id 找不到数据，尝试使用索引作为备用键
+        if (!data || (!data.waveform && !data.fft_spectrum)) {
+            // 尝试使用索引作为键
+            data = nodeData[currentNodeId]?.[currentChannelIndex];
+            if (data && (data.waveform || data.fft_spectrum)) {
+                channelId = currentChannelIndex;
+            }
+        }
+        
+        // 高频日志会导致 DevTools 堆积卡死；仅在需要排查时打开 MONITOR_DEBUG_LOG
+        if (!data || (!data.waveform && !data.fft_spectrum)) {
+            debugLog(`[updateCharts] 警告：边缘节点 ${currentNodeId} 通道 ${currentChannelIndex} (ID: ${channelId}) 没有波形/频谱数据`);
+        } else {
+            debugLog(`[updateCharts] ✅ 边缘节点: ${currentNodeId}, 通道索引: ${currentChannelIndex}, 通道ID: ${channelId}, 波形点数: ${data.waveform?.length || 0}, FFT点数: ${data.fft_spectrum?.length || 0}`);
+        }
+        
+        // 只更新当前激活的标签页图表（性能优化）
+        if (activeTab === 'time') {
+                // 时域分析：使用 waveform 数据
+                const waveform = data?.waveform || [];
+                // 优化：减少日志输出
+                // console.log(`[updateCharts] 准备更新时域图表，波形数据长度: ${waveform.length}`);
+                if (waveform.length > 0) {
+                    updateTimeDomainChart(waveform, channel);
+                }
+                // 优化：减少警告日志
+                // else {
+                //     console.warn('[updateCharts] 波形数据为空，无法更新图表');
+                // }
+        } else {
+                // 频域分析：使用 fft_spectrum 数据（关键修复！）
+                const spectrum = data?.fft_spectrum || [];
+                // 优化：减少日志输出
+                // console.log(`[updateCharts] 准备更新频域图表，频谱数据长度: ${spectrum.length}`);
+                if (spectrum.length > 0) {
+                    updateFrequencyDomainChart(spectrum, channel);
+                }
+                // 优化：减少警告日志
+                // else {
+                //     console.warn('[updateCharts] 频谱数据为空，无法更新图表');
+                // }
+            }
+        } catch (error) {
+            console.error('[updateCharts] 更新图表时出错:', error);
+            // 错误不影响后续更新
+        }
+    }
+
+    // ========== 更新时域图表（修复空白图表问题）==========
+    function updateTimeDomainChart(waveform, channel) {
+        // 1. Force Container Height (Fix Invisible Chart)
+        const tContainer = document.getElementById('time-domain-chart');
+        
+        if (!tContainer) {
+            console.error('[updateTimeDomainChart] 图表容器不存在');
+            return;
+        }
+        if (tContainer.clientHeight < 200) {
+            tContainer.style.height = '400px';
+        }
+
+        // 2. Data Safety：空波形不要“补 1024 零线”（会频繁分配大数组触发 GC 卡顿）
+        // 直接保持上一帧图表，等待下一次有效数据。
+        if (!waveform || !Array.isArray(waveform) || waveform.length === 0) {
+            debugLog("[updateTimeDomainChart] 波形为空，跳过本次更新");
+            return;
+        }
+
+        // 3. Initialize Time Chart
+        if (!timeDomainChart) {
+            timeDomainChart = echarts.init(tContainer);
+        }
+        
+        // 生成 X 轴（单位：ms）
+        // 关键修复：将时域图从 category 轴改为 value 轴，并使用 [t, y] 数据对，
+        // 这样 dataZoom 的 startValue/endValue 才能按“真实数值”工作，缩小才能回到全范围。
+        // 复用 [t,y] 数据对数组，避免高频分配导致 GC 抖动
+        const buf = _getTimeSeriesBuffer(waveform.length);
+        const timeAxis = buf.axis;
+        const timeSeriesData = buf.data;
+        let yMin = Infinity;
+        let yMax = -Infinity;
+        for (let i = 0; i < waveform.length; i++) {
+            // 保持 x 不变，仅更新 y
+            const y = waveform[i];
+            timeSeriesData[i][1] = y;
+            const n = Number(y);
+            if (Number.isFinite(n)) {
+                if (n < yMin) yMin = n;
+                if (n > yMax) yMax = n;
+            }
+        }
+        if (!Number.isFinite(yMin) || !Number.isFinite(yMax)) {
+            yMin = 0;
+            yMax = 0;
+        }
+
+        // 计算“自动窗口”(用于重置)：基于当前数据范围 + 余量，并确保包含 0
+        // 规则：
+        // - 全正：下限固定为 0，仅扩上限
+        // - 全负：上限固定为 0，仅扩下限
+        // - 跨零：上下同时扩展
+        let autoMin = yMin;
+        let autoMax = yMax;
+        if (yMin >= 0) {
+            autoMin = 0;
+            autoMax = yMax;
+        } else if (yMax <= 0) {
+            autoMax = 0;
+            autoMin = yMin;
+        }
+        let autoSpan = autoMax - autoMin;
+        if (!(autoSpan > 0)) {
+            autoSpan = Math.max(Math.abs(autoMax), Math.abs(autoMin), 1);
+        }
+        const pad = Math.max(autoSpan * 0.1, 0.1);
+        if (yMin >= 0) {
+            autoMin = 0;
+            autoMax = autoMax + pad;
+        } else if (yMax <= 0) {
+            autoMax = 0;
+            autoMin = autoMin - pad;
+        } else {
+            autoMin -= pad;
+            autoMax += pad;
+        }
+
+        // 计算“可缩放全量范围”(用于滚轮缩放上限)：比自动窗口更大
+        const fullSpan = Math.max((autoMax - autoMin) * 10, 10);
+        let fullMin = autoMin - (fullSpan - (autoMax - autoMin)) / 2;
+        let fullMax = autoMax + (fullSpan - (autoMax - autoMin)) / 2;
+        fullMin = Math.min(fullMin, 0);
+        fullMax = Math.max(fullMax, 0);
+        if (!(fullMax > fullMin)) {
+            fullMin = autoMin;
+            fullMax = autoMax + 1;
+        }
+
+        // 把“全量X范围”显式写入图表实例，供缩放工具使用（保证滚轮缩小一定能回到全范围）
+        // 注意：这里 max 用最后一个采样点的时间（例如约 199.8ms），与图上显示的最大值一致。
+        if (timeDomainChart) {
+            timeDomainChart.__edgewindFullExtentX = { min: 0, max: timeAxis[timeAxis.length - 1] };
+            timeDomainChart.__edgewindFullExtentY = { min: fullMin, max: fullMax };
+            timeDomainChart.__edgewindAutoWindowY = { min: autoMin, max: autoMax };
+        }
+
+        // 4. Determine color (跟随选中的选项卡)
+        const config = NODE_CONFIGS[currentNodeId];
+        const isFault = config && (config.status === 'fault' || config.status === 'faulty');
+        // 根据当前选中的数据源获取颜色，故障时稍微加深颜色以保持视觉提示
+        let lineColor = getSourceColor(currentSource);
+        // 如果处于故障状态，可以稍微调整颜色以保持警告效果（可选）
+        // 目前直接使用源颜色，保持一致性
+
+        // 5. Update Time Chart
+        // 关键修复：不要在高频更新时重复写 dataZoom，否则会把用户刚刚缩放的 X/Y 轴范围覆盖回默认值，表现为“只缩放X/或缩放不生效”。
+        const isFirstInit = !timeDomainChart._configInitialized;
+
+        if (isFirstInit) {
+            timeDomainChart.setOption({
+                title: { 
+                    text: `时域波形 (${channel.label})`, 
+                    left: 'center', 
+                    top: 5 
+                },
+                animation: false,
+                tooltip: { 
+                    trigger: 'axis',
+                    formatter: function(params) {
+                        const point = params[0];
+                        const t = Array.isArray(point.value) ? point.value[0] : point.name;
+                        const y = Array.isArray(point.value) ? point.value[1] : point.value;
+                        return `时间: ${Number(t).toFixed(1)} ms<br/>${channel.label}: ${Number(y).toFixed(2)} ${channel.unit}`;
+                    }
+                },
+                tooltip: { 
+                    trigger: 'axis',
+                    formatter: function(params) {
+                        const point = params[0];
+                        const t = Array.isArray(point.value) ? point.value[0] : point.name;
+                        const y = Array.isArray(point.value) ? point.value[1] : point.value;
+                        return `时间: ${Number(t).toFixed(1)} ms<br/>${channel.label}: ${Number(y).toFixed(2)} ${channel.unit}`;
+                    }
+                },
+                grid: { 
+                    left: 50, 
+                    right: 30, 
+                    top: 40, 
+                    bottom: 40, 
+                    containLabel: true 
+                },
+                // 只在首次初始化时配置 dataZoom
+                dataZoom: [
+                    { 
+                        type: 'inside', 
+                        xAxisIndex: [0],
+                        // 关键修复：不要过滤数据本体，否则缩小(zoom out)时“全量范围”会被误判为当前窗口范围，导致回不去全范围
+                        filterMode: 'none',
+                        zoomOnMouseWheel: false,
+                        moveOnMouseMove: false
+                    },
+                    { 
+                        type: 'inside', 
+                        yAxisIndex: [0], 
+                        // 同理：Y 轴也不做过滤，仅改变视窗
+                        filterMode: 'none',
+                        zoomOnMouseWheel: false,
+                        moveOnMouseMove: false,
+                        // 初始化时的“自动窗口”（重置按钮会回到此范围）
+                        startValue: autoMin,
+                        endValue: autoMax
+                    }
+                ],
+                xAxis: { 
+                    type: 'value',
+                    name: '时间 (ms)',
+                    nameLocation: 'end',
+                    axisLabel: { formatter: '{value}' }
+                },
+                yAxis: { 
+                    type: 'value',
+                    name: `${channel.label} (${channel.unit})`,
+                    // 时域图必须能看到 0（规则要求：禁止 scale:true）
+                    scale: false,
+                    // 允许滚轮缩放到更大范围：y 轴全量范围由 fullMin/fullMax 控制
+                    min: fullMin,
+                    max: fullMax,
+                    splitLine: { show: true } 
+                },
+                series: [{
+                    data: timeSeriesData,
+                    type: 'line',
+                    showSymbol: false,
+                    lineStyle: { 
+                        width: 1.5, 
+                        color: lineColor 
+                    },
+                    animation: false
+                }]
+            }, { notMerge: false, lazyUpdate: true, silent: true });
+            timeDomainChart._configInitialized = true;
+        } else {
+            // 高频更新只更新数据/标题/轴名，不动 dataZoom
+            timeDomainChart.setOption({
+                title: { 
+                    text: `时域波形 (${channel.label})`, 
+                    left: 'center', 
+                    top: 5 
+                },
+                xAxis: { name: '时间 (ms)' },
+                yAxis: { 
+                    name: `${channel.label} (${channel.unit})`,
+                    min: fullMin,
+                    max: fullMax
+                },
+                series: [{
+                    data: timeSeriesData,
+                    lineStyle: { width: 1.5, color: lineColor }
+                }]
+            }, { notMerge: false, lazyUpdate: true, silent: true });
+        }
+        // ^ IMPORTANT: Removed {notMerge: true} so zoom state is preserved!
+        // 注意：不要在每次数据更新后强制 resize()，这会触发布局计算并造成周期性卡顿。
+        // resize 已在 tab 切换 / window resize 中处理。
+    }
+
+    // ========== 更新频域图表（使用从后端接收的FFT数据）==========
+    function updateFrequencyDomainChart(fft_spectrum_param, channel) {
+        if (!frequencyDomainChart) return;
+        
+        // 使用 requestAnimationFrame 优化渲染性能
+        requestAnimationFrame(() => {
+            // 优先使用传入的参数，如果没有则从缓存获取
+            const channelData = nodeData[currentNodeId]?.[channel.id];
+            const fft_spectrum = fft_spectrum_param && fft_spectrum_param.length > 0 
+                ? fft_spectrum_param 
+                : (channelData?.fft_spectrum || []);
+            
+            try {
+                // FFT 为空：不要 showLoading/clear（会触发重绘+布局，造成周期性卡顿）
+                // 直接保持上一帧频谱，等待下一次有效数据。
+                if (!fft_spectrum || fft_spectrum.length === 0) {
+                    debugLog("[updateFrequencyDomainChart] FFT为空，跳过本次更新");
+                    return;
+                }
+
+                // 如果之前显示过 loading，这里兜底隐藏（不强依赖）
+                try { frequencyDomainChart.hideLoading(); } catch (e) {}
+                
+                // 如果有数据，检查是否需要重新初始化配置
+                const needsReinit = !frequencyDomainChart._configInitialized;
+                
+                // 如果需要重新初始化，先清空图表
+                if (needsReinit) {
+                    frequencyDomainChart.clear();
+                }
+        
+        // 物理常数（与下位机一致）
+        const FREQ_RES = EDGEWIND_FREQ_RES_HZ;  // Hz/bin = Fs/N = 25600/4096 = 6.25
+        const MAX_DISPLAY_BINS = 0;  // 0=不限制，显示全部
+        
+        // 如果后端提供了FFT数据，直接使用
+        if (fft_spectrum.length > 0) {
+        const frequencies = [];
+            const fftData = [];
+            
+            // 下位机上传 2048 个 bin：k=0..2047，频率 f=k*6.25Hz，最高约 12.794kHz
+            const displayLength = MAX_DISPLAY_BINS > 0
+                ? Math.min(fft_spectrum.length, MAX_DISPLAY_BINS)
+                : fft_spectrum.length;
+
+            // 若后端对频谱做过抽取（例如 2048 -> 128），这里按“均匀抽取”的步长推断真实 bin 索引。
+            // - full: displayLength=2048 => step≈1
+            // - downsample: displayLength=128 => step≈16
+            const inferredBinStep = (displayLength > 1)
+                ? Math.max(1, Math.round((EDGEWIND_FFT_BINS - 1) / (displayLength - 1)))
+                : 1;
+
+            for (let i = 0; i < displayLength; i++) {
+                const freq = (i * inferredBinStep) * FREQ_RES;
+                frequencies.push(freq);
+                fftData.push(fft_spectrum[i]);  // 直接使用后端DFT数据
+            }
+            
+            // 渲染图表
+            renderFFTChart(frequencies, fftData, channel);
+        } else {
+            // 如果没有FFT数据，显示空图表
+            const frequencies = [];
+            const fftData = [];
+            for (let i = 0; i < MAX_DISPLAY_BINS; i++) {
+                frequencies.push(i * FREQ_RES);
+                fftData.push(0);  // 显示为零
+            }
+            renderFFTChart(frequencies, fftData, channel);
+        }
+            } catch (error) {
+                console.error('[updateFrequencyDomainChart] 更新频域图表时出错:', error);
+                // 错误不影响后续更新
+            }
+        });  // 闭合 requestAnimationFrame
+    }
+    
+    // ========== 渲染FFT图表（辅助函数）- 专业折线图 ==========
+    function renderFFTChart(frequencies, fftData, channel) {
+        if (!frequencyDomainChart) {
+            console.warn('[renderFFTChart] 图表实例不存在');
+            return;
+        }
+        
+        try {
+            // 检查图表是否处于挂起状态（WebGL/Canvas错误）
+            if (frequencyDomainChart._disposed || !frequencyDomainChart.getDom()) {
+                console.warn('[renderFFTChart] 图表实例已销毁或DOM不存在，重新初始化');
+                // 销毁旧实例
+                if (frequencyDomainChart) {
+                    try {
+                        frequencyDomainChart.dispose();
+                    } catch (e) {
+                        console.warn('[renderFFTChart] 销毁旧实例时出错:', e);
+                    }
+                }
+                // 重新初始化图表
+                const chartDom = document.getElementById('frequency-domain-chart');
+                if (chartDom) {
+                    frequencyDomainChart = echarts.init(chartDom);
+                    frequencyDomainChart._configInitialized = false;
+                } else {
+                    console.error('[renderFFTChart] 找不到图表DOM元素');
+            return;
+                }
+            }
+            
+            // 频域图改为 value 轴 + [频率, 幅值] 数据对（保证缩放/缩小/拖拽逻辑与时域一致）
+            // 不做降采样，仅将 NaN/Inf 替换为 0，确保点数不变
+            const sanitized = fftData.map(val => (Number.isFinite(val) ? val : 0));
+            const fftSeriesData = frequencies.map((f, i) => [f, sanitized[i]]);
+            
+            // 计算Y轴最大值（动态调整，留10%余量）
+            // 确保正确处理空数组或无效数据
+            const maxVal = sanitized.length > 0 ? Math.max(...sanitized) : 0;
+            const yAxisMax = maxVal > 0 ? maxVal * 1.1 : 50;
+            const autoMax = yAxisMax;
+            const fullMax = Math.max(autoMax * 10, 10);
+
+            // 显式提供“全量范围”，保证滚轮缩小一定能回到全范围（与时域一致）
+            if (frequencyDomainChart) {
+                const xMin = frequencies.length ? frequencies[0] : 0;
+                const xMax = frequencies.length ? frequencies[frequencies.length - 1] : 0;
+                frequencyDomainChart.__edgewindFullExtentX = { min: xMin, max: xMax };
+                frequencyDomainChart.__edgewindFullExtentY = { min: 0, max: fullMax };
+                frequencyDomainChart.__edgewindAutoWindowY = { min: 0, max: autoMax };
+            }
+        
+        // 根据当前选中的数据源确定颜色（跟随选项卡）
+        const config = NODE_CONFIGS[currentNodeId];
+        const isFault = config && (config.status === 'fault' || config.status === 'faulty');
+        // 使用当前选中源的对应颜色
+        const sourceColor = getSourceColor(currentSource);
+        const lineColor = sourceColor;
+            
+            // 检查是否需要重新初始化
+            const needsReinit = !frequencyDomainChart._configInitialized;
+            
+            // 更新数据和颜色（确保颜色跟随选项卡变化）
+            frequencyDomainChart.setOption({
+                series: [{
+                    data: fftSeriesData,
+                    lineStyle: {
+                        color: lineColor
+                    },
+                    areaStyle: {
+                        color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                            { offset: 0, color: hexToRgba(sourceColor, 0.5) },
+                            { offset: 1, color: hexToRgba(sourceColor, 0.1) }
+                        ])
+                    }
+                }]
+            }, {
+                notMerge: false,  // 始终合并，保留其他配置
+                lazyUpdate: !needsReinit  // 只在非重新初始化时使用延迟更新
+            });
+            
+            // 只在首次或配置变化时更新完整配置
+            if (needsReinit) {
+        frequencyDomainChart.setOption({
+            tooltip: {
+                trigger: 'axis',
+                formatter: function(params) {
+                    const point = params[0];
+                    const freq = Array.isArray(point.value) ? point.value[0] : frequencies[point.dataIndex];
+                    const amp = Array.isArray(point.value) ? point.value[1] : point.value;
+                        const unit = channel.unit || '';
+                        return `频率: ${freq.toFixed(1)} Hz<br/>幅度: ${amp.toFixed(3)} ${unit}`;
+                }
+            },
+            grid: {
+                top: 40,
+                left: 50,
+                right: 20,
+                bottom: 40,
+                containLabel: true
+            },
+            xAxis: {
+                type: 'value',
+                min: 0,
+                max: frequencies.length ? frequencies[frequencies.length - 1] : ((EDGEWIND_FFT_BINS - 1) * EDGEWIND_FREQ_RES_HZ),
+                name: '频率 (Hz)',
+                nameLocation: 'middle',
+                nameGap: 30,
+                nameTextStyle: { color: '#64748b' },
+                axisLabel: {
+                    formatter: function(value) {
+                        const freq = Number(value);
+                        if (!Number.isFinite(freq)) return '';
+                        // 特别标注 50Hz（E01 故障频率）
+                        if (Math.abs(freq - 50) <= (EDGEWIND_FREQ_RES_HZ / 2)) return '50Hz';
+                        // 仅显示整 50Hz 刻度（避免标签过密）；注意浮点误差
+                        const m = freq / 50;
+                        if (Math.abs(m - Math.round(m)) < 1e-6) return Math.round(m) * 50 + 'Hz';
+                        return '';
+                    }
+                },
+                splitLine: { show: false }
+            },
+            yAxis: {
+                type: 'value',
+                name: '幅度 (V 或 A)',
+                nameLocation: 'middle',
+                nameGap: 50,
+                nameTextStyle: { color: '#64748b' },
+                min: 0,
+                max: fullMax,
+                splitLine: {
+                    show: true,
+                    lineStyle: { type: 'dashed' }
+                }
+            },
+            // 与时域一致：X/Y 轴独立缩放 + Grab 拖拽（由 setupChartZoom 统一控制）
+            dataZoom: [
+                {
+                    type: 'inside',
+                    xAxisIndex: [0],
+                    filterMode: 'none',
+                    zoomOnMouseWheel: false,
+                    moveOnMouseMove: false,
+                    moveOnMouseWheel: false
+                },
+                {
+                    type: 'inside',
+                    yAxisIndex: [0],
+                    filterMode: 'none',
+                    zoomOnMouseWheel: false,
+                    moveOnMouseMove: false,
+                    moveOnMouseWheel: false,
+                    // 初始化时的“自动窗口”（重置按钮会回到此范围）
+                    startValue: 0,
+                    endValue: autoMax
+                }
+            ],
+            series: [{
+                name: '频谱幅值',
+                type: 'line',  // 折线图
+                smooth: true,  // 平滑曲线
+                symbol: 'none',  // 隐藏数据点，保持干净的频谱外观
+                lineStyle: {
+                    width: 2,
+                    color: lineColor
+                },
+                areaStyle: {
+                    color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                        { offset: 0, color: hexToRgba(sourceColor, 0.5) },
+                        { offset: 1, color: hexToRgba(sourceColor, 0.1) }
+                    ])
+                },
+                data: fftSeriesData,
+                emphasis: {
+                    focus: 'series',
+                    lineStyle: {
+                        width: 3
+                    }
+                }
+            }]
+            }, {
+                notMerge: false,
+                lazyUpdate: false
+            });
+            frequencyDomainChart._configInitialized = true;
+            }
+        } catch (error) {
+            console.error('[renderFFTChart] 渲染FFT图表时出错:', error);
+            // 如果渲染失败，尝试重置图表
+            if (frequencyDomainChart) {
+                try {
+                    frequencyDomainChart.dispose();
+                    const chartDom = document.getElementById('frequency-domain-chart');
+                    if (chartDom) {
+                        frequencyDomainChart = echarts.init(chartDom);
+                        frequencyDomainChart._configInitialized = false;
+                        console.log('[renderFFTChart] 图表已重置，等待下次数据更新');
+                    }
+                } catch (resetError) {
+                    console.error('[renderFFTChart] 重置图表时出错:', resetError);
+                }
+            }
+        }
+    }
+
+    // ========== 设置VOFA+风格示波器交互（智能轴独立缩放）==========
+    function setupOscilloscopeInteractions() {
+        if (!timeDomainChart) return;
+        
+        const chartDom = document.getElementById('time-domain-chart');
+        if (!chartDom) return;
+
+        // 已由 setupChartZoom 接管滚轮/双击/拖拽，避免重复绑定导致缩放冲突
+        return;
+        
+        let isOverXAxis = false;
+        let isOverYAxis = false;
+        let mouseX = 0;
+        let mouseY = 0;
+        
+        // 检测鼠标位置（是否在X轴或Y轴区域）- 精确检测轴区域
+        chartDom.addEventListener('mousemove', function(e) {
+            const rect = chartDom.getBoundingClientRect();
+            mouseX = e.clientX - rect.left;
+            mouseY = e.clientY - rect.top;
+            const width = rect.width;
+            const height = rect.height;
+            
+            // X轴区域：底部20%的区域（包括X轴标签、刻度和滑块）
+            // 检测鼠标是否在X轴区域（底部20%）
+            isOverXAxis = (mouseY > height * 0.80);
+            
+            // Y轴区域：左侧18%的区域（包括Y轴标签和刻度）
+            // 检测鼠标是否在Y轴区域（左侧18%）
+            isOverYAxis = (mouseX < width * 0.18);
+            
+            // 注意：如果鼠标同时在X轴和Y轴的交集区域（左下角），优先处理Y轴
+            // 因为Y轴的检测优先级更高（更常用）
+        });
+        
+        // 鼠标离开图表区域时重置
+        chartDom.addEventListener('mouseleave', function() {
+            isOverXAxis = false;
+            isOverYAxis = false;
+        });
+        
+        // 双击重置功能：双击Y轴重置Y轴，双击X轴重置X轴，双击图表区域重置两个轴
+        let lastClickTime = 0;
+        chartDom.addEventListener('dblclick', function(e) {
+            if (!timeDomainChart) return;
+            
+            const rect = chartDom.getBoundingClientRect();
+            const clickX = e.clientX - rect.left;
+            const clickY = e.clientY - rect.top;
+            const width = rect.width;
+            const height = rect.height;
+            
+            const isClickOnXAxis = (clickY > height * 0.80);
+            const isClickOnYAxis = (clickX < width * 0.18);
+            
+            const currentOption = timeDomainChart.getOption();
+            const currentDataZoom = currentOption.dataZoom || [];
+            
+            // 创建新的dataZoom配置
+            const newDataZoom = currentDataZoom.map(dz => {
+                // 双击Y轴：重置Y轴缩放（显示完整范围）
+                if (isClickOnYAxis && !isClickOnXAxis && dz.type === 'inside' && dz.yAxisIndex && dz.yAxisIndex[0] === 0) {
+                    return {
+                        ...dz,
+                        start: 0,
+                        end: 100
+                    };
+                }
+                // 双击X轴：重置X轴缩放（显示完整范围）
+                else if (isClickOnXAxis && !isClickOnYAxis && dz.type === 'inside' && dz.xAxisIndex && dz.xAxisIndex[0] === 0) {
+                    return {
+                        ...dz,
+                        start: 0,
+                        end: 100
+                    };
+                }
+                // 双击图表区域：重置两个轴（显示完整范围）
+                else if (!isClickOnXAxis && !isClickOnYAxis) {
+                    if (dz.type === 'inside' && dz.xAxisIndex && dz.xAxisIndex[0] === 0) {
+                        return {
+                            ...dz,
+                            start: 0,
+                            end: 100
+                        };
+                    }
+                    if (dz.type === 'inside' && dz.yAxisIndex && dz.yAxisIndex[0] === 0) {
+                        return {
+                            ...dz,
+                            start: 0,
+                            end: 100
+                        };
+                    }
+                }
+                return dz;
+            });
+            
+            // 应用重置
+            timeDomainChart.setOption({
+                dataZoom: newDataZoom
+            }, {
+                notMerge: false,
+                lazyUpdate: false
+            });
+        });
+        
+        // 自定义滚轮事件处理（VOFA+风格：智能轴独立缩放）
+        chartDom.addEventListener('wheel', function(e) {
+            if (!timeDomainChart) return;
+            
+            // 获取鼠标位置（用于判断在哪个区域）- 在阻止默认行为之前获取
+            const rect = chartDom.getBoundingClientRect();
+            const wheelX = e.clientX - rect.left;
+            const wheelY = e.clientY - rect.top;
+            const width = rect.width;
+            const height = rect.height;
+            
+            // 实时检测鼠标位置（滚轮事件时）
+            const isWheelOnXAxis = (wheelY > height * 0.80);
+            const isWheelOnYAxis = (wheelX < width * 0.18);
+            
+            // 调试信息（临时启用以验证检测逻辑）
+            // console.log('Wheel position:', { wheelX, wheelY, width, height, isWheelOnXAxis, isWheelOnYAxis });
+            
+            // 完全阻止默认行为，防止ECharts原生缩放干扰
+            e.preventDefault();
+            e.stopPropagation();
+            
+            // 获取缩放方向（向上滚动放大，向下滚动缩小）
+            // deltaY < 0 表示向上滚动（放大），deltaY > 0 表示向下滚动（缩小）
+            const zoomFactor = e.deltaY < 0 ? 1.10 : 0.90;
+            
+            // 获取当前dataZoom状态（直接从ECharts内部状态获取，更准确）
+            const option = timeDomainChart.getOption();
+            const dataZoom = option.dataZoom || [];
+            
+            // 获取X轴和Y轴的当前缩放范围
+            let xDataZoom = dataZoom.find(dz => dz.type === 'inside' && dz.xAxisIndex && dz.xAxisIndex[0] === 0);
+            let yDataZoom = dataZoom.find(dz => dz.type === 'inside' && dz.yAxisIndex && dz.yAxisIndex[0] === 0);
+            
+            // 如果dataZoom未初始化，使用默认值（全范围显示）
+            let xStart = (xDataZoom && xDataZoom.start !== undefined) ? xDataZoom.start : 0;
+            let xEnd = (xDataZoom && xDataZoom.end !== undefined) ? xDataZoom.end : 100;
+            let yStart = (yDataZoom && yDataZoom.start !== undefined) ? yDataZoom.start : 0;
+            let yEnd = (yDataZoom && yDataZoom.end !== undefined) ? yDataZoom.end : 100;
+            
+            // 调试信息（可选，用于验证逻辑）
+            // console.log('Mouse position:', { isOverXAxis, isOverYAxis, xStart, xEnd, yStart, yEnd });
+            
+            // 计算新的缩放范围
+            let newXStart = xStart;
+            let newXEnd = xEnd;
+            let newYStart = yStart;
+            let newYEnd = yEnd;
+            
+            // ========== 根据鼠标位置决定缩放行为 ==========
+            // 使用滚轮事件时的实时位置（更准确）
+            // 情况1：鼠标在X轴上（不在Y轴上）→ 只缩放X轴（时基调整）
+            if (isWheelOnXAxis && !isWheelOnYAxis) {
+                const xCenter = (xStart + xEnd) / 2;
+                const xRange = (xEnd - xStart) / zoomFactor;
+                const minRange = 1;
+                const maxRange = 100;
+                const clampedRange = Math.max(minRange, Math.min(maxRange, xRange));
+                newXStart = Math.max(0, Math.min(100 - clampedRange, xCenter - clampedRange / 2));
+                newXEnd = Math.min(100, Math.max(clampedRange, xCenter + clampedRange / 2));
+                // Y轴明确保持不变（使用当前值）
+                newYStart = yStart;
+                newYEnd = yEnd;
+                // console.log('X轴缩放:', { xStart, xEnd, newXStart, newXEnd, yStart, yEnd, newYStart, newYEnd });
+            }
+            // 情况2：鼠标在Y轴上（不在X轴上）→ 只缩放Y轴（电压/电流增益调整）
+            else if (isWheelOnYAxis && !isWheelOnXAxis) {
+                const yCenter = (yStart + yEnd) / 2;
+                const yRange = (yEnd - yStart) / zoomFactor;
+                const minRange = 1;
+                const maxRange = 100;
+                const clampedRange = Math.max(minRange, Math.min(maxRange, yRange));
+                newYStart = Math.max(0, Math.min(100 - clampedRange, yCenter - clampedRange / 2));
+                newYEnd = Math.min(100, Math.max(clampedRange, yCenter + clampedRange / 2));
+                // X轴明确保持不变（使用当前值）
+                newXStart = xStart;
+                newXEnd = xEnd;
+                // console.log('Y轴缩放:', { xStart, xEnd, newXStart, newXEnd, yStart, yEnd, newYStart, newYEnd });
+            }
+            // 情况3：鼠标在波形区域（既不在X轴也不在Y轴上）→ 同时缩放X和Y轴（中心缩放）
+            else if (!isWheelOnXAxis && !isWheelOnYAxis) {
+                // 同时缩放X和Y轴
+                const xCenter = (xStart + xEnd) / 2;
+                const xRange = (xEnd - xStart) / zoomFactor;
+                const minRange = 1;
+                const maxRange = 100;
+                const clampedXRange = Math.max(minRange, Math.min(maxRange, xRange));
+                newXStart = Math.max(0, Math.min(100 - clampedXRange, xCenter - clampedXRange / 2));
+                newXEnd = Math.min(100, Math.max(clampedXRange, xCenter + clampedXRange / 2));
+                
+                const yCenter = (yStart + yEnd) / 2;
+                const yRange = (yEnd - yStart) / zoomFactor;
+                const clampedYRange = Math.max(minRange, Math.min(maxRange, yRange));
+                newYStart = Math.max(0, Math.min(100 - clampedYRange, yCenter - clampedYRange / 2));
+                newYEnd = Math.min(100, Math.max(clampedYRange, yCenter + clampedYRange / 2));
+            }
+            // 其他情况（例如在交叉区域），不进行缩放
+            else {
+                return;  // 不执行任何缩放操作
+            }
+            
+            // 应用新的缩放范围（使用setOption直接更新，确保完全独立控制）
+            const currentOption = timeDomainChart.getOption();
+            const currentDataZoom = currentOption.dataZoom || [];
+            
+            // 创建新的dataZoom配置，明确保持另一个轴不变
+            const newDataZoom = currentDataZoom.map(dz => {
+                // X轴的dataZoom
+                if (dz.type === 'inside' && dz.xAxisIndex && dz.xAxisIndex[0] === 0) {
+                    // 如果X轴需要更新，更新它；否则保持原值
+                    return {
+                        ...dz,
+                        start: newXStart,
+                        end: newXEnd
+                    };
+                }
+                // Y轴的dataZoom
+                else if (dz.type === 'inside' && dz.yAxisIndex && dz.yAxisIndex[0] === 0) {
+                    // 如果Y轴需要更新，更新它；否则保持原值
+                    return {
+                        ...dz,
+                        start: newYStart,
+                        end: newYEnd
+                    };
+                }
+                // 其他dataZoom（如slider）保持不变
+                return dz;
+            });
+            
+            // 使用setOption更新，确保只更新dataZoom，其他配置不受影响
+            // 检查是否有任何变化
+            const hasXChange = (newXStart !== xStart || newXEnd !== xEnd);
+            const hasYChange = (newYStart !== yStart || newYEnd !== yEnd);
+            
+            if (hasXChange || hasYChange) {
+                timeDomainChart.setOption({
+                    dataZoom: newDataZoom
+                }, {
+                    notMerge: false,  // 合并模式
+                    lazyUpdate: false,  // 立即更新
+                    silent: false  // 触发事件
+                });
+            }
+        }, { passive: false });
+    }
+
+    // ========== 重置时域图表缩放 ==========
+    function resetTimeDomainZoom() {
+        if (!timeDomainChart) return;
+        
+        const currentOption = timeDomainChart.getOption();
+        const currentDataZoom = currentOption.dataZoom || [];
+        const autoY = timeDomainChart.__edgewindAutoWindowY || null;
+        const autoMin = autoY && Number.isFinite(Number(autoY.min)) ? Number(autoY.min) : null;
+        const autoMax = autoY && Number.isFinite(Number(autoY.max)) ? Number(autoY.max) : null;
+        
+        // 重置：X 轴回到全范围；Y 轴回到“自动窗口”（与当前数据匹配）
+        const newDataZoom = currentDataZoom.map(dz => {
+            if (dz.type === 'inside' && dz.xAxisIndex && dz.xAxisIndex[0] === 0) {
+                return {
+                    ...dz,
+                    start: 0,
+                    end: 100,
+                    startValue: null,
+                    endValue: null
+                };
+            }
+            if (dz.type === 'inside' && dz.yAxisIndex && dz.yAxisIndex[0] === 0) {
+                // 若拿不到自动窗口，退回全范围
+                if (autoMin === null || autoMax === null || autoMin === autoMax) {
+                    return {
+                        ...dz,
+                        start: 0,
+                        end: 100,
+                        startValue: null,
+                        endValue: null
+                    };
+                }
+                return {
+                    ...dz,
+                    start: 0,
+                    end: 100,
+                    startValue: autoMin,
+                    endValue: autoMax
+                };
+            }
+            return dz;
+        });
+        
+        // 应用重置
+        timeDomainChart.setOption({
+            dataZoom: newDataZoom
+        }, {
+            notMerge: false,
+            lazyUpdate: false
+        });
+    }
+
+    // ========== 重置频域图表缩放 ==========
+    function resetFrequencyDomainZoom() {
+        if (!frequencyDomainChart) return;
+        
+        const currentOption = frequencyDomainChart.getOption();
+        const currentDataZoom = currentOption.dataZoom || [];
+        const autoY = frequencyDomainChart.__edgewindAutoWindowY || null;
+        const autoMin = autoY && Number.isFinite(Number(autoY.min)) ? Number(autoY.min) : null;
+        const autoMax = autoY && Number.isFinite(Number(autoY.max)) ? Number(autoY.max) : null;
+        
+        // 重置：X 轴回到全范围；Y 轴回到“自动窗口”（与当前数据匹配）
+        const newDataZoom = currentDataZoom.map(dz => {
+            if (dz.type === 'inside' && dz.xAxisIndex && dz.xAxisIndex[0] === 0) {
+                return {
+                    ...dz,
+                    start: 0,
+                    end: 100,
+                    startValue: null,
+                    endValue: null
+                };
+            }
+            if (dz.type === 'inside' && dz.yAxisIndex && dz.yAxisIndex[0] === 0) {
+                if (autoMin === null || autoMax === null || autoMin === autoMax) {
+                    return {
+                        ...dz,
+                        start: 0,
+                        end: 100,
+                        startValue: null,
+                        endValue: null
+                    };
+                }
+                return {
+                    ...dz,
+                    start: 0,
+                    end: 100,
+                    startValue: autoMin,
+                    endValue: autoMax
+                };
+            }
+            return dz;
+        });
+        
+        frequencyDomainChart.setOption({
+            dataZoom: newDataZoom
+        }, {
+            notMerge: false,
+            lazyUpdate: false
+        });
+    }
+
+    // ========== 应用故障模式视觉效果 ==========
+    function applyFaultModeEffects(status) {
+        const isFault = status === 'fault' || status === 'faulty';
+        const timeChartContainer = document.getElementById('time-domain-chart-container');
+        const freqChartContainer = document.getElementById('frequency-domain-chart-container');
+        
+        if (timeChartContainer) {
+            if (isFault) {
+                timeChartContainer.classList.add('chart-fault-overlay');
+            } else {
+                timeChartContainer.classList.remove('chart-fault-overlay');
+            }
+        }
+        
+        if (freqChartContainer) {
+            if (isFault) {
+                freqChartContainer.classList.add('chart-fault-overlay');
+            } else {
+                freqChartContainer.classList.remove('chart-fault-overlay');
+            }
+        }
+    }
+
+    // ========== 工具函数 ==========
+    function formatValue(value, unit) {
+        if (unit === 'V' || unit === 'A' || unit === 'kW' || unit === 'kVar') {
+            return value.toFixed(2);
+        } else if (unit === 'mA') {
+            return value.toFixed(3);
+        } else if (unit === '°C' || unit === '%' || unit === 'MΩ') {
+            return value.toFixed(1);
+        } else if (unit === 'rpm' || unit === 'deg') {
+            return Math.round(value);
+        }
+        return value.toFixed(2);
+    }
+
+    // ========== 根据当前选中的数据源获取对应的颜色 ==========
+    function getSourceColor(source) {
+        // 根据项目颜色编码标准映射
+        const colorMap = {
+            'voltage': '#0d6efd',      // 蓝色 (直流母线+)
+            'voltage_neg': '#dc3545',  // 红色 (直流母线-)
+            'current': '#0dcaf0',      // 青色 (负载电流)
+            'leakage': '#ffc107'       // 黄色 (漏电流)
+        };
+        return colorMap[source] || '#0d6efd';  // 默认蓝色
+    }
+
+    // ========== 将十六进制颜色转换为RGBA ==========
+    function hexToRgba(hex, alpha) {
+        const r = parseInt(hex.slice(1, 3), 16);
+        const g = parseInt(hex.slice(3, 5), 16);
+        const b = parseInt(hex.slice(5, 7), 16);
+        return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+    }
+
+    // ========== CSS样式 ==========
+    const style = document.createElement('style');
+    style.textContent = `
+        @keyframes pulse-danger {
+            0% { 
+                box-shadow: 0 0 0 0 rgba(220, 53, 69, 0.7);
+            }
+            70% { 
+                box-shadow: 0 0 0 15px rgba(220, 53, 69, 0); 
+            }
+            100% { 
+                box-shadow: 0 0 0 0 rgba(220, 53, 69, 0); 
+            }
+        }
+        
+        .fault-pulse {
+            animation: pulse-danger 2s infinite;
+        }
+        
+        .chart-fault-overlay {
+            border: 2px solid #dc3545 !important;
+            background-color: rgba(220, 53, 69, 0.05) !important;
+            border-radius: 4px;
+            transition: all 0.3s ease;
+        }
+        
+        .list-group-item {
+            transition: all 0.2s ease;
+        }
+        
+        .list-group-item:hover {
+            background-color: #f8f9fa;
+        }
+        
+        .cursor-pointer { 
+            cursor: pointer; 
+            transition: all 0.2s ease;
+        }
+        
+        /* Card Interaction Styles */
+        .card-select {
+            cursor: pointer;
+            transition: all 0.2s ease-in-out;
+            border: 2px solid transparent; /* Placeholder for border */
+        }
+        
+        .card-select:hover { 
+            transform: translateY(-3px);
+            box-shadow: 0 10px 20px rgba(0,0,0,0.1) !important;
+        }
+        
+        /* Active State */
+        .card-active {
+            background-color: #f8f9fa !important;
+            border-color: #0d6efd !important; /* Blue border for active */
+            box-shadow: 0 0 15px rgba(13, 110, 253, 0.2) !important;
+        }
+        
+        /* The "Selected" Badge Text - Hidden by default */
+        .select-badge {
+            opacity: 0;
+            transform: translateY(5px);
+            transition: all 0.2s;
+            font-size: 0.85rem;
+            font-weight: bold;
+        }
+        
+        /* Show when parent has .card-active */
+        .card-active .select-badge {
+            opacity: 1;
+            transform: translateY(0);
+        }
+        
+        .channel-card {
+            transition: all 0.2s ease;
+        }
+        
+        .channel-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+        }
+        
+        .channel-card.border-primary {
+            background-color: #e7f3ff !important;
+        }
+        
+        /* 标签页样式 */
+        .card-header-tabs .nav-link {
+            color: rgba(255, 255, 255, 0.7);
+            border: none;
+            border-bottom: 2px solid transparent;
+            padding: 0.75rem 1.5rem;
+            transition: all 0.2s ease;
+        }
+        
+        .card-header-tabs .nav-link:hover {
+            color: rgba(255, 255, 255, 0.9);
+            border-bottom-color: rgba(255, 255, 255, 0.3);
+        }
+        
+        .card-header-tabs .nav-link.active {
+            color: #fff;
+            background-color: transparent;
+            border-bottom-color: #fff;
+            font-weight: 600;
+        }
+        
+        .tab-pane {
+            min-height: 450px;
+        }
+        
+        #time-domain-chart,
+        #frequency-domain-chart {
+            min-height: 600px;
+        }
+    `;
+    document.head.appendChild(style);
+    
+    // ========== Toast 通知功能 ==========
+    // 将 showToast 暴露为全局函数，供 publishSystemEvent 调用
+    window.showToast = function(message, type = 'info') {
+        const container = document.getElementById('toast-container');
+        if (!container) return;
+        
+        // 类型映射
+        const typeConfig = {
+            'success': { icon: '✅', color: 'success' },
+            'warning': { icon: '⚠️', color: 'warning' },
+            'error': { icon: '❌', color: 'error' },
+            'info': { icon: 'ℹ️', color: 'info' }
+        };
+        
+        const config = typeConfig[type] || typeConfig['info'];
+        
+        // 创建 Toast 元素
+        const toast = document.createElement('div');
+        toast.className = `custom-toast ${config.color}`;
+        toast.innerHTML = `
+            <span class="custom-toast-icon">${config.icon}</span>
+            <div class="custom-toast-content">
+                <div class="custom-toast-message">${escapeHtml(message)}</div>
+            </div>
+            <span class="custom-toast-close" onclick="this.parentElement.remove()">×</span>
+        `;
+        
+        // 添加到容器
+        container.appendChild(toast);
+        
+        // 自动移除（5秒后）
+        setTimeout(() => {
+            toast.classList.add('fade-out');
+            setTimeout(() => {
+                if (toast.parentElement) {
+                    toast.remove();
+                }
+            }, 300);
+        }, 5000);
+    };
+    
+    // 保持向后兼容
+    const showToast = window.showToast;
+</script>
+{% endblock %}

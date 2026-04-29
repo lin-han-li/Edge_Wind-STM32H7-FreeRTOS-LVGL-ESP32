@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Device Connection</title>
+<style>
+    /* 提取自 setup_scr_WifiConfig.c */
+    :root {
+        --bg-color: #65adff;          /* 0x65adff */
+        --panel-bg: rgba(255, 255, 255, 0.9); /* 230/255 opacity */
+        --text-white: #FFFFFF;
+        --text-blue: #2F35DA;         /* 0x2F35DA */
+        --btn-gray: #999999;          /* 0x999999 */
+        --btn-green: #3dfb00;         /* 0x3dfb00 */
+        --btn-orange: #FFA500;        /* 0xFFA500 */
+        --border-color: #CCCCCC;
+        --font-family: "Microsoft YaHei", sans-serif;
+    }
+
+    body {
+        margin: 0;
+        padding: 0;
+        background-color: #333; /* 浏览器背景 */
+        height: 100vh;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        font-family: var(--font-family);
+    }
+
+    /* 800x480 屏幕容器 */
+    .screen {
+        width: 800px;
+        height: 480px;
+        background-color: var(--bg-color);
+        position: relative;
+        overflow: hidden;
+        box-shadow: 0 0 20px rgba(0,0,0,0.5);
+    }
+
+    /* 标题 - Header */
+    .header-title {
+        position: absolute;
+        left: 20px;
+        top: 15px;
+        font-size: 24px; /* font_20 放大一点 */
+        color: var(--text-white);
+        font-weight: bold;
+    }
+
+    /* 白色面板 - WifiConfig_cont_panel */
+    .panel {
+        position: absolute;
+        left: 50px;
+        top: 60px;
+        width: 700px;
+        height: 260px;
+        background-color: var(--panel-bg);
+        border-radius: 10px;
+        display: flex;
+        flex-direction: column;
+        padding: 20px;
+        box-sizing: border-box;
+        gap: 15px; /* 行间距 */
+    }
+
+    /* 连接步骤行 */
+    .step-row {
+        display: flex;
+        align-items: center;
+        height: 45px;
+        border-bottom: 1px solid #eee;
+        padding-bottom: 5px;
+    }
+
+    .step-icon {
+        width: 30px;
+        text-align: center;
+        font-size: 20px;
+        margin-right: 15px;
+        color: var(--text-blue);
+    }
+
+    .step-label {
+        width: 200px;
+        font-size: 18px;
+        color: var(--text-blue);
+        font-weight: bold;
+    }
+
+    .step-status {
+        flex: 1;
+        font-size: 16px;
+        color: #666;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+    }
+
+    /* 状态指示点 */
+    .status-dot {
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        background-color: #ccc;
+        transition: background-color 0.3s;
+    }
+    .status-dot.success { background-color: var(--btn-green); box-shadow: 0 0 5px var(--btn-green); }
+    .status-dot.error { background-color: #ff4444; }
+    .status-dot.processing { background-color: var(--btn-orange); animation: blink 1s infinite; }
+
+    @keyframes blink { 50% { opacity: 0.5; } }
+
+    /* 面板内的操作按钮 */
+    .action-btn {
+        width: 120px;
+        height: 36px;
+        border-radius: 18px;
+        border: none;
+        background-color: var(--btn-orange);
+        color: white;
+        font-size: 16px;
+        font-weight: bold;
+        cursor: pointer;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        transition: transform 0.1s, background-color 0.3s;
+        box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+    }
+
+    .action-btn:active { transform: scale(0.95); }
+    .action-btn:disabled { background-color: #ccc; cursor: not-allowed; }
+    
+    .action-btn.green { background-color: var(--btn-green); color: var(--text-blue); }
+
+    /* 底部按钮区域 */
+    .footer-btn {
+        position: absolute;
+        top: 340px;
+        width: 150px;
+        height: 50px;
+        border-radius: 25px;
+        border: none;
+        font-size: 20px;
+        font-weight: bold;
+        cursor: pointer;
+        color: white;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        box-shadow: 0 4px 10px rgba(0,0,0,0.1);
+    }
+
+    .btn-back {
+        left: 50px;
+        background-color: var(--btn-gray);
+    }
+
+    .btn-log {
+        left: 600px;
+        background-color: var(--btn-orange); /* 复用扫描按钮位置放日志或一键连接 */
+    }
+
+    /* 加载动画 Spinner */
+    .spinner {
+        width: 16px;
+        height: 16px;
+        border: 3px solid rgba(255,255,255,0.3);
+        border-top-color: white;
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+        display: none;
+        margin-right: 8px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* 模拟终端输出框 (可选，为了展示进度细节) */
+    .console-log {
+        position: absolute;
+        left: 220px;
+        top: 340px;
+        width: 360px;
+        height: 120px;
+        background: rgba(0,0,0,0.2);
+        border-radius: 10px;
+        padding: 10px;
+        color: white;
+        font-family: monospace;
+        font-size: 12px;
+        overflow-y: auto;
+    }
+
+</style>
+</head>
+<body>
+
+<div class="screen">
+    <div class="header-title">设备连接 (Device Connection)</div>
+
+    <div class="panel">
+        
+        <div class="step-row">
+            <div class="step-icon">📶</div>
+            <div class="step-label">1. WiFi 连接</div>
+            <div class="step-status">
+                <div class="status-dot" id="dot-wifi"></div>
+                <span id="text-wifi">未连接 (Idle)</span>
+            </div>
+            <button class="action-btn" id="btn-wifi" onclick="runStep('wifi', 2000)">
+                <div class="spinner"></div> 连接
+            </button>
+        </div>
+
+        <div class="step-row">
+            <div class="step-icon">🔗</div>
+            <div class="step-label">2. TCP 服务</div>
+            <div class="step-status">
+                <div class="status-dot" id="dot-tcp"></div>
+                <span id="text-tcp">未连接 (Idle)</span>
+            </div>
+            <button class="action-btn" id="btn-tcp" onclick="runStep('tcp', 1500)" disabled>
+                <div class="spinner"></div> 连接
+            </button>
+        </div>
+
+        <div class="step-row">
+            <div class="step-icon">🆔</div>
+            <div class="step-label">3. 设备注册</div>
+            <div class="step-status">
+                <div class="status-dot" id="dot-reg"></div>
+                <span id="text-reg">未注册 (Pending)</span>
+            </div>
+            <button class="action-btn" id="btn-reg" onclick="runStep('reg', 1000)" disabled>
+                <div class="spinner"></div> 注册
+            </button>
+        </div>
+
+        <div class="step-row" style="border-bottom: none;">
+            <div class="step-icon">📊</div>
+            <div class="step-label">4. 数据上报</div>
+            <div class="step-status">
+                <div class="status-dot" id="dot-report"></div>
+                <span id="text-report">停止 (Stopped)</span>
+            </div>
+            <button class="action-btn green" id="btn-report" onclick="toggleReport()" disabled>
+                <div class="spinner"></div> 开始上报
+            </button>
+        </div>
+
+    </div>
+
+    <button class="footer-btn btn-back">
+        返回
+    </button>
+    
+    <div class="console-log" id="console">
+        > System Ready.<br>
+        > Waiting for user action...
+    </div>
+
+    <button class="footer-btn btn-log" onclick="autoRunAll()">
+        一键连接
+    </button>
+
+</div>
+
+<script>
+    const steps = {
+        'wifi': { next: 'tcp', label: 'WiFi Connected', log: 'IP: 192.168.1.105' },
+        'tcp':  { next: 'reg', label: 'TCP Linked', log: 'Server: 192.168.10.43:5000' },
+        'reg':  { next: 'report', label: 'Registered', log: 'ID: STM32_Node_01 Auth OK' }
+    };
+    
+    let isReporting = false;
+
+    function log(msg) {
+        const c = document.getElementById('console');
+        c.innerHTML += `> ${msg}<br>`;
+        c.scrollTop = c.scrollHeight;
+    }
+
+    function updateStatus(key, state, text) {
+        const dot = document.getElementById(`dot-${key}`);
+        const txt = document.getElementById(`text-${key}`);
+        
+        dot.className = 'status-dot ' + state;
+        if(text) txt.innerText = text;
+    }
+
+    function runStep(key, duration) {
+        const btn = document.getElementById(`btn-${key}`);
+        const spinner = btn.querySelector('.spinner');
+        
+        // UI Loading
+        btn.disabled = true;
+        spinner.style.display = 'block';
+        updateStatus(key, 'processing', 'Processing...');
+        log(`Executing ${key.toUpperCase()}...`);
+
+        // Simulate Async
+        setTimeout(() => {
+            spinner.style.display = 'none';
+            // Success
+            updateStatus(key, 'success', steps[key].label);
+            log(steps[key].log);
+            
+            // Enable next step
+            if (steps[key].next) {
+                const nextBtn = document.getElementById(`btn-${steps[key].next}`);
+                if(nextBtn) nextBtn.disabled = false;
+            }
+        }, duration);
+    }
+
+    function toggleReport() {
+        const btn = document.getElementById('btn-report');
+        const spinner = btn.querySelector('.spinner');
+        
+        if (!isReporting) {
+            // Start
+            isReporting = true;
+            btn.innerHTML = `<div class="spinner" style="display:block"></div> 停止上报`;
+            btn.style.backgroundColor = '#ff4444'; // Red for stop
+            btn.style.color = 'white';
+            updateStatus('report', 'processing', 'Uploading...');
+            log("Started sensor data upload loop.");
+        } else {
+            // Stop
+            isReporting = false;
+            btn.innerHTML = `开始上报`;
+            btn.style.backgroundColor = '#3dfb00'; // Green for start
+            btn.style.color = '#2F35DA';
+            updateStatus('report', 'success', 'Paused');
+            log("Data upload stopped.");
+        }
+    }
+
+    function autoRunAll() {
+        log("Auto sequence started...");
+        runStep('wifi', 1000);
+        setTimeout(() => runStep('tcp', 1000), 1200);
+        setTimeout(() => runStep('reg', 1000), 2400);
+        setTimeout(() => toggleReport(), 3600);
+    }
+</script>
+
+</body>
+</html>

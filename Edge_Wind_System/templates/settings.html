@@ -1,0 +1,719 @@
+{% extends "base.html" %}
+
+{% block title %}系统设置 - EdgeWind{% endblock %}
+{% block page_title %}系统设置{% endblock %}
+
+{% block content %}
+<div class="container-fluid py-4">
+    <div class="row g-4">
+        <!-- 报警阈值设定 -->
+        <div class="col-md-6">
+            <div class="card h-100 border-0 shadow-sm rounded-4">
+                <div class="card-header bg-white border-0 pt-4 ps-4">
+                    <h5 class="mb-0 fw-bold text-danger"><i class="bi bi-bell me-2"></i>报警阈值设定</h5>
+                </div>
+                <div class="card-body p-4">
+                    <div class="row g-3">
+                        <div class="col-12">
+                            <label class="form-label text-muted small fw-bold">直流母线电压上限 (V)</label>
+                            <div class="input-group">
+                                <span class="input-group-text bg-light border-0"><i class="bi bi-lightning-charge text-warning"></i></span>
+                                <input type="number" class="form-control bg-light border-0" id="voltageMax" value="400" min="0" max="1000" step="10">
+                                <span class="input-group-text bg-light border-0 text-muted small">V</span>
+                            </div>
+                            <div class="form-text">超过此值将触发电压异常报警</div>
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label text-muted small fw-bold">漏电流报警阈值 (mA)</label>
+                            <div class="input-group">
+                                <span class="input-group-text bg-light border-0"><i class="bi bi-droplet text-info"></i></span>
+                                <input type="number" class="form-control bg-light border-0" id="leakageThreshold" value="30" min="0" max="100" step="1">
+                                <span class="input-group-text bg-light border-0 text-muted small">mA</span>
+                            </div>
+                            <div class="form-text">超过此值将触发漏电流异常报警</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 监测参数配置 -->
+        <div class="col-md-6">
+            <div class="card h-100 border-0 shadow-sm rounded-4">
+                <div class="card-header bg-white border-0 pt-4 ps-4">
+                    <h5 class="mb-0 fw-bold text-primary"><i class="bi bi-satellite me-2"></i>监测参数配置</h5>
+                </div>
+                <div class="card-body p-4">
+                    <div class="mb-4">
+                        <label class="form-label text-muted small fw-bold">数据轮询间隔 (ms)</label>
+                        <div class="d-flex align-items-center gap-3 mb-2">
+                            <input type="range" class="form-range flex-grow-1" min="100" max="5000" step="100" id="pollInterval" value="1000" oninput="updateRangeVal(this.value)">
+                            <span class="badge bg-light text-primary border p-2 min-w-100 text-center" id="pollVal">1000ms</span>
+                        </div>
+                        <div class="form-text">
+                            <small>范围：100ms - 5000ms。当WebSocket连接失败时，系统将使用此间隔进行HTTP轮询。较低的值可提高实时性，但会增加服务器负载。</small>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 显示设置 -->
+        <div class="col-md-6">
+            <div class="card h-100 border-0 shadow-sm rounded-4">
+                <div class="card-header bg-white border-0 pt-4 ps-4">
+                    <h5 class="mb-0 fw-bold text-primary"><i class="bi bi-display me-2"></i>显示设置</h5>
+                </div>
+                <div class="card-body p-4">
+                    <div class="form-check form-switch mb-3">
+                        <input class="form-check-input" type="checkbox" id="fftEnabled" checked>
+                        <label class="form-check-label" for="fftEnabled">
+                            <strong>启用实时频域分析 (FFT)</strong>
+                        </label>
+                        <div class="form-text">启用后将显示频谱分析图表，帮助诊断故障特征频率</div>
+                    </div>
+                    <div class="form-check form-switch mb-3">
+                        <input class="form-check-input" type="checkbox" id="autoRefresh" checked>
+                        <label class="form-check-label" for="autoRefresh">
+                            <strong>自动刷新图表</strong>
+                        </label>
+                        <div class="form-text">启用后图表将自动更新显示最新数据</div>
+                    </div>
+                    <div class="form-check form-switch">
+                        <input class="form-check-input" type="checkbox" id="showDebugLog" checked>
+                        <label class="form-check-label" for="showDebugLog">
+                            <strong>显示调试日志</strong>
+                        </label>
+                        <div class="form-text">在浏览器控制台显示详细的调试信息</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 数据管理 -->
+        <div class="col-md-6">
+            <div class="card h-100 border-0 shadow-sm rounded-4">
+                <div class="card-header bg-white border-0 pt-4 ps-4">
+                    <h5 class="mb-0 fw-bold text-dark"><i class="bi bi-database me-2"></i>数据管理</h5>
+                </div>
+                <div class="card-body p-4">
+                    <div class="mb-4">
+                        <label class="form-label text-muted small fw-bold">历史日志保留时长</label>
+                        <select class="form-select bg-light border-0" id="logRetention">
+                            <option value="7">保留最近 7 天</option>
+                            <option value="30" selected>保留最近 30 天</option>
+                            <option value="90">保留最近 90 天</option>
+                            <option value="180">保留最近 180 天</option>
+                            <option value="365">保留最近 1 年</option>
+                            <option value="-1">永久保存</option>
+                        </select>
+                        <div class="form-text">超过保留时长的历史数据将在点击清理按钮时被删除</div>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <button class="btn btn-outline-primary btn-sm w-100 rounded-pill" onclick="cleanupOldData()">
+                            <i class="bi bi-clock-history me-1"></i>清理过期数据
+                        </button>
+                        <small class="text-muted d-block mt-1">根据上方设置的保留时长，清理历史数据</small>
+                    </div>
+
+                    <div class="mb-3">
+                        <button class="btn btn-outline-secondary btn-sm w-100 rounded-pill" onclick="vacuumDatabase()">
+                            <i class="bi bi-database-gear me-1"></i>回收数据库空间（VACUUM）
+                        </button>
+                        <small class="text-muted d-block mt-1">删除数据后数据库文件不会自动变小，需执行 VACUUM 回收空间（建议暂停设备上报时执行）</small>
+                    </div>
+                    
+                    <hr class="text-muted opacity-25">
+                    
+                    <div class="d-flex justify-content-between align-items-center p-3 bg-light rounded-3 border border-light">
+                        <div>
+                            <h6 class="mb-1 text-danger fw-bold">清空所有数据</h6>
+                            <small class="text-muted">此操作将删除所有故障日志和波形数据，不可恢复</small>
+                        </div>
+                        <button class="btn btn-outline-danger btn-sm rounded-pill px-4" onclick="clearAllData()">
+                            <i class="bi bi-trash me-1"></i>立即清空
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 系统信息（全宽大卡：占用底部空余区域） -->
+        <div class="col-12">
+            <div class="card border-0 shadow-sm rounded-4 text-white system-info-card">
+                <div class="card-body p-5 d-flex flex-column justify-content-between">
+                    <div>
+                        <h5 class="fw-bold"><i class="bi bi-info-circle me-2"></i>系统信息</h5>
+                        <p class="opacity-75 mt-2 mb-0">EdgeWind 智能边缘监测系统</p>
+                        <p class="opacity-50 small mt-1">基于边缘计算的风电场直流系统故障监测平台</p>
+                    </div>
+                    <div class="row text-center mt-4 g-2">
+                        <div class="col-4">
+                            <h4 class="fw-bold mb-0" id="systemVersion">v1.4.0</h4>
+                            <small class="opacity-75">当前版本</small>
+                        </div>
+                        <div class="col-4 border-start border-end border-white border-opacity-25">
+                            <h4 class="fw-bold mb-0" id="dbSize">--</h4>
+                            <small class="opacity-75">数据库大小</small>
+                        </div>
+                        <div class="col-4">
+                            <h4 class="fw-bold mb-0" id="serverStatus">在线</h4>
+                            <small class="opacity-75">服务器状态</small>
+                        </div>
+                    </div>
+                    <div class="mt-3 pt-3 border-top border-white border-opacity-25">
+                        <div class="row text-center g-2">
+                            <div class="col-6">
+                                <h5 class="fw-bold mb-0" id="activeNodes">--</h5>
+                                <small class="opacity-75">活跃节点</small>
+                            </div>
+                            <div class="col-6">
+                                <h5 class="fw-bold mb-0" id="totalFaults">--</h5>
+                                <small class="opacity-75">故障工单</small>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="mt-3 pt-3 border-top border-white border-opacity-25">
+                        <div class="d-flex justify-content-between align-items-center">
+                            <small class="opacity-75">实时通信</small>
+                            <span class="badge bg-success bg-opacity-75" id="asyncMode">WebSocket</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 固定底部保存按钮 -->
+    <div class="fixed-bottom p-4 d-flex justify-content-end pointer-events-none" style="z-index: 1000;">
+        <button class="btn btn-primary btn-lg shadow-lg rounded-pill px-5 py-3 pointer-events-auto" onclick="saveSettings()">
+            <i class="bi bi-save me-2"></i>保存所有设置
+        </button>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_css %}
+<style>
+    /* 设置页面专用样式 */
+    .rounded-4 {
+        border-radius: 1rem !important;
+    }
+    
+    .form-control:focus, .form-select:focus {
+        border-color: #2563eb;
+        box-shadow: 0 0 0 0.2rem rgba(37, 99, 235, 0.25);
+    }
+    
+    .form-check-input:checked {
+        background-color: #2563eb;
+        border-color: #2563eb;
+    }
+    
+    .form-check-input:focus {
+        border-color: #2563eb;
+        box-shadow: 0 0 0 0.2rem rgba(37, 99, 235, 0.25);
+    }
+    
+    .form-range {
+        height: 8px;
+    }
+    
+    .form-range::-webkit-slider-thumb {
+        background-color: #2563eb;
+        border: none;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+        width: 18px;
+        height: 18px;
+    }
+    
+    .form-range::-moz-range-thumb {
+        background-color: #2563eb;
+        border: none;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+        width: 18px;
+        height: 18px;
+    }
+    
+    .min-w-100 {
+        min-width: 100px;
+    }
+    
+    /* 确保固定按钮不遮挡内容 */
+    body {
+        padding-bottom: 100px;
+    }
+    
+    .card {
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
+    }
+    
+    .card:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 12px rgba(0,0,0,0.1) !important;
+    }
+    
+    /* 旋转动画 */
+    @keyframes spin {
+        from { transform: rotate(0deg); }
+        to { transform: rotate(360deg); }
+    }
+    
+    .spin {
+        animation: spin 1s linear infinite;
+        display: inline-block;
+    }
+
+    /* 系统信息卡片：全宽展示 + 占用底部空余空间（更饱满） */
+    .system-info-card {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        /*
+         * 高度策略：
+         * - 小屏：至少 360px，避免内容拥挤
+         * - 大屏：尽量吃满可视高度，减少底部空白
+         * - 上限：避免过高导致滚动体验变差
+         */
+        min-height: clamp(360px, calc(100vh - 420px), 760px);
+    }
+
+    @media (min-width: 992px) {
+        .system-info-card {
+            min-height: clamp(420px, calc(100vh - 420px), 820px);
+        }
+    }
+</style>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    // ========== CSRF（用于所有管理类 POST 请求）==========
+    function getCsrfToken() {
+        const el = document.querySelector('meta[name="csrf-token"]');
+        return el ? (el.getAttribute('content') || '') : '';
+    }
+    // 初始化设置页面
+    document.addEventListener('DOMContentLoaded', function() {
+        // 从localStorage加载保存的设置
+        loadSettings();
+        
+        // 检查服务器状态和加载系统信息
+        checkServerStatus();
+        loadSystemInfo();
+        
+        // 初始化轮询间隔滑块
+        const pollInterval = document.getElementById('pollInterval');
+        if (pollInterval) {
+            pollInterval.addEventListener('input', function() {
+                updateRangeVal(this.value);
+            });
+        }
+        
+        // 每30秒刷新一次系统信息
+        setInterval(loadSystemInfo, 30000);
+    });
+    
+    // 更新范围滑块显示值
+    function updateRangeVal(val) {
+        const pollVal = document.getElementById('pollVal');
+        if (pollVal) {
+            pollVal.innerText = val + 'ms';
+        }
+    }
+    
+    // 检查服务器状态
+    async function checkServerStatus() {
+        try {
+            const response = await fetch('/api/devices', { method: 'GET' });
+            const statusEl = document.getElementById('serverStatus');
+            if (response.ok) {
+                if (statusEl) statusEl.textContent = '在线';
+            } else {
+                if (statusEl) statusEl.textContent = '异常';
+            }
+        } catch (e) {
+            const statusEl = document.getElementById('serverStatus');
+            if (statusEl) statusEl.textContent = '离线';
+        }
+    }
+    
+    // 加载保存的设置（优先从服务器加载，fallback到localStorage）
+    async function loadSettings() {
+        try {
+            // 尝试从服务器加载配置
+            const response = await fetch('/api/admin/config', { method: 'GET' });
+            
+            if (response.ok) {
+                const result = await response.json();
+                if (result.success && result.data) {
+                    const config = result.data;
+                    
+                    // 应用服务器配置
+                    if (config.poll_interval !== undefined) {
+                        const pollIntervalInput = document.getElementById('pollInterval');
+                        if (pollIntervalInput) {
+                            pollIntervalInput.value = config.poll_interval;
+                            updateRangeVal(config.poll_interval);
+                        }
+                    }
+                    
+                    if (config.voltage_max !== undefined) {
+                        const voltageMaxInput = document.getElementById('voltageMax');
+                        if (voltageMaxInput) voltageMaxInput.value = config.voltage_max;
+                    }
+                    
+                    if (config.leakage_threshold !== undefined) {
+                        const leakageThresholdInput = document.getElementById('leakageThreshold');
+                        if (leakageThresholdInput) leakageThresholdInput.value = config.leakage_threshold;
+                    }
+                    
+                    if (config.auto_refresh !== undefined) {
+                        const autoRefreshToggle = document.getElementById('autoRefresh');
+                        if (autoRefreshToggle) autoRefreshToggle.checked = config.auto_refresh;
+                    }
+                    
+                    if (config.fft_enabled !== undefined) {
+                        const fftToggle = document.getElementById('fftEnabled');
+                        if (fftToggle) fftToggle.checked = config.fft_enabled;
+                    }
+                    
+                    if (config.show_debug_log !== undefined) {
+                        const debugToggle = document.getElementById('showDebugLog');
+                        if (debugToggle) debugToggle.checked = config.show_debug_log;
+                    }
+                    
+                    if (config.log_retention !== undefined) {
+                        const logRetentionSelect = document.getElementById('logRetention');
+                        if (logRetentionSelect) logRetentionSelect.value = config.log_retention;
+                    }
+                    
+                    console.log('[Settings] 从服务器加载配置成功');
+                    return;
+                }
+            }
+        } catch (e) {
+            console.warn('[Settings] 从服务器加载配置失败，使用本地配置:', e);
+        }
+        
+        // Fallback: 从localStorage加载
+        const pollTime = localStorage.getItem('pollInterval') || 1000;
+        const pollIntervalInput = document.getElementById('pollInterval');
+        if (pollIntervalInput) {
+            pollIntervalInput.value = pollTime;
+            updateRangeVal(pollTime);
+        }
+        
+        const voltLimit = localStorage.getItem('voltLimit') || 400;
+        const voltageMaxInput = document.getElementById('voltageMax');
+        if (voltageMaxInput) voltageMaxInput.value = voltLimit;
+        
+        const currLimit = localStorage.getItem('currLimit') || 30;
+        const leakageThresholdInput = document.getElementById('leakageThreshold');
+        if (leakageThresholdInput) leakageThresholdInput.value = currLimit;
+        
+        const autoRefresh = localStorage.getItem('autoRefresh');
+        if (autoRefresh !== null) {
+            const autoRefreshToggle = document.getElementById('autoRefresh');
+            if (autoRefreshToggle) autoRefreshToggle.checked = autoRefresh === 'true';
+        }
+        
+        const fftEnabled = localStorage.getItem('fftEnabled');
+        if (fftEnabled !== null) {
+            const fftToggle = document.getElementById('fftEnabled');
+            if (fftToggle) fftToggle.checked = fftEnabled === 'true';
+        }
+        
+        const showDebugLog = localStorage.getItem('showDebugLog');
+        if (showDebugLog !== null) {
+            const debugToggle = document.getElementById('showDebugLog');
+            if (debugToggle) debugToggle.checked = showDebugLog === 'true';
+        } else {
+            const debugToggle = document.getElementById('showDebugLog');
+            if (debugToggle) debugToggle.checked = true;
+        }
+        
+        const logRetention = localStorage.getItem('logRetention');
+        if (logRetention !== null) {
+            const logRetentionSelect = document.getElementById('logRetention');
+            if (logRetentionSelect) logRetentionSelect.value = logRetention;
+        }
+    }
+    
+    // 保存所有设置
+    async function saveSettings() {
+        const btn = event.currentTarget;
+        const originalText = btn.innerHTML;
+        
+        // 动画：显示保存中
+        btn.innerHTML = '<i class="bi bi-arrow-repeat me-2 spin"></i>保存中...';
+        btn.disabled = true;
+        
+        // 1. 捕获所有设置值
+        const pollInterval = parseInt(document.getElementById('pollInterval').value);
+        const voltageMax = parseInt(document.getElementById('voltageMax').value);
+        const leakageThreshold = parseInt(document.getElementById('leakageThreshold').value);
+        const autoRefresh = document.getElementById('autoRefresh').checked;
+        const fftEnabled = document.getElementById('fftEnabled').checked;
+        const showDebugLog = document.getElementById('showDebugLog').checked;
+        const logRetention = parseInt(document.getElementById('logRetention').value);
+        
+        const configData = {
+            poll_interval: pollInterval,
+            voltage_max: voltageMax,
+            leakage_threshold: leakageThreshold,
+            auto_refresh: autoRefresh,
+            fft_enabled: fftEnabled,
+            show_debug_log: showDebugLog,
+            log_retention: logRetention
+        };
+        
+        // 2. 保存到服务器
+        try {
+            const csrfToken = getCsrfToken();
+            const response = await fetch('/api/admin/config', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(csrfToken ? { 'X-CSRFToken': csrfToken } : {})
+                },
+                body: JSON.stringify(configData)
+            });
+            
+            const result = await response.json();
+            
+            if (!result.success) {
+                throw new Error(result.error || '保存失败');
+            }
+            
+            console.log('[Settings] 配置已保存到服务器');
+        } catch (e) {
+            console.warn('[Settings] 保存到服务器失败，仅保存到本地:', e);
+        }
+        
+        // 3. 同时保存到localStorage（兼容性）
+        localStorage.setItem('pollInterval', pollInterval);
+        localStorage.setItem('voltLimit', voltageMax);
+        localStorage.setItem('currLimit', leakageThreshold);
+        localStorage.setItem('autoRefresh', autoRefresh.toString());
+        localStorage.setItem('fftEnabled', fftEnabled.toString());
+        localStorage.setItem('showDebugLog', showDebugLog.toString());
+        localStorage.setItem('logRetention', logRetention);
+        
+        // 4. 更新全局调试模式（如果monitor页面已加载）
+        if (typeof window !== 'undefined' && window.DEBUG_MODE !== undefined) {
+            window.DEBUG_MODE = showDebugLog;
+        }
+        
+        // 5. 显示保存成功反馈
+        setTimeout(() => {
+            btn.innerHTML = '<i class="bi bi-check-circle me-2"></i>配置已生效';
+            btn.classList.replace('btn-primary', 'btn-success');
+            
+            // 1.5秒后恢复原状
+            setTimeout(() => {
+                btn.innerHTML = originalText;
+                btn.classList.replace('btn-success', 'btn-primary');
+                btn.disabled = false;
+            }, 1500);
+        }, 500);
+        
+        console.log('[Settings] 设置已保存:', configData);
+        
+        // 如果monitor页面的restartPolling函数可用，直接调用（当前标签页）
+        if (typeof window.restartPolling === 'function') {
+            window.restartPolling();
+        }
+    }
+    
+    // 加载系统统计信息
+    async function loadSystemInfo() {
+        try {
+            const response = await fetch('/api/admin/system_info', { method: 'GET' });
+            
+            if (response.ok) {
+                const result = await response.json();
+                if (result.success && result.data) {
+                    const data = result.data;
+                    
+                    // 更新系统信息显示
+                    const versionEl = document.getElementById('systemVersion');
+                    if (versionEl) versionEl.textContent = data.version || 'v1.4.0';
+                    
+                    const dbSizeEl = document.getElementById('dbSize');
+                    if (dbSizeEl) dbSizeEl.textContent = data.database_size_mb + 'MB';
+                    
+                    const activeNodesEl = document.getElementById('activeNodes');
+                    if (activeNodesEl) activeNodesEl.textContent = data.active_nodes || '0';
+                    
+                    const totalFaultsEl = document.getElementById('totalFaults');
+                    if (totalFaultsEl) totalFaultsEl.textContent = data.workorders.total || '0';
+                    
+                    const asyncModeEl = document.getElementById('asyncMode');
+                    if (asyncModeEl) asyncModeEl.textContent = data.async_mode || 'WebSocket';
+                    
+                    console.log('[SystemInfo] 系统信息已更新:', data);
+                }
+            }
+        } catch (e) {
+            console.error('[loadSystemInfo] 加载系统信息失败:', e);
+        }
+    }
+    
+    // 清理过期数据
+    async function cleanupOldData() {
+        const retention = parseInt(document.getElementById('logRetention').value);
+        
+        if (retention === -1) {
+            alert('ℹ️ 当前设置为"永久保存"，无需清理数据。');
+            return;
+        }
+        
+        if (!confirm(`⚠️ 确认清理操作\n\n将清理 ${retention} 天前的历史数据：\n• 波形数据\n• 已完成的故障工单\n\n是否继续？`)) {
+            return;
+        }
+        
+        try {
+            const btn = event.currentTarget;
+            const originalText = btn.innerHTML;
+            btn.innerHTML = '<i class="bi bi-arrow-repeat me-1 spin"></i>清理中...';
+            btn.disabled = true;
+            
+            const csrfToken = getCsrfToken();
+            const response = await fetch('/api/admin/cleanup_old_data', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(csrfToken ? { 'X-CSRFToken': csrfToken } : {})
+                },
+                body: JSON.stringify({ retention_days: retention })
+            });
+            
+            const res = await response.json();
+            
+            if (res.success) {
+                const details = res.details || {};
+                alert(`✅ 清理完成\n\n` +
+                      `• 波形数据: ${details.datapoints_deleted || 0} 条\n` +
+                      `• 已完成工单: ${details.workorders_deleted || 0} 条\n\n` +
+                      `页面将在2秒后刷新...`);
+                setTimeout(() => {
+                    window.location.reload();
+                }, 2000);
+            } else {
+                alert('❌ 清理失败: ' + (res.error || '未知错误'));
+                btn.innerHTML = originalText;
+                btn.disabled = false;
+            }
+        } catch (e) {
+            console.error('[cleanupOldData] 错误:', e);
+            alert('❌ 服务器连接失败，请检查网络连接。');
+            const btn = event.currentTarget;
+            if (btn) {
+                btn.innerHTML = '<i class="bi bi-clock-history me-1"></i>清理过期数据';
+                btn.disabled = false;
+            }
+        }
+    }
+    
+    // 清空所有数据（高危操作）
+    async function clearAllData() {
+        if (!confirm('⚠️ 高危操作警告\n\n确定要清空所有历史故障日志和波形数据吗？\n\n此操作将：\n• 删除所有故障记录\n• 删除所有波形数据\n• 此操作无法撤销！')) {
+            return;
+        }
+        
+        // 二次确认
+        if (!confirm('⚠️ 最后确认\n\n您真的要清空所有数据吗？\n\n请再次确认此操作！')) {
+            return;
+        }
+        
+        try {
+            const btn = event.currentTarget;
+            const originalText = btn.innerHTML;
+            btn.innerHTML = '<i class="bi bi-arrow-repeat me-1 spin"></i>清空中...';
+            btn.disabled = true;
+            
+            const csrfToken = getCsrfToken();
+            const response = await fetch('/api/admin/clear_all_data', { 
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(csrfToken ? { 'X-CSRFToken': csrfToken } : {})
+                }
+            });
+            
+            const res = await response.json();
+            
+            if (res.success) {
+                const details = res.details || {};
+                alert(`✅ 系统已重置，所有数据已清除\n\n` +
+                      `• 工单记录: ${details.workorders || 0} 条\n` +
+                      `• 波形数据: ${details.datapoints || 0} 条\n\n` +
+                      `页面将在3秒后自动刷新...`);
+                setTimeout(() => {
+                    window.location.reload();
+                }, 3000);
+            } else {
+                alert('❌ 清除失败: ' + (res.error || '未知错误'));
+                btn.innerHTML = originalText;
+                btn.disabled = false;
+            }
+        } catch (e) {
+            console.error('[clearAllData] 错误:', e);
+            alert('❌ 服务器连接失败，请检查网络连接。');
+            const btn = event.currentTarget;
+            if (btn) {
+                btn.innerHTML = originalText;
+                btn.disabled = false;
+            }
+        }
+    }
+
+    // 回收数据库空间（SQLite VACUUM）
+    async function vacuumDatabase() {
+        if (!confirm('⚠️ VACUUM 提示\\n\\n该操作会重写数据库文件来回收空间，执行期间会加锁，可能短暂阻塞写入。\\n\\n建议在暂停设备/模拟器上报时执行。\\n\\n是否继续？')) {
+            return;
+        }
+
+        const btn = event.currentTarget;
+        const originalText = btn.innerHTML;
+        btn.innerHTML = '<i class="bi bi-arrow-repeat me-1 spin"></i>回收中...';
+        btn.disabled = true;
+
+        try {
+            const csrfToken = getCsrfToken();
+            const response = await fetch('/api/admin/vacuum_db', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(csrfToken ? { 'X-CSRFToken': csrfToken } : {})
+                },
+                body: JSON.stringify({})
+            });
+            const res = await response.json();
+            if (!res.success) {
+                throw new Error(res.error || 'VACUUM 失败');
+            }
+
+            const d = res.data || {};
+            const mb = (n) => (typeof n === 'number' ? (n / (1024 * 1024)).toFixed(2) : '--');
+            alert(
+                `✅ VACUUM 完成\\n\\n` +
+                `数据库: ${d.db_path || ''}\\n` +
+                `回收前: ${mb(d.size_before_bytes)} MB\\n` +
+                `回收后: ${mb(d.size_after_bytes)} MB\\n` +
+                `节省: ${mb(d.saved_bytes)} MB\\n` +
+                `耗时: ${d.elapsed_ms || 0} ms\\n`
+            );
+
+            // 立即刷新系统信息（更新“数据库大小”）
+            try { await loadSystemInfo(); } catch (e) {}
+        } catch (e) {
+            console.error('[vacuumDatabase] 错误:', e);
+            alert('❌ VACUUM 失败: ' + (e?.message || e));
+        } finally {
+            btn.innerHTML = originalText;
+            btn.disabled = false;
+        }
+    }
+</script>
+{% endblock %}

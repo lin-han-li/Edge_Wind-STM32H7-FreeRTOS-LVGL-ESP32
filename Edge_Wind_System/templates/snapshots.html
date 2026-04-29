@@ -1,0 +1,1236 @@
+{% extends "base.html" %}
+
+{% block title %}故障快照查看{% endblock %}
+
+{% block page_title %}故障快照{% endblock %}
+
+{% block extra_css %}
+<style>
+    .snapshot-card {
+        border: 1px solid #e0e0e0;
+        border-radius: 8px;
+        padding: 1.5rem;
+        margin-bottom: 1.5rem;
+        background: white;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        transition: all 0.3s ease;
+    }
+    
+    .snapshot-card:hover {
+        box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        transform: translateY(-2px);
+    }
+    
+    .snapshot-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 1rem;
+        padding-bottom: 1rem;
+        border-bottom: 2px solid #f0f0f0;
+    }
+    
+    .fault-badge {
+        font-size: 1.1rem;
+        padding: 0.5rem 1rem;
+        font-weight: bold;
+    }
+    
+    .snapshot-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+        gap: 1rem;
+        margin-top: 1rem;
+    }
+    
+    .snapshot-item {
+        border: 1px solid #e0e0e0;
+        border-radius: 6px;
+        padding: 1rem;
+        background: #f8f9fa;
+    }
+
+    /* 故障快照详情弹窗：对齐“故障管理-诊断弹窗”的尺寸/布局 */
+    #snapshotDetailModal .modal-dialog {
+        max-width: 60% !important;
+        width: 60% !important;
+        max-height: 78.4vh;
+        margin: 1vh auto;
+    }
+
+    #snapshotDetailModal .modal-content {
+        height: 78.4vh !important;
+        max-height: 78.4vh !important;
+        display: flex;
+        flex-direction: column;
+    }
+
+    #snapshotDetailModal .modal-body {
+        flex: 1;
+        overflow-y: auto;
+    }
+    
+    .snapshot-type-label {
+        font-weight: bold;
+        margin-bottom: 0.5rem;
+        padding: 0.25rem 0.5rem;
+        border-radius: 4px;
+        display: inline-block;
+    }
+    
+    .type-before {
+        background: #fff3cd;
+        color: #856404;
+    }
+    
+    .type-after {
+        background: #f8d7da;
+        color: #721c24;
+    }
+    
+    .type-before-recovery {
+        background: #d1ecf1;
+        color: #0c5460;
+    }
+    
+    .type-after-recovery {
+        background: #d4edda;
+        color: #155724;
+    }
+    
+    .chart-container {
+        width: 100%;
+        height: 350px;
+        margin-top: 1rem;
+        min-height: 300px;
+    }
+
+    /* 详情弹窗内图表：固定更高高度 */
+    #snapshotDetailModal .chart-row .chart-container {
+        height: 47vh;
+        min-height: 340px;
+        margin-top: 0.75rem;
+    }
+    
+    .channel-tabs {
+        margin-top: 1rem;
+    }
+    
+    /* 双图表布局 */
+    .chart-row {
+        display: flex;
+        gap: 1rem;
+        margin-top: 1rem;
+    }
+    
+    .chart-row .chart-wrapper {
+        flex: 1;
+    }
+    
+    .chart-row .chart-container {
+        height: 350px;
+        min-height: 320px;
+    }
+    
+    /* 通道选项卡样式 */
+    .nav-pills .nav-link {
+        border-radius: 0.5rem;
+        padding: 0.75rem 1.25rem;
+        margin-right: 0.5rem;
+        font-weight: 500;
+        border: 2px solid #dee2e6;
+        background-color: #f8f9fa;
+        transition: all 0.3s;
+    }
+    
+    .nav-pills .nav-link:hover {
+        border-color: #0d6efd;
+        background-color: #e7f1ff;
+    }
+    
+    .nav-pills .nav-link.active {
+        background-color: #0d6efd;
+        border-color: #0d6efd;
+        color: white;
+    }
+    
+    .nav-pills .nav-link .channel-name {
+        font-weight: 600;
+        font-size: 0.95rem;
+    }
+    
+    .nav-pills .nav-link .channel-value {
+        font-size: 0.8rem;
+        margin-top: 0.25rem;
+        opacity: 0.9;
+        font-family: 'Courier New', monospace;
+    }
+    
+    .nav-pills .nav-link.active .channel-value {
+        opacity: 1;
+        font-weight: 600;
+    }
+    
+    .stats-grid {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 0.5rem;
+        margin-top: 0.5rem;
+        font-size: 0.9rem;
+    }
+    
+    .stat-item {
+        background: white;
+        padding: 0.5rem;
+        border-radius: 4px;
+        text-align: center;
+    }
+    
+    .stat-label {
+        color: #666;
+        font-size: 0.8rem;
+    }
+    
+    .stat-value {
+        font-weight: bold;
+        color: #333;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container-fluid mt-4">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h2><i class="bi bi-camera"></i> 故障快照查看</h2>
+        <div>
+            <button class="btn btn-primary" onclick="refreshPage()">
+                <i class="bi bi-arrow-clockwise"></i> 刷新
+            </button>
+        </div>
+    </div>
+    
+    <!-- 筛选器 -->
+    <div class="card mb-4">
+        <div class="card-body">
+            <div class="row g-3">
+                <div class="col-md-3">
+                    <label class="form-label">设备ID</label>
+                    <select class="form-select" id="deviceFilter" onchange="applyFilters()">
+                        <option value="">全部设备</option>
+                    </select>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">故障类型</label>
+                    <select class="form-select" id="faultFilter" onchange="applyFilters()">
+                        <option value="">全部故障</option>
+                        <option value="E01">E01 - 交流窜入</option>
+                        <option value="E02">E02 - 绝缘故障</option>
+                        <option value="E03">E03 - 电容老化</option>
+                        <option value="E04">E04 - IGBT开路</option>
+                        <option value="E05">E05 - 接地故障</option>
+                    </select>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">&nbsp;</label>
+                    <button class="btn btn-primary w-100" onclick="applyFilters()">
+                        <i class="bi bi-funnel"></i> 应用筛选
+                    </button>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">&nbsp;</label>
+                    <button class="btn btn-secondary w-100" onclick="clearFilters()">
+                        <i class="bi bi-x-circle"></i> 清除筛选
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- 统计信息 -->
+    <div class="d-flex justify-content-between align-items-center mb-3" id="statsBar">
+        <div id="snapshotStats" class="text-muted small">
+            <span id="statsText">加载中...</span>
+        </div>
+        <div>
+            <button class="btn btn-outline-primary btn-sm" id="loadAllBtn" onclick="loadAllSnapshots()" style="display:none;">
+                <i class="bi bi-download"></i> 加载全部历史
+            </button>
+        </div>
+    </div>
+    
+    <!-- 快照列表 -->
+    <div id="snapshotsList">
+        <div class="text-center py-5">
+            <div class="spinner-border text-primary" role="status">
+                <span class="visually-hidden">加载中...</span>
+            </div>
+            <p class="mt-3 text-muted">正在加载故障快照数据...</p>
+        </div>
+    </div>
+</div>
+
+<!-- 详情模态框 -->
+<div class="modal fade" id="snapshotDetailModal" tabindex="-1">
+    <div class="modal-dialog modal-xl">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">故障快照详情</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body" id="snapshotDetailContent">
+                <!-- 动态加载内容 -->
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<!-- 加版本号避免浏览器缓存导致“改了没效果” -->
+<script src="{{ url_for('static', filename='js/chart-zoom-utils.js') }}?v=20260107_5"></script>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+<script>
+    let currentEvents = [];
+    
+    // 故障类型映射
+    const FAULT_NAMES = {
+        'E01': '交流窜入',
+        'E02': '绝缘故障',
+        'E03': '直流母线电容老化',
+        'E04': '变流器IGBT开路',
+        'E05': '直流母线接地故障'
+    };
+    
+    // 快照类型映射
+    const SNAPSHOT_TYPE_NAMES = {
+        'before': '故障前',
+        'after': '故障后',
+        'before_recovery': '恢复前',
+        'after_recovery': '恢复后'
+    };
+
+    // ========== 采样参数（与下位机对齐）==========
+    // 下位机：4096 点 @ 25.6kHz；上传 FFT：2048 点
+    const EDGEWIND_SAMPLE_RATE_HZ = 25600;
+    const EDGEWIND_WAVEFORM_POINTS = 4096;
+    const EDGEWIND_FFT_BINS = 2048;
+    const EDGEWIND_WAVEFORM_LAST_MS = ((EDGEWIND_WAVEFORM_POINTS - 1) / EDGEWIND_SAMPLE_RATE_HZ) * 1000.0;
+    const EDGEWIND_FREQ_RES_HZ = EDGEWIND_SAMPLE_RATE_HZ / (2 * EDGEWIND_FFT_BINS); // 6.25 Hz/bin
+    
+    // 刷新页面数据
+    async function refreshPage() {
+        console.log('[Snapshots] 刷新页面数据...');
+        
+        // 重置筛选条件
+        document.getElementById('deviceFilter').value = '';
+        document.getElementById('faultFilter').value = '';
+        
+        // 显示加载提示
+        const container = document.getElementById('snapshotsList');
+        container.innerHTML = `
+            <div class="text-center py-5">
+                <div class="spinner-border text-primary" role="status">
+                    <span class="visually-hidden">加载中...</span>
+                </div>
+                <p class="mt-3 text-muted">正在刷新数据...</p>
+            </div>
+        `;
+        
+        // 重新加载数据
+        await loadSnapshots();
+        showSuccess('数据已刷新');
+    }
+    
+    // 加载快照列表（默认加载最近数据）
+    async function loadSnapshots(loadAll = false) {
+        try {
+            console.log('[Snapshots] 开始加载快照列表...' + (loadAll ? '（全部历史）' : ''));
+            const url = loadAll ? '/api/fault_snapshots?limit=all' : '/api/fault_snapshots';
+            const response = await fetch(url);
+            const result = await response.json();
+            
+            if (result.success) {
+                console.log(`[Snapshots] 成功加载 ${result.events.length} 个快照事件`);
+                currentEvents = result.events;
+                renderSnapshotsList(result.events);
+                updateDeviceFilter(result.events);
+                updateStatsBar(result);
+            } else {
+                console.error('[Snapshots] 加载失败:', result.message);
+                showError('加载失败: ' + (result.message || '未知错误'));
+                // 即使失败也显示空列表
+                renderSnapshotsList([]);
+                updateStatsBar(null);
+            }
+        } catch (error) {
+            console.error('[Snapshots] 加载快照失败:', error);
+            showError('加载失败: ' + error.message);
+            // 显示空列表
+            renderSnapshotsList([]);
+            updateStatsBar(null);
+        }
+    }
+    
+    // 加载全部历史数据
+    async function loadAllSnapshots() {
+        const btn = document.getElementById('loadAllBtn');
+        const originalText = btn.innerHTML;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span> 加载中...';
+        btn.disabled = true;
+        
+        try {
+            await loadSnapshots(true);
+            showSuccess('已加载全部历史快照');
+        } finally {
+            btn.innerHTML = originalText;
+            btn.disabled = false;
+        }
+    }
+    
+    // 更新统计栏
+    function updateStatsBar(result) {
+        const statsText = document.getElementById('statsText');
+        const loadAllBtn = document.getElementById('loadAllBtn');
+        
+        if (!result) {
+            statsText.textContent = '加载失败';
+            loadAllBtn.style.display = 'none';
+            return;
+        }
+        
+        const eventCount = result.event_count || 0;
+        const totalSnapshots = result.total_snapshots || 0;
+        const loadedSnapshots = result.loaded_snapshots || 0;
+        const hasMore = result.has_more || false;
+        
+        if (hasMore) {
+            statsText.innerHTML = `显示 <strong>${eventCount}</strong> 个故障事件（已加载 ${loadedSnapshots} / ${totalSnapshots} 条快照记录）`;
+            loadAllBtn.style.display = 'inline-block';
+        } else {
+            statsText.innerHTML = `共 <strong>${eventCount}</strong> 个故障事件（${totalSnapshots} 条快照记录）`;
+            loadAllBtn.style.display = 'none';
+        }
+    }
+    
+    // 渲染快照列表
+    function renderSnapshotsList(events) {
+        const container = document.getElementById('snapshotsList');
+        
+        console.log(`[Snapshots] 渲染列表，共 ${events ? events.length : 0} 条记录`);
+        console.log('[Snapshots] 渲染的事件:', events);
+        
+        if (!events || events.length === 0) {
+            const deviceId = document.getElementById('deviceFilter').value;
+            const faultCode = document.getElementById('faultFilter').value;
+            
+            let message = '暂无故障快照数据';
+            let hint = '当系统检测到故障时，会自动保存故障前后的波形数据';
+            
+            if (deviceId || faultCode) {
+                message = '没有找到符合条件的快照数据';
+                hint = '请尝试调整筛选条件或点击刷新按钮重新加载数据';
+            }
+            
+            container.innerHTML = `
+                <div class="text-center py-5">
+                    <i class="bi bi-inbox" style="font-size: 3rem; color: #ccc;"></i>
+                    <p class="mt-3 text-muted">${message}</p>
+                    <small class="text-muted">${hint}</small>
+                </div>
+            `;
+            return;
+        }
+        
+        const html = events.map(event => `
+            <div class="snapshot-card">
+                <div class="snapshot-header">
+                    <div>
+                        <h5 class="mb-1">
+                            <i class="bi bi-hdd-network"></i> ${event.device_id}
+                        </h5>
+                        <small class="text-muted">
+                            <i class="bi bi-clock"></i> ${event.timestamp}
+                        </small>
+                    </div>
+                    <div>
+                        <span class="badge fault-badge bg-danger">${event.fault_code}</span>
+                        <span class="badge bg-secondary">${FAULT_NAMES[event.fault_code] || '未知故障'}</span>
+                    </div>
+                </div>
+                <div class="d-flex justify-content-between align-items-center">
+                    <div>
+                        <i class="bi bi-camera-fill text-primary"></i>
+                        <span>已保存 ${event.snapshot_count} 组快照数据</span>
+                    </div>
+                    <div>
+                        <button class="btn btn-primary me-2" onclick="viewSnapshotDetail('${event.device_id}', '${event.fault_code}', '${event.timestamp}')">
+                            <i class="bi bi-eye"></i> 查看详情
+                        </button>
+                        <button class="btn btn-danger" onclick="deleteSnapshot('${event.device_id}', '${event.fault_code}', '${event.timestamp}')">
+                            <i class="bi bi-trash"></i> 删除
+                        </button>
+                    </div>
+                </div>
+            </div>
+        `).join('');
+        
+        container.innerHTML = html;
+    }
+    
+    // 更新设备筛选器
+    function updateDeviceFilter(events) {
+        const select = document.getElementById('deviceFilter');
+        const currentValue = select.value; // 保存当前选中值
+        const devices = [...new Set(events.map(e => e.device_id))].sort();
+        
+        console.log(`[Snapshots] 更新设备筛选器，设备列表: ${devices.join(', ')}`);
+        
+        select.innerHTML = '<option value="">全部设备</option>' +
+            devices.map(d => `<option value="${d}">${d}</option>`).join('');
+        
+        // 恢复之前的选中值（如果还存在）
+        if (currentValue && devices.includes(currentValue)) {
+            select.value = currentValue;
+        }
+    }
+    
+    // 应用筛选
+    function applyFilters() {
+        const deviceId = document.getElementById('deviceFilter').value;
+        const faultCode = document.getElementById('faultFilter').value;
+        
+        console.log(`[Snapshots] ========== 应用筛选 ==========`);
+        console.log(`[Snapshots] 设备ID: "${deviceId || '全部'}"`);
+        console.log(`[Snapshots] 故障类型: "${faultCode || '全部'}"`);
+        console.log(`[Snapshots] 原始数据量: ${currentEvents.length}`);
+        
+        // 检查数据是否已加载
+        if (!currentEvents || currentEvents.length === 0) {
+            showError('暂无数据可筛选，请先加载数据');
+            return;
+        }
+        
+        let filtered = [...currentEvents]; // 创建副本
+        
+        if (deviceId) {
+            console.log(`[Snapshots] 应用设备ID筛选: ${deviceId}`);
+            filtered = filtered.filter(e => {
+                const match = e.device_id === deviceId;
+                console.log(`  - ${e.device_id} === ${deviceId} ? ${match}`);
+                return match;
+            });
+            console.log(`[Snapshots] 按设备ID筛选后剩余: ${filtered.length} 条`);
+        }
+        
+        if (faultCode) {
+            console.log(`[Snapshots] 应用故障类型筛选: ${faultCode}`);
+            filtered = filtered.filter(e => {
+                const match = e.fault_code === faultCode;
+                console.log(`  - ${e.fault_code} === ${faultCode} ? ${match}`);
+                return match;
+            });
+            console.log(`[Snapshots] 按故障类型筛选后剩余: ${filtered.length} 条`);
+        }
+        
+        console.log(`[Snapshots] ========== 筛选完成: ${filtered.length} 条记录 ==========`);
+        console.log('[Snapshots] 筛选结果:', filtered);
+        
+        // 显示筛选结果提示
+        if (deviceId || faultCode) {
+            const filterInfo = [];
+            if (deviceId) filterInfo.push(`设备: ${deviceId}`);
+            if (faultCode) filterInfo.push(`故障: ${faultCode}`);
+            showSuccess(`已应用筛选 (${filterInfo.join(', ')}) - 找到 ${filtered.length} 条记录`);
+        }
+        
+        renderSnapshotsList(filtered);
+    }
+    
+    // 清除筛选
+    function clearFilters() {
+        console.log('[Snapshots] 清除筛选条件');
+        document.getElementById('deviceFilter').value = '';
+        document.getElementById('faultFilter').value = '';
+        showSuccess(`已清除筛选条件 - 显示全部 ${currentEvents.length} 条记录`);
+        renderSnapshotsList(currentEvents);
+    }
+    
+    // 删除快照
+    async function deleteSnapshot(deviceId, faultCode, timestamp) {
+        // 确认删除
+        if (!confirm(`确定要删除此故障快照吗？\n\n设备: ${deviceId}\n故障: ${faultCode} - ${FAULT_NAMES[faultCode]}\n时间: ${timestamp}\n\n此操作不可恢复！`)) {
+            return;
+        }
+        
+        try {
+            console.log(`[Snapshots] 删除快照: ${deviceId} - ${faultCode} - ${timestamp}`);
+            
+            const response = await fetch(`/api/fault_snapshots/event/${deviceId}/${faultCode}/${encodeURIComponent(timestamp)}`, {
+                method: 'DELETE'
+            });
+            const result = await response.json();
+            
+            if (result.success) {
+                console.log('[Snapshots] 删除成功');
+                showSuccess('快照已删除');
+                
+                // 延迟500ms后重新加载列表（让Toast有时间显示）
+                setTimeout(async () => {
+                    await loadSnapshots();
+                }, 500);
+            } else {
+                console.error('[Snapshots] 删除失败:', result.message);
+                showError('删除失败: ' + (result.message || '未知错误'));
+            }
+        } catch (error) {
+            console.error('[Snapshots] 删除快照失败:', error);
+            showError('删除失败: ' + error.message);
+        }
+    }
+    
+    // 查看快照详情
+    async function viewSnapshotDetail(deviceId, faultCode, timestamp) {
+        try {
+            const response = await fetch(`/api/fault_snapshots/event/${deviceId}/${faultCode}/${encodeURIComponent(timestamp)}`);
+            const result = await response.json();
+            
+            if (result.success) {
+                renderSnapshotDetail(result);
+                const modalElement = document.getElementById('snapshotDetailModal');
+                const modal = new bootstrap.Modal(modalElement);
+                
+                // 监听模态框显示事件，确保图表正确渲染
+                modalElement.addEventListener('shown.bs.modal', function() {
+                    // 强制所有ECharts实例重新调整大小
+                    setTimeout(() => {
+                        const timeCharts = document.querySelectorAll('[id^="chart-time-"]');
+                        const freqCharts = document.querySelectorAll('[id^="chart-freq-"]');
+                        
+                        [...timeCharts, ...freqCharts].forEach(container => {
+                            const chartInstance = echarts.getInstanceByDom(container);
+                            if (chartInstance) {
+                                chartInstance.resize();
+                            }
+                        });
+                    }, 150);
+                }, { once: true });
+                
+                modal.show();
+            } else {
+                showError('加载详情失败: ' + (result.message || '未知错误'));
+            }
+        } catch (error) {
+            console.error('加载详情失败:', error);
+            showError('加载详情失败: ' + error.message);
+        }
+    }
+    
+    // 渲染快照详情
+    function renderSnapshotDetail(data) {
+        const container = document.getElementById('snapshotDetailContent');
+        
+        const types = ['before', 'after', 'before_recovery', 'after_recovery'];
+        const availableTypes = types.filter(type => data.snapshots[type] && data.snapshots[type].length > 0);
+        
+        if (availableTypes.length === 0) {
+            container.innerHTML = '<p class="text-muted">暂无快照数据</p>';
+            return;
+        }
+        
+        let html = `
+            <div class="mb-3">
+                <h6>设备: ${data.device_id}</h6>
+                <h6>故障: ${data.fault_code} - ${FAULT_NAMES[data.fault_code]}</h6>
+                <h6>时间: ${data.timestamp}</h6>
+            </div>
+            <ul class="nav nav-tabs" id="snapshotTabs" role="tablist">
+        `;
+        
+        availableTypes.forEach((type, index) => {
+            html += `
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link ${index === 0 ? 'active' : ''}" 
+                            id="${type}-tab" 
+                            data-bs-toggle="tab" 
+                            data-bs-target="#${type}-pane" 
+                            type="button">
+                        ${SNAPSHOT_TYPE_NAMES[type]}
+                    </button>
+                </li>
+            `;
+        });
+        
+        html += '</ul><div class="tab-content" id="snapshotTabContent">';
+        
+        availableTypes.forEach((type, index) => {
+            const snapshots = data.snapshots[type];
+            html += `
+                <div class="tab-pane fade ${index === 0 ? 'show active' : ''}" 
+                     id="${type}-pane" 
+                     role="tabpanel">
+                    <div class="mt-3">
+                        ${renderChannelSnapshots(snapshots, type)}
+                    </div>
+                </div>
+            `;
+        });
+        
+        html += '</div>';
+        container.innerHTML = html;
+        
+        // 初始化图表（延迟以确保DOM已渲染）
+        setTimeout(() => {
+            availableTypes.forEach(type => {
+                const snapshots = data.snapshots[type];
+                snapshots.forEach(snapshot => {
+                    initChart(snapshot, type);
+                });
+            });
+            
+            // 监听标签页切换事件（故障前/后切换）
+            const tabButtons = document.querySelectorAll('#snapshotTabs button[data-bs-toggle="tab"]');
+            tabButtons.forEach(button => {
+                button.addEventListener('shown.bs.tab', function(event) {
+                    const targetPaneId = event.target.getAttribute('data-bs-target');
+                    const targetPane = document.querySelector(targetPaneId);
+                    
+                    if (targetPane) {
+                        // 获取该标签页中的所有图表容器
+                        const charts = targetPane.querySelectorAll('[id^="chart-"]');
+                        charts.forEach(chartContainer => {
+                            const chartInstance = echarts.getInstanceByDom(chartContainer);
+                            if (chartInstance) {
+                                setTimeout(() => {
+                                    chartInstance.resize();
+                                }, 100);
+                            }
+                        });
+                    }
+                });
+            });
+            
+            // 监听通道选项卡切换事件
+            const channelTabButtons = document.querySelectorAll('[id^="channel-"][id$="-tab"]');
+            channelTabButtons.forEach(button => {
+                button.addEventListener('shown.bs.tab', function(event) {
+                    const targetPaneId = event.target.getAttribute('data-bs-target');
+                    const targetPane = document.querySelector(targetPaneId);
+                    
+                    if (targetPane) {
+                        // 获取该通道中的所有图表容器
+                        const charts = targetPane.querySelectorAll('[id^="chart-"]');
+                        charts.forEach(chartContainer => {
+                            const chartInstance = echarts.getInstanceByDom(chartContainer);
+                            if (chartInstance) {
+                                setTimeout(() => {
+                                    chartInstance.resize();
+                                }, 100);
+                            }
+                        });
+                    }
+                });
+            });
+        }, 300);
+    }
+    
+    // 渲染通道快照（使用选项卡切换通道）
+    function renderChannelSnapshots(snapshots, type) {
+        // 通道选项卡（带数值显示）
+        let channelTabsHtml = '<ul class="nav nav-pills mb-3" role="tablist">';
+        snapshots.forEach((snapshot, index) => {
+            const channelId = `channel-${type}-${snapshot.id}`;
+            
+            // 确定单位
+            let unit = '';
+            if (snapshot.channel_type === 'DC') {
+                unit = 'V';
+            } else if (snapshot.channel_type === 'Current') {
+                unit = 'A';
+            } else if (snapshot.channel_type === 'Leakage') {
+                unit = 'mA';
+            }
+            
+            channelTabsHtml += `
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link ${index === 0 ? 'active' : ''}" 
+                            id="${channelId}-tab" 
+                            data-bs-toggle="pill" 
+                            data-bs-target="#${channelId}" 
+                            type="button">
+                        <div class="d-flex flex-column align-items-center">
+                            <span class="channel-name">${snapshot.channel_label}</span>
+                            <small class="channel-value">${snapshot.current_value.toFixed(3)} ${unit}</small>
+                        </div>
+                    </button>
+                </li>
+            `;
+        });
+        channelTabsHtml += '</ul>';
+        
+        // 通道内容
+        let channelContentHtml = '<div class="tab-content">';
+        snapshots.forEach((snapshot, index) => {
+            const channelId = `channel-${type}-${snapshot.id}`;
+            channelContentHtml += `
+                <div class="tab-pane fade ${index === 0 ? 'show active' : ''}" 
+                     id="${channelId}" 
+                     role="tabpanel">
+                    <div class="card">
+                        <div class="card-body">
+                            <div class="stats-grid">
+                                <div class="stat-item">
+                                    <div class="stat-label">平均值</div>
+                                    <div class="stat-value">${snapshot.statistics.mean.toFixed(3)}</div>
+                                </div>
+                                <div class="stat-item">
+                                    <div class="stat-label">标准差</div>
+                                    <div class="stat-value">${snapshot.statistics.std.toFixed(3)}</div>
+                                </div>
+                                <div class="stat-item">
+                                    <div class="stat-label">最大值</div>
+                                    <div class="stat-value">${snapshot.statistics.max.toFixed(3)}</div>
+                                </div>
+                                <div class="stat-item">
+                                    <div class="stat-label">最小值</div>
+                                    <div class="stat-value">${snapshot.statistics.min.toFixed(3)}</div>
+                                </div>
+                            </div>
+                            <div class="chart-row">
+                                <div class="chart-wrapper">
+                                    <h6 class="text-center mb-2">时域波形</h6>
+                                    <div id="chart-time-${type}-${snapshot.id}" class="chart-container"></div>
+                                </div>
+                                <div class="chart-wrapper">
+                                    <h6 class="text-center mb-2">频域谱图</h6>
+                                    <div id="chart-freq-${type}-${snapshot.id}" class="chart-container"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        });
+        channelContentHtml += '</div>';
+        
+        return channelTabsHtml + channelContentHtml;
+    }
+    
+    // 初始化图表（时域+频域）
+    function initChart(snapshot, type) {
+        // 确定Y轴单位和名称
+        let yAxisName = '值';
+        let unit = '';
+        let lineColor = '#0d6efd';
+        
+        if (snapshot.channel_type === 'DC') {
+            yAxisName = '电压';
+            unit = 'V';
+            lineColor = snapshot.channel_label.includes('+') ? '#0d6efd' : '#dc3545';
+        } else if (snapshot.channel_type === 'Current') {
+            yAxisName = '电流';
+            unit = 'A';
+            lineColor = '#0dcaf0';
+        } else if (snapshot.channel_type === 'Leakage') {
+            yAxisName = '漏电流';
+            unit = 'mA';
+            lineColor = '#ffc107';
+        }
+        
+        // 初始化时域图表
+        initTimeChart(snapshot, type, yAxisName, unit, lineColor);
+        
+        // 初始化频域图表
+        initFreqChart(snapshot, type, yAxisName, unit, lineColor);
+    }
+    
+    // 初始化时域波形图
+    function initTimeChart(snapshot, type, yAxisName, unit, lineColor) {
+        const chartId = `chart-time-${type}-${snapshot.id}`;
+        const container = document.getElementById(chartId);
+        
+        if (!container) {
+            console.warn(`时域图表容器不存在: ${chartId}`);
+            return;
+        }
+        
+        // 强制设置容器尺寸
+        container.style.width = '100%';
+        container.style.height = '47vh';
+        
+        const chart = echarts.init(container);
+        
+        const wave = Array.isArray(snapshot.waveform_data) ? snapshot.waveform_data : [];
+        const len = wave.length;
+        const dtMs = (len > 1) ? (EDGEWIND_WAVEFORM_LAST_MS / (len - 1)) : 0;
+
+        // [t(ms), y] 数据对（value 轴），保证缩放/拖拽按真实数值工作
+        const seriesData = new Array(len);
+        let yMin = Infinity;
+        let yMax = -Infinity;
+        for (let i = 0; i < len; i++) {
+            const t = i * dtMs;
+            const y = wave[i];
+            seriesData[i] = [t, y];
+            const n = Number(y);
+            if (Number.isFinite(n)) {
+                if (n < yMin) yMin = n;
+                if (n > yMax) yMax = n;
+            }
+        }
+        if (!Number.isFinite(yMin) || !Number.isFinite(yMax)) {
+            yMin = 0;
+            yMax = 0;
+        }
+
+        // 余量 + 必含 0
+        let fullMin = Math.min(0, yMin);
+        let fullMax = Math.max(0, yMax);
+        let span = fullMax - fullMin;
+        if (!(span > 0)) span = Math.max(Math.abs(fullMin), Math.abs(fullMax), 1);
+        const pad = Math.max(span * 0.1, 0.1);
+        fullMin -= pad;
+        fullMax += pad;
+
+        // 显式提供全量范围，保证缩放能回到完整窗口
+        try {
+            chart.__edgewindFullExtentX = { min: 0, max: (len > 0 ? seriesData[len - 1][0] : EDGEWIND_WAVEFORM_LAST_MS) };
+            chart.__edgewindFullExtentY = { min: fullMin, max: fullMax };
+        } catch (e) {}
+
+        const option = {
+            tooltip: {
+                trigger: 'axis',
+                formatter: function(params) {
+                    const point = params[0];
+                    const t = Array.isArray(point.value) ? point.value[0] : point.axisValue;
+                    const y = Array.isArray(point.value) ? point.value[1] : point.value;
+                    return `时间: ${Number(t).toFixed(2)} ms<br/>${point.seriesName}: ${Number(y).toFixed(3)} ${unit}`;
+                }
+            },
+            grid: {
+                left: '12%',
+                right: '5%',
+                bottom: '15%',
+                top: '5%',
+                containLabel: true
+            },
+            // 添加 dataZoom 配置，支持 X 轴和 Y 轴独立缩放
+            dataZoom: [
+                {
+                    type: 'inside',
+                    xAxisIndex: 0,
+                    filterMode: 'none',
+                    zoomOnMouseWheel: false,
+                    moveOnMouseMove: false,
+                    moveOnMouseWheel: false
+                },
+                {
+                    type: 'inside',
+                    yAxisIndex: 0,
+                    filterMode: 'none',
+                    zoomOnMouseWheel: false,
+                    moveOnMouseMove: false,
+                    moveOnMouseWheel: false
+                }
+            ],
+            xAxis: {
+                type: 'value',
+                name: '时间 (ms)',
+                nameLocation: 'center',
+                nameGap: 25,
+                axisLabel: {
+                    formatter: '{value}'
+                }
+            },
+            yAxis: {
+                type: 'value',
+                name: `${yAxisName} (${unit})`,
+                nameLocation: 'center',
+                nameGap: 45,
+                scale: false,
+                min: fullMin,
+                max: fullMax,
+                axisLabel: {
+                    formatter: '{value}'
+                }
+            },
+            series: [{
+                name: snapshot.channel_label,
+                type: 'line',
+                data: seriesData,
+                smooth: false,
+                symbol: 'none',
+                lineStyle: { 
+                    width: 1.5,
+                    color: lineColor
+                },
+                animation: false
+            }]
+        };
+        
+        chart.setOption(option);
+        
+        // 应用统一的缩放功能（以鼠标为中心的缩放、X/Y轴独立缩放、Grab模式拖拽）
+        if (typeof setupChartZoom === 'function') {
+            setupChartZoom(chart, container);
+        }
+        
+        // 响应式（只绑定一次）
+        const resizeHandler = () => chart.resize();
+        window.addEventListener('resize', resizeHandler);
+        
+        // 立即调整一次大小
+        setTimeout(() => chart.resize(), 200);
+    }
+    
+    // 初始化频域谱图
+    function initFreqChart(snapshot, type, yAxisName, unit, lineColor) {
+        const chartId = `chart-freq-${type}-${snapshot.id}`;
+        const container = document.getElementById(chartId);
+        
+        if (!container) {
+            console.warn(`频域图表容器不存在: ${chartId}`);
+            return;
+        }
+        
+        // 强制设置容器尺寸
+        container.style.width = '100%';
+        container.style.height = '47vh';
+        
+        const chart = echarts.init(container);
+        
+        const fft = Array.isArray(snapshot.fft_data) ? snapshot.fft_data : [];
+        const len = fft.length;
+        const inferredBinStep = (len > 1)
+            ? Math.max(1, Math.round((EDGEWIND_FFT_BINS - 1) / (len - 1)))
+            : 1;
+
+        const seriesData = new Array(len);
+        let yMax = 0;
+        for (let i = 0; i < len; i++) {
+            const freq = (i * inferredBinStep) * EDGEWIND_FREQ_RES_HZ;
+            const amp = Number.isFinite(fft[i]) ? fft[i] : 0;
+            if (amp > yMax) yMax = amp;
+            seriesData[i] = [freq, amp];
+        }
+
+        const xMax = len > 0 ? seriesData[len - 1][0] : ((EDGEWIND_FFT_BINS - 1) * EDGEWIND_FREQ_RES_HZ);
+        const autoMax = (yMax > 0 ? yMax * 1.1 : 1);
+        const fullMax = Math.max(autoMax * 10, 10);
+
+        try {
+            chart.__edgewindFullExtentX = { min: 0, max: xMax };
+            chart.__edgewindFullExtentY = { min: 0, max: fullMax };
+        } catch (e) {}
+        
+        const option = {
+            tooltip: {
+                trigger: 'axis',
+                formatter: function(params) {
+                    const point = params[0];
+                    const f = Array.isArray(point.value) ? point.value[0] : point.axisValue;
+                    const a = Array.isArray(point.value) ? point.value[1] : point.value;
+                    return `频率: ${Number(f).toFixed(2)} Hz<br/>幅值: ${Number(a).toFixed(4)}`;
+                }
+            },
+            grid: {
+                left: '12%',
+                right: '5%',
+                bottom: '15%',
+                top: '5%',
+                containLabel: true
+            },
+            // 添加 dataZoom 配置，支持 X 轴和 Y 轴独立缩放
+            dataZoom: [
+                {
+                    type: 'inside',
+                    xAxisIndex: 0,
+                    filterMode: 'none',
+                    zoomOnMouseWheel: false,
+                    moveOnMouseMove: false,
+                    moveOnMouseWheel: false
+                },
+                {
+                    type: 'inside',
+                    yAxisIndex: 0,
+                    filterMode: 'none',
+                    zoomOnMouseWheel: false,
+                    moveOnMouseMove: false,
+                    moveOnMouseWheel: false
+                }
+            ],
+            xAxis: {
+                type: 'value',
+                min: 0,
+                max: xMax,
+                name: '频率 (Hz)',
+                nameLocation: 'center',
+                nameGap: 25,
+                axisLabel: {
+                    formatter: '{value}'
+                }
+            },
+            yAxis: {
+                type: 'value',
+                name: '幅值',
+                nameLocation: 'center',
+                nameGap: 45,
+                min: 0,
+                max: fullMax,
+                axisLabel: {
+                    formatter: '{value}'
+                }
+            },
+            series: [{
+                name: '频谱',
+                type: 'line',
+                data: seriesData,
+                smooth: false,
+                symbol: 'none',
+                areaStyle: {
+                    color: lineColor,
+                    opacity: 0.3
+                },
+                lineStyle: { 
+                    width: 1.5,
+                    color: lineColor
+                },
+                animation: false
+            }]
+        };
+        
+        chart.setOption(option);
+        
+        // 应用统一的缩放功能（以鼠标为中心的缩放、X/Y轴独立缩放、Grab模式拖拽）
+        if (typeof setupChartZoom === 'function') {
+            setupChartZoom(chart, container);
+        }
+        
+        // 响应式（只绑定一次）
+        const resizeHandler = () => chart.resize();
+        window.addEventListener('resize', resizeHandler);
+        
+        // 立即调整一次大小
+        setTimeout(() => chart.resize(), 200);
+    }
+    
+    // 显示错误（使用Toast而不是覆盖列表）
+    function showError(message) {
+        const toastHtml = `
+            <div class="position-fixed top-0 end-0 p-3" style="z-index: 11000">
+                <div class="toast show" role="alert">
+                    <div class="toast-header bg-danger text-white">
+                        <i class="bi bi-exclamation-triangle me-2"></i>
+                        <strong class="me-auto">错误</strong>
+                        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="toast"></button>
+                    </div>
+                    <div class="toast-body">
+                        ${message}
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        const tempDiv = document.createElement('div');
+        tempDiv.innerHTML = toastHtml;
+        document.body.appendChild(tempDiv);
+        
+        // 4秒后自动移除
+        setTimeout(() => {
+            tempDiv.remove();
+        }, 4000);
+    }
+    
+    // 显示成功消息（使用Toast）
+    function showSuccess(message) {
+        const toastHtml = `
+            <div class="position-fixed top-0 end-0 p-3" style="z-index: 11000">
+                <div class="toast show" role="alert">
+                    <div class="toast-header bg-success text-white">
+                        <i class="bi bi-check-circle me-2"></i>
+                        <strong class="me-auto">成功</strong>
+                        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="toast"></button>
+                    </div>
+                    <div class="toast-body">
+                        ${message}
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        const tempDiv = document.createElement('div');
+        tempDiv.innerHTML = toastHtml;
+        document.body.appendChild(tempDiv);
+        
+        // 3秒后自动移除
+        setTimeout(() => {
+            tempDiv.remove();
+        }, 3000);
+    }
+    
+    // 页面加载时初始化
+    document.addEventListener('DOMContentLoaded', function() {
+        // 支持从其他页面“带参数跳转”到某个快照事件：
+        // /snapshots?device_id=...&fault_code=...&timestamp=YYYY-MM-DD%20HH:MM:SS
+        (async () => {
+            await loadSnapshots();
+
+            try {
+                const params = new URLSearchParams(window.location.search);
+                const deviceId = params.get('device_id') || '';
+                const faultCode = params.get('fault_code') || '';
+                const timestamp = params.get('timestamp') || '';
+
+                if (!deviceId && !faultCode && !timestamp) return;
+
+                // 1) 回填筛选器
+                const deviceSelect = document.getElementById('deviceFilter');
+                const faultSelect = document.getElementById('faultFilter');
+
+                if (deviceSelect && deviceId) {
+                    // 若设备选项不存在，临时补一项，避免无法选中
+                    const hasOpt = Array.from(deviceSelect.options).some(o => o.value === deviceId);
+                    if (!hasOpt) {
+                        const opt = document.createElement('option');
+                        opt.value = deviceId;
+                        opt.textContent = deviceId;
+                        deviceSelect.appendChild(opt);
+                    }
+                    deviceSelect.value = deviceId;
+                }
+                if (faultSelect && faultCode) {
+                    faultSelect.value = faultCode;
+                }
+
+                // 2) 应用筛选（让用户视觉上知道“已定位到某个设备/故障类型”）
+                if (deviceId || faultCode) {
+                    applyFilters();
+                }
+
+                // 3) 若给了完整事件三元组，尝试自动打开详情
+                if (deviceId && faultCode && timestamp) {
+                    const list = Array.isArray(currentEvents) ? currentEvents : [];
+                    const filteredList = list.filter(e =>
+                        (!deviceId || e.device_id === deviceId) &&
+                        (!faultCode || e.fault_code === faultCode)
+                    );
+                    const exact = filteredList.find(e => e.timestamp === timestamp);
+                    if (exact) {
+                        await viewSnapshotDetail(deviceId, faultCode, timestamp);
+                    } else if (filteredList.length > 0) {
+                        // 时间戳可能来自工单/日志，和快照事件秒级不完全一致：自动打开最新一条，提高可用性
+                        const best = filteredList[0];
+                        showSuccess('未找到完全匹配的时间戳，已自动打开最新一条快照事件');
+                        await viewSnapshotDetail(best.device_id, best.fault_code, best.timestamp);
+                    } else {
+                        showError('未找到对应的快照事件，已为你按条件筛选列表');
+                    }
+                }
+            } catch (e) {
+                console.warn('[Snapshots] 解析URL参数失败:', e);
+            }
+        })();
+    });
+</script>
+{% endblock %}
+

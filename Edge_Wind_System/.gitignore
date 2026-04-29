@@ -1,0 +1,186 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+venv/
+venv311/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Flask
+instance/
+.webassets-cache
+*.db
+*.db-shm
+*.db-wal
+
+# Environment Variables
+.env
+.env.local
+.env.*.local
+# edgewind.env：私人仓库希望 clone 后可直接运行，这里不忽略
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+.hypothesis/
+
+# Documentation
+docs/_build/
+site/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# pyenv
+.python-version
+
+# Celery
+celerybeat-schedule
+celerybeat.pid
+
+# SageMath parsed files
+*.sage.py
+
+# Spyder project settings
+.spyderproject
+.spyproject
+
+# Rope project settings
+.ropeproject
+
+# mkdocs documentation
+/site
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# Project Specific
+instance/*.db
+instance/*.db-shm
+instance/*.db-wal
+logs/*.log
+*.pyc
+
+# Temporary files
+*.tmp
+*.bak
+*.swp
+*~
+
+# -------------------------------------------------------------------
+# STM32 / Keil MDK / CubeMX / Embedded build outputs
+# -------------------------------------------------------------------
+*.hex
+*.bin
+*.elf
+*.axf
+*.out
+*.map
+*.lst
+*.d
+*.o
+*.obj
+*.su
+*.dep
+*.crf
+*.i
+*.s
+*.asm
+*.a
+*.lib
+*.pdb
+*.uvguix
+*.uvoptx
+JLinkLog.txt
+JLinkSettings.ini
+
+# Keil MDK folders
+**/MDK-ARM/**/Objects/
+**/MDK-ARM/**/Listings/
+**/MDK-ARM/**/.dep/
+**/MDK-ARM/**/RTE/
+**/MDK-ARM/**/DebugConfig/
+
+# STM32CubeIDE
+**/.settings/
+**/.project
+**/.cproject
+**/.mxproject
+**/Debug/
+**/Release/
+
+# CMSIS-DSP 文档/示例（体积大，通常无需上传源码仓库；如需请删除这些 ignore）
+**/CMSIS-DSP/**/Documentation/
+**/CMSIS-DSP/**/Examples/
+
+# esp8266_config.h：私人仓库希望 clone 后固件侧也可直接编译运行，这里不忽略
+
+# Gemini 临时打包目录（如存在）
+Gemini_Edge_Wind_code/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Gunicorn
+gunicorn.log
+gunicorn.pid
+
+# Certificates
+*.pem
+*.key
+*.crt
+
+# Backup files
+*.backup
+backup/

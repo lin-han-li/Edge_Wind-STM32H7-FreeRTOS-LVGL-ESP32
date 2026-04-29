@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>LVGL ParamConfig Design Preview</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
+            background-color: #f0f2f5;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px;
+        }
+        h2 { color: #333; }
+        
+        /* 模拟 LVGL 屏幕容器 (800x480) */
+        .lv-screen {
+            width: 800px;
+            height: 480px;
+            background-color: #65adff; /* UI 主背景色 */
+            position: relative;
+            overflow: hidden;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.2);
+            border: 1px solid #333;
+        }
+
+        /* 顶部标题栏 */
+        .header {
+            width: 100%;
+            height: 50px;
+            display: flex;
+            align-items: center;
+            padding-left: 20px;
+        }
+        .header-title {
+            color: #FFFFFF;
+            font-size: 24px; /* ~30px LVGL font */
+            font-weight: bold;
+        }
+
+        /* 主内容面板 (白盒子) */
+        .panel {
+            width: 700px;
+            height: 260px;
+            background-color: rgba(255, 255, 255, 0.9); /* opa 230 */
+            border-radius: 10px;
+            position: absolute;
+            top: 60px;
+            left: 50px;
+            padding: 0; /* LVGL uses absolute pos inside */
+        }
+
+        /* 模拟 LVGL 控件的通用样式 */
+        .lv-label {
+            position: absolute;
+            color: #2F35DA; /* 标签蓝字 */
+            font-size: 16px; /* ~20px LVGL font */
+            font-weight: bold;
+        }
+        .lv-textarea {
+            position: absolute;
+            height: 40px;
+            background: #fff;
+            border: 2px solid #CCCCCC;
+            border-radius: 4px;
+            padding: 5px 10px;
+            font-size: 16px;
+            box-sizing: border-box;
+            display: flex;
+            align-items: center;
+            color: #333;
+        }
+        .lv-btn {
+            position: absolute;
+            width: 150px;
+            height: 50px;
+            border-radius: 25px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            color: #fff;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+            bottom: 60px; /* absolute bottom */
+        }
+
+        /* 布局定位 (参考 ServerConfig) */
+        /* Row 1 */
+        .lbl-1 { top: 20px; left: 20px; }
+        .ta-1  { top: 50px; left: 20px; width: 320px; }
+        
+        .lbl-2 { top: 20px; left: 360px; }
+        .ta-2  { top: 50px; left: 360px; width: 320px; }
+
+        /* Row 2 */
+        .lbl-3 { top: 110px; left: 20px; }
+        .ta-3  { top: 140px; left: 20px; width: 320px; }
+
+        .lbl-4 { top: 110px; left: 360px; }
+        .ta-4  { top: 140px; left: 360px; width: 320px; }
+
+        /* Buttons */
+        .btn-back { left: 50px; background-color: #999999; bottom: 80px; }
+        .btn-load { left: 325px; background-color: #FFA500; bottom: 80px; }
+        .btn-save { left: 600px; background-color: #3dfb00; bottom: 80px; color: #2F35DA; }
+
+        /* Status Label */
+        .lbl-status {
+            position: absolute;
+            bottom: 40px;
+            left: 50px;
+            color: #FFFFFF;
+            font-size: 14px;
+        }
+
+        /* 代码区域样式 */
+        .code-container {
+            width: 800px;
+            margin-top: 30px;
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 20px;
+            border-radius: 8px;
+            overflow-x: auto;
+            font-family: Consolas, Monaco, 'Andale Mono', monospace;
+        }
+    </style>
+</head>
+<body>
+
+    <h2>UI 设计预览: 参数配置 (ParamConfig)</h2>
+    <p>分辨率: 800x480 | 风格: 现有项目一致性 (Blue/White/Round)</p>
+
+    <div class="lv-screen">
+        <div class="header">
+            <div class="header-title">通讯参数配置 (Comm_Params)</div>
+        </div>
+
+        <div class="panel">
+            <div class="lv-label lbl-1">Heartbeat (心跳间隔 ms)</div>
+            <div class="lv-textarea ta-1">5000</div>
+
+            <div class="lv-label lbl-2">Min Interval (发包限频 ms)</div>
+            <div class="lv-textarea ta-2">200</div>
+
+            <div class="lv-label lbl-3">HTTP Timeout (回包超时 ms)</div>
+            <div class="lv-textarea ta-3">1200</div>
+
+            <div class="lv-label lbl-4">Reset Thresh (无响应复位 s)</div>
+            <div class="lv-textarea ta-4">60</div>
+        </div>
+
+        <div class="lv-btn btn-back">返回</div>
+        <div class="lv-btn btn-load">读取配置</div>
+        <div class="lv-btn btn-save">保存配置</div>
+
+        <div class="lbl-status">状态：默认参数已加载</div>
+    </div>
+
+    <div class="code-container">
+        <h3>C Source Code (LVGL 9.4.0)</h3>
+        <p>将此代码保存为 <code>MDK-ARM/HARDWORK/GUI-Guider_Runtime/src/generated/setup_scr_ParamConfig.c</code></p>
+<pre>
+/*
+* Copyright 2026 NXP
+* Replica of GUI Guider Generated Code for Gemini Project (ParamConfig)
+*/
+
+#include "lvgl.h"
+#include <stdio.h>
+#include "gui_guider.h"
+#include "events_init.h"
+#include "widgets_init.h"
+#include "custom.h"
+#include "../../gui_assets.h"
+
+void setup_scr_ParamConfig(lv_ui *ui)
+{
+    // 1. Create Screen
+    ui->ParamConfig = lv_obj_create(NULL);
+    lv_obj_set_size(ui->ParamConfig, 800, 480);
+    lv_obj_set_scrollbar_mode(ui->ParamConfig, LV_SCROLLBAR_MODE_OFF);
+
+    // Style: Light Blue Background
+    lv_obj_set_style_bg_opa(ui->ParamConfig, 255, LV_PART_MAIN|LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_color(ui->ParamConfig, lv_color_hex(0x65adff), LV_PART_MAIN|LV_STATE_DEFAULT);
+
+    // 2. Header
+    lv_obj_t * header = lv_obj_create(ui->ParamConfig);
+    lv_obj_set_size(header, 800, 50);
+    lv_obj_set_pos(header, 0, 0);
+    lv_obj_set_style_bg_opa(header, 0, LV_PART_MAIN|LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(header, 0, LV_PART_MAIN|LV_STATE_DEFAULT);
+    lv_obj_clear_flag(header, LV_OBJ_FLAG_SCROLLABLE);
+
+    ui->ParamConfig_lbl_title = lv_label_create(header);
+    lv_obj_set_width(ui->ParamConfig_lbl_title, 760);
+    lv_label_set_long_mode(ui->ParamConfig_lbl_title, LV_LABEL_LONG_CLIP);
+    lv_label_set_text(ui->ParamConfig_lbl_title, "通讯参数配置 (Comm_Params)");
+    lv_obj_set_style_text_color(ui->ParamConfig_lbl_title, lv_color_hex(0xFFFFFF), LV_PART_MAIN|LV_STATE_DEFAULT);
+    lv_obj_set_style_text_font(ui->ParamConfig_lbl_title, gui_assets_get_font_30(), LV_PART_MAIN|LV_STATE_DEFAULT);
+    lv_obj_align(ui->ParamConfig_lbl_title, LV_ALIGN_LEFT_MID, 20, 0);
+
+    // 3. Container Panel (White, Translucent)
+    ui->ParamConfig_cont_panel = lv_obj_create(ui->ParamConfig);
+    lv_obj_set_pos(ui->ParamConfig_cont_panel, 50, 60);
+    lv_obj_set_size(ui->ParamConfig_cont_panel, 700, 260); // Same height as ServerConfig
+    lv_obj_set_style_bg_color(ui->ParamConfig_cont_panel, lv_color_hex(0xFFFFFF), LV_PART_MAIN|LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_opa(ui->ParamConfig_cont_panel, 230, LV_PART_MAIN|LV_STATE_DEFAULT);
+    lv_obj_set_style_radius(ui->ParamConfig_cont_panel, 10, LV_PART_MAIN|LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(ui->ParamConfig_cont_panel, 0, LV_PART_MAIN|LV_STATE_DEFAULT);
+
+    // --- Row 1 Left: Heartbeat Interval ---
+    ui->ParamConfig_lbl_heartbeat = lv_label_create(ui->ParamConfig_cont_panel);
+    lv_obj_set_pos(ui->ParamConfig_lbl_heartbeat, 20, 20);
+    lv_label_set_text(ui->ParamConfig_lbl_heartbeat, "Heartbeat (心跳间隔 ms)");
+    lv_obj_set_style_text_color(ui->ParamConfig_lbl_heartbeat, lv_color_hex(0x2F35DA), LV_PART_MAIN|LV_STATE_DEFAULT);
+    lv_obj_set_style_text_font(ui->ParamConfig_lbl_heartbeat, gui_assets_get_font_20(), LV_PART_MAIN|LV_STATE_DEFAULT);
+
+    ui->ParamConfig_ta_heartbeat = lv_textarea_create(ui->ParamConfig_cont_panel);
+    lv_obj_set_pos(ui->ParamConfig_ta_heartbeat, 20, 50);
+    lv_obj_set_size(ui->ParamConfig_ta_heartbeat, 320, 40);
+    lv_textarea_set_one_line(ui->ParamConfig_ta_heartbeat, true);
+    lv_textarea_set_text(ui->ParamConfig_ta_heartbeat, "5000"); // Default ESP_HEARTBEAT_INTERVAL_MS
+    lv_textarea_set_accepted_chars(ui->ParamConfig_ta_heartbeat, "0123456789"); // Only numbers
+    lv_obj_set_style_text_font(ui->ParamConfig_ta_heartbeat, gui_assets_get_font_20(), LV_PART_MAIN|LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(ui->ParamConfig_ta_heartbeat, 2, LV_PART_MAIN|LV_STATE_DEFAULT);
+    lv_obj_set_style_border_color(ui->ParamConfig_ta_heartbeat, lv_color_hex(0xCCCCCC), LV_PART_MAIN|LV_STATE_DEFAULT);
+
+    // --- Row 1 Right: Send Limit ---
+    ui->ParamConfig_lbl_sendlimit = lv_label_create(ui->ParamConfig_cont_panel);
+    lv_obj_set_pos(ui->ParamConfig_lbl_sendlimit, 360, 20);
+    lv_label_set_text(ui->ParamConfig_lbl_sendlimit, "Min Interval (发包限频 ms)");
+    lv_obj_set_style_text_color(ui->ParamConfig_lbl_sendlimit, lv_color_hex(0x2F35DA), LV_PART_MAIN|LV_STATE_DEFAULT);
+    lv_obj_set_style_text_font(ui->ParamConfig_lbl_sendlimit, gui_assets_get_font_20(), LV_PART_MAIN|LV_STATE_DEFAULT);
+
+    ui->ParamConfig_ta_sendlimit = lv_textarea_create(ui->ParamConfig_cont_panel);
+    lv_obj_set_pos(ui->ParamConfig_ta_sendlimit, 360, 50);
+    lv_obj_set_size(ui->ParamConfig_ta_sendlimit, 320, 40);
+    lv_textarea_set_one_line(ui->ParamConfig_ta_sendlimit, true);
+    lv_textarea_set_text(ui->ParamConfig_ta_sendlimit, "200"); // Default 5Hz
+    lv_textarea_set_accepted_chars(ui->ParamConfig_ta_sendlimit, "0123456789");
+    lv_obj_set_style_text_font(ui->ParamConfig_ta_sendlimit, gui_assets_get_font_20(), LV_PART_MAIN|LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(ui->ParamConfig_ta_sendlimit, 2, LV_PART_MAIN|LV_STATE_DEFAULT);
+    lv_obj_set_style_border_color(ui->ParamConfig_ta_sendlimit, lv_color_hex(0xCCCCCC), LV_PART_MAIN|LV_STATE_DEFAULT);
+
+    // --- Row 2 Left: HTTP Timeout ---
+    ui->ParamConfig_lbl_httptimeout = lv_label_create(ui->ParamConfig_cont_panel);
+    lv_obj_set_pos(ui->ParamConfig_lbl_httptimeout, 20, 110);
+    lv_label_set_text(ui->ParamConfig_lbl_httptimeout, "HTTP Timeout (回包超时 ms)");
+    lv_obj_set_style_text_color(ui->ParamConfig_lbl_httptimeout, lv_color_hex(0x2F35DA), LV_PART_MAIN|LV_STATE_DEFAULT);
+    lv_obj_set_style_text_font(ui->ParamConfig_lbl_httptimeout, gui_assets_get_font_20(), LV_PART_MAIN|LV_STATE_DEFAULT);
+
+    ui->ParamConfig_ta_httptimeout = lv_textarea_create(ui->ParamConfig_cont_panel);
+    lv_obj_set_pos(ui->ParamConfig_ta_httptimeout, 20, 140);
+    lv_obj_set_size(ui->ParamConfig_ta_httptimeout, 320, 40);
+    lv_textarea_set_one_line(ui->ParamConfig_ta_httptimeout, true);
+    lv_textarea_set_text(ui->ParamConfig_ta_httptimeout, "1200"); // Default ESP_HTTP_GATE_TIMEOUT_MS
+    lv_textarea_set_accepted_chars(ui->ParamConfig_ta_httptimeout, "0123456789");
+    lv_obj_set_style_text_font(ui->ParamConfig_ta_httptimeout, gui_assets_get_font_20(), LV_PART_MAIN|LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(ui->ParamConfig_ta_httptimeout, 2, LV_PART_MAIN|LV_STATE_DEFAULT);
+    lv_obj_set_style_border_color(ui->ParamConfig_ta_httptimeout, lv_color_hex(0xCCCCCC), LV_PART_MAIN|LV_STATE_DEFAULT);
+
+    // --- Row 2 Right: Hard Reset Threshold ---
+    ui->ParamConfig_lbl_hardreset = lv_label_create(ui->ParamConfig_cont_panel);
+    lv_obj_set_pos(ui->ParamConfig_lbl_hardreset, 360, 110);
+    lv_label_set_text(ui->ParamConfig_lbl_hardreset, "Reset Thresh (无响应复位 s)");
+    lv_obj_set_style_text_color(ui->ParamConfig_lbl_hardreset, lv_color_hex(0x2F35DA), LV_PART_MAIN|LV_STATE_DEFAULT);
+    lv_obj_set_style_text_font(ui->ParamConfig_lbl_hardreset, gui_assets_get_font_20(), LV_PART_MAIN|LV_STATE_DEFAULT);
+
+    ui->ParamConfig_ta_hardreset = lv_textarea_create(ui->ParamConfig_cont_panel);
+    lv_obj_set_pos(ui->ParamConfig_ta_hardreset, 360, 140);
+    lv_obj_set_size(ui->ParamConfig_ta_hardreset, 320, 40);
+    lv_textarea_set_one_line(ui->ParamConfig_ta_hardreset, true);
+    lv_textarea_set_text(ui->ParamConfig_ta_hardreset, "60"); // Default ESP_NO_SERVER_RX_HARDRESET_SEC
+    lv_textarea_set_accepted_chars(ui->ParamConfig_ta_hardreset, "0123456789");
+    lv_obj_set_style_text_font(ui->ParamConfig_ta_hardreset, gui_assets_get_font_20(), LV_PART_MAIN|LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(ui->ParamConfig_ta_hardreset, 2, LV_PART_MAIN|LV_STATE_DEFAULT);
+    lv_obj_set_style_border_color(ui->ParamConfig_ta_hardreset, lv_color_hex(0xCCCCCC), LV_PART_MAIN|LV_STATE_DEFAULT);
+
+    // 4. Buttons
+    // Back Button (Gray)
+    ui->ParamConfig_btn_back = lv_button_create(ui->ParamConfig);
+    lv_obj_set_pos(ui->ParamConfig_btn_back, 50, 340);
+    lv_obj_set_size(ui->ParamConfig_btn_back, 150, 50);
+    lv_obj_set_style_bg_color(ui->ParamConfig_btn_back, lv_color_hex(0x999999), LV_PART_MAIN|LV_STATE_DEFAULT);
+    lv_obj_set_style_radius(ui->ParamConfig_btn_back, 25, LV_PART_MAIN|LV_STATE_DEFAULT);
+
+    ui->ParamConfig_btn_back_label = lv_label_create(ui->ParamConfig_btn_back);
+    lv_label_set_text(ui->ParamConfig_btn_back_label, "返回");
+    lv_obj_set_style_text_font(ui->ParamConfig_btn_back_label, gui_assets_get_font_20(), LV_PART_MAIN|LV_STATE_DEFAULT);
+    lv_obj_center(ui->ParamConfig_btn_back_label);
+
+    // Load Button (Orange)
+    ui->ParamConfig_btn_load = lv_button_create(ui->ParamConfig);
+    lv_obj_set_pos(ui->ParamConfig_btn_load, 325, 340);
+    lv_obj_set_size(ui->ParamConfig_btn_load, 150, 50);
+    lv_obj_set_style_bg_color(ui->ParamConfig_btn_load, lv_color_hex(0xFFA500), LV_PART_MAIN|LV_STATE_DEFAULT);
+    lv_obj_set_style_radius(ui->ParamConfig_btn_load, 25, LV_PART_MAIN|LV_STATE_DEFAULT);
+
+    ui->ParamConfig_btn_load_label = lv_label_create(ui->ParamConfig_btn_load);
+    lv_label_set_text(ui->ParamConfig_btn_load_label, "读取配置");
+    lv_obj_set_style_text_color(ui->ParamConfig_btn_load_label, lv_color_hex(0xFFFFFF), LV_PART_MAIN|LV_STATE_DEFAULT);
+    lv_obj_set_style_text_font(ui->ParamConfig_btn_load_label, gui_assets_get_font_20(), LV_PART_MAIN|LV_STATE_DEFAULT);
+    lv_obj_center(ui->ParamConfig_btn_load_label);
+
+    // Save Button (Green)
+    ui->ParamConfig_btn_save = lv_button_create(ui->ParamConfig);
+    lv_obj_set_pos(ui->ParamConfig_btn_save, 600, 340);
+    lv_obj_set_size(ui->ParamConfig_btn_save, 150, 50);
+    lv_obj_set_style_bg_color(ui->ParamConfig_btn_save, lv_color_hex(0x3dfb00), LV_PART_MAIN|LV_STATE_DEFAULT);
+    lv_obj_set_style_radius(ui->ParamConfig_btn_save, 25, LV_PART_MAIN|LV_STATE_DEFAULT);
+
+    ui->ParamConfig_btn_save_label = lv_label_create(ui->ParamConfig_btn_save);
+    lv_label_set_text(ui->ParamConfig_btn_save_label, "保存配置");
+    lv_obj_set_style_text_color(ui->ParamConfig_btn_save_label, lv_color_hex(0x2F35DA), LV_PART_MAIN|LV_STATE_DEFAULT);
+    lv_obj_set_style_text_font(ui->ParamConfig_btn_save_label, gui_assets_get_font_20(), LV_PART_MAIN|LV_STATE_DEFAULT);
+    lv_obj_center(ui->ParamConfig_btn_save_label);
+
+    // 5. Status Label
+    ui->ParamConfig_lbl_status = lv_label_create(ui->ParamConfig);
+    lv_obj_set_pos(ui->ParamConfig_lbl_status, 50, 400);
+    lv_label_set_text(ui->ParamConfig_lbl_status, "状态：等待操作");
+    lv_obj_set_style_text_color(ui->ParamConfig_lbl_status, lv_color_hex(0xFFFFFF), LV_PART_MAIN|LV_STATE_DEFAULT);
+    lv_obj_set_style_text_font(ui->ParamConfig_lbl_status, gui_assets_get_font_16(), LV_PART_MAIN|LV_STATE_DEFAULT);
+    lv_obj_set_width(ui->ParamConfig_lbl_status, 700);
+
+    // 6. Keyboard (Hidden by default)
+    ui->ParamConfig_kb = lv_keyboard_create(ui->ParamConfig);
+    lv_obj_set_size(ui->ParamConfig_kb, 800, 200);
+    lv_obj_align(ui->ParamConfig_kb, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_add_flag(ui->ParamConfig_kb, LV_OBJ_FLAG_HIDDEN);
+
+    // 7. Update Layout & Init Events
+    lv_obj_update_layout(ui->ParamConfig);
+    events_init_ParamConfig(ui); // 需在 events_init.c 中实现
+}
+</pre>
+    </div>
+
+</body>
+</html>

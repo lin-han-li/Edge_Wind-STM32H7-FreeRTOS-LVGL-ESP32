@@ -1,0 +1,29 @@
+﻿# Local machine / deployment secrets
+ALiYunFuWuQi/
+EdgeWind_Desktop/.env
+Edge_Wind_System/edgewind.env
+STM32H7+FreeRTOS+LVGL+ESP32/MDK-ARM/HARDWORK/ESP8266/esp8266_config_private.h
+esp32_spi_coprocessor/main/app_config_private.h
+
+# Temporary files produced during integration/debugging
+remote_api.py
+full_upload_final_summary_*.json
+*.tmp
+*.bak
+*.backup
+*.orig
+
+# Python/runtime artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# OS/editor
+Thumbs.db
+.DS_Store
+.vscode/*.log
+.cursor/
+
+# Logs
+*.log
+

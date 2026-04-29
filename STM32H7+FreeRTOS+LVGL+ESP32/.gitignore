@@ -1,0 +1,172 @@
+# ===========================
+# Keil MDK-ARM 编译输出
+# ===========================
+
+# 编译生成的可执行文件和二进制文件
+*.axf
+*.bin
+*.elf
+*.hex
+
+# 目标文件和库文件
+*.o
+*.obj
+*.lib
+*.a
+
+# 链接器输出
+*.map
+*.lst
+*.lnp
+
+# 调试信息
+*.crf
+*.d
+*.dep
+
+# 编译器临时文件
+*.i
+*.s
+*.su
+
+# Keil 项目构建目录
+**/DebugConfig/
+**/Listings/
+**/Objects/
+**/RTE/
+
+# MDK-ARM 构建输出目录（保留 .uvprojx 和 .uvoptx 但忽略构建产物）
+MDK-ARM/STM32H750XBH6/
+MDK-ARM/*/Listings/
+MDK-ARM/*/Objects/
+MDK-ARM/*/*.dep
+MDK-ARM/*/*.uvguix.*
+
+# ===========================
+# Keil 用户特定配置（不要上传）
+# ===========================
+
+# GUI 窗口布局（每个人的布局不同）
+*.uvguix.*
+*.uvgui.*
+
+# 用户选项（包含本地路径等）
+# 注意：*.uvoptx 通常需要保留，因为包含调试器配置
+# 如果团队需要共享调试配置，可以保留；否则取消下面的注释
+# *.uvoptx
+
+# JLink 配置文件
+JLinkSettings.ini
+*.jlink
+
+# ===========================
+# 编辑器和IDE配置
+# ===========================
+
+# VS Code（保留推荐配置，忽略个人工作区）
+.vscode/*.log
+.vscode/ipch/
+
+# Cursor
+.cursor/
+
+# 其他编辑器
+*.swp
+*.swo
+*~
+.history/
+
+# ===========================
+# 操作系统生成的文件
+# ===========================
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Linux
+*~
+.directory
+
+# ===========================
+# 日志和临时文件
+# ===========================
+
+*.log
+*.tmp
+*.bak
+*.old
+*.orig
+
+# ===========================
+# 文档生成（如果使用 Doxygen）
+# ===========================
+
+html/
+latex/
+Doxyfile.bak
+
+# ===========================
+# 其他
+# ===========================
+
+# 烧录工具临时文件
+*.jflash
+
+# 性能分析
+*.gch
+*.pch
+
+# Python 字节码（如果项目包含 Python 脚本）
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# ===========================
+# 保留的重要文件（确保不被忽略）
+# ===========================
+
+# 强制保留 Keil 项目文件
+!*.uvprojx
+!*.uvoptx
+
+# 强制保留启动文件和链接脚本
+!*.s
+!*.ld
+!*.sct
+
+# 强制保留所有源代码
+!*.c
+!*.h
+!*.cpp
+!*.hpp
+
+# 强制保留配置文件
+!*.ini
+!lv_conf.h
+!FreeRTOSConfig.h
+
+# 强制保留资源文件
+!*.bin
+!tools/sd_payload/**/*.bin
+!tools/sd_payload/**/*.ttf
+
+# 强制保留文档
+!*.md
+!*.txt
+!LICENSE
+!README*
+
+# Local private credentials (generated from esp8266_config.h before publishing)
+MDK-ARM/HARDWORK/ESP8266/esp8266_config_private.h
+

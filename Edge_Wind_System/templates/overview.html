@@ -1,0 +1,628 @@
+{% extends "base.html" %}
+
+{% block title %}系统概览 - EdgeWind{% endblock %}
+{% block page_title %}系统概览{% endblock %}
+
+{% block content %}
+<!-- 统计卡片 -->
+<div class="row mb-4">
+    <div class="col-md-3 mb-4">
+        <div class="card card-action" onclick="window.location.href='/monitor'">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-start mb-3">
+                    <div>
+                        <div class="text-muted small mb-1">在线边缘节点总数</div>
+                        <h2 class="mb-0" id="stat-online">0</h2>
+                    </div>
+                    <div class="text-primary" style="font-size: 32px;">
+                        <i class="bi bi-server"></i>
+                    </div>
+                </div>
+                <div class="text-success small">
+                    <i class="bi bi-arrow-up"></i> <span id="stat-online-change">0</span> 较昨日
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3 mb-4">
+        <div class="card card-action" onclick="window.location.href='/faults'">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-start mb-3">
+                    <div>
+                        <div class="text-muted small mb-1">今日累计故障</div>
+                        <h2 class="mb-0" id="stat-faults">0</h2>
+                        <div class="text-muted small mt-1">
+                            <span class="badge bg-warning" id="stat-pending-faults">待处理: 0</span>
+                        </div>
+                    </div>
+                    <div class="text-danger" style="font-size: 32px;">
+                        <i class="bi bi-exclamation-circle"></i>
+                    </div>
+                </div>
+                <div class="text-danger small">
+                    <span class="text-muted">已修复: <span id="today-resolved-count" class="text-success fw-bold">0</span></span>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3 mb-4">
+        <div class="card card-action" onclick="window.location.href='/monitor'">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-start mb-3">
+                    <div>
+                        <div class="text-muted small mb-1">系统健康度</div>
+                        <h2 class="mb-0" id="stat-health">0</h2>
+                    </div>
+                    <div class="text-success" style="font-size: 32px;">
+                        <i class="bi bi-heart-pulse"></i>
+                    </div>
+                </div>
+                <div class="progress mt-3" style="height: 8px; border-radius: 4px;">
+                    <div class="progress-bar" role="progressbar" id="health-progress" style="width: 0%; transition: width 0.6s ease;"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3 mb-4">
+        <div class="card card-action" onclick="window.location.href='/monitor?focus=fault'">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-start mb-3">
+                    <div>
+                        <div class="text-muted small mb-1">边缘节点状态分布</div>
+                        <h2 class="mb-0" id="stat-total">0</h2>
+                    </div>
+                    <div class="text-primary" style="font-size: 32px;">
+                        <i class="bi bi-hdd-network"></i>
+                    </div>
+                </div>
+                <div class="small">
+                    <span class="text-danger" id="current-fault-count">0</span> 故障 | 
+                    <span class="text-secondary" id="offline-count">0</span> 离线
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 故障分析 -->
+<div class="row mb-4">
+    <div class="col-md-6 mb-4">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">故障类型分布</h5>
+            </div>
+            <div class="card-body">
+                <div id="fault-type-pie-chart" style="width: 100%; height: 300px;"></div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-6 mb-4">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">近24小时故障趋势</h5>
+            </div>
+            <div class="card-body">
+                <div id="fault-frequency-chart" style="width: 100%; height: 300px;"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 边缘节点状态概览 -->
+<div class="row mb-4">
+    <div class="col-md-12">
+        <div class="card mt-4">
+            <div class="card-header bg-white border-0">
+                <h5 class="mb-0">边缘节点状态概览</h5>
+            </div>
+            <div class="card-body">
+                <div class="node-grid-container" id="node-status-list">
+                    <div class="text-center text-muted py-4">
+                        <i class="bi bi-hourglass-split"></i> 加载中...
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_css %}
+<style>
+    /* ========== Clickable Card Hover Action ========== */
+    .card-action {
+        cursor: pointer;
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
+    }
+    
+    .card-action:hover {
+        transform: translateY(-4px);
+        box-shadow: 0 10px 15px rgba(0,0,0,0.1) !important;
+        border-color: #4e73df;
+    }
+
+    /* ========== 边缘节点状态卡片网格布局 ========== */
+    .node-grid-container {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); /* 响应式网格 */
+        gap: 1.5rem;
+        padding: 1rem;
+    }
+
+    /* 单个边缘节点卡片 */
+    .node-status-card {
+        min-width: 0; /* 关键：允许文本截断 */
+        background: #fff;
+        border-radius: 12px;
+        padding: 1.25rem;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+        border-left: 5px solid #eee; /* 动态颜色 */
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
+        cursor: pointer;  /* 添加手型光标 */
+    }
+
+    .node-status-card:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 6px 12px rgba(0,0,0,0.1);
+    }
+
+    /* 点击效果 */
+    .node-status-card:active {
+        transform: translateY(0);
+        box-shadow: 0 2px 4px rgba(0,0,0,0.08);
+    }
+
+    /* 故障状态卡片样式 */
+    .node-status-card.fault-state {
+        border-left-color: #dc3545;
+        background-color: #fff5f5;
+    }
+
+    /* 在线状态卡片样式 */
+    .node-status-card.online-state {
+        border-left-color: #28a745;
+    }
+
+    /* 离线状态卡片样式 */
+    .node-status-card.offline-state {
+        border-left-color: #64748b;
+    }
+
+    /* 防止文本溢出 */
+    .node-id-text {
+        font-weight: bold;
+        font-size: 1rem;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis; /* STM32_Node... */
+        display: block;
+        margin-bottom: 5px;
+        max-width: 100%;
+    }
+
+    .node-desc-text {
+        font-size: 0.85rem;
+        color: #666;
+        word-break: break-word; /* 允许长单词换行 */
+        overflow-wrap: break-word;
+    }
+
+    /* 状态徽章 */
+    .node-status-badge {
+        flex-shrink: 0; /* 防止徽章被压缩 */
+    }
+</style>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+<script>
+    async function loadOverviewData() {
+        try {
+            // 使用 Promise.all 并发调用API，避免瀑布式加载
+            const [statsResponse, devicesResponse, analyticsResponse] = await Promise.all([
+                fetch('/api/dashboard/stats'),
+                // 仅获取“实时在线”的设备（与 /api/dashboard/stats 口径一致）
+                fetch('/api/devices?online_only=true'),
+                fetch('/api/dashboard/fault_analytics')
+            ]);
+            
+            const stats = await statsResponse.json();
+            
+            document.getElementById('stat-online').textContent = stats.online_nodes || 0;
+            
+            // 卡片2：今日累计故障
+            // 显示今日累计故障数（优先使用新字段，保持向后兼容）
+            document.getElementById('stat-faults').textContent = stats.today_cumulative || stats.active_faults_today || 0;
+            // 显示当前待处理故障数
+            const pendingCount = stats.current_pending || 0;
+            document.getElementById('stat-pending-faults').textContent = `待处理: ${pendingCount}`;
+            // 显示今日已修复故障数（在子文本中）
+            const todayResolved = stats.today_resolved || 0;
+            document.getElementById('today-resolved-count').textContent = todayResolved;
+            
+            document.getElementById('stat-health').textContent = stats.system_health_score || 0;
+            
+            // 卡片4：边缘节点状态分布
+            document.getElementById('stat-total').textContent = stats.total_nodes || 0;
+            // 显示当前故障边缘节点数
+            const currentFaultCount = stats.current_fault_count || stats.faulty_nodes || 0;
+            document.getElementById('current-fault-count').textContent = currentFaultCount;
+            // 显示离线边缘节点数
+            const offlineCount = stats.offline_count || stats.offline_nodes || 0;
+            document.getElementById('offline-count').textContent = offlineCount;
+            
+            // 更新健康分数进度条（带颜色）
+            const healthScore = stats.system_health_score || 0;
+            const progressBar = document.getElementById('health-progress');
+            progressBar.style.width = healthScore + '%';
+            progressBar.setAttribute('aria-valuenow', healthScore);
+            progressBar.setAttribute('aria-valuemin', 0);
+            progressBar.setAttribute('aria-valuemax', 100);
+            
+            // 根据分数设置颜色（动态更新）
+            // Score >= 80: Green, Score 60-79: Orange, Score < 60: Red
+            if (healthScore >= 80) {
+                progressBar.className = 'progress-bar bg-success';
+            } else if (healthScore >= 60) {
+                progressBar.className = 'progress-bar bg-warning';
+            } else {
+                progressBar.className = 'progress-bar bg-danger';
+            }
+
+            // 加载边缘节点状态列表
+            const devicesData = await devicesResponse.json();
+            renderNodeStatusList(devicesData.devices || []);
+
+            // 加载故障分析数据
+            const analyticsData = await analyticsResponse.json();
+            await loadFaultAnalyticsData(analyticsData);
+
+        } catch (error) {
+            console.error('Failed to load overview data:', error);
+        }
+    }
+
+    // 初始化故障分析图表
+    let faultTypePieChart = null;
+    let faultFrequencyChart = null;
+
+    function initFaultAnalyticsCharts() {
+        // 故障类型分布饼图
+        const pieChartDom = document.getElementById('fault-type-pie-chart');
+        if (pieChartDom) {
+            faultTypePieChart = echarts.init(pieChartDom);
+        }
+
+        // 24小时故障频率柱状图
+        const barChartDom = document.getElementById('fault-frequency-chart');
+        if (barChartDom) {
+            faultFrequencyChart = echarts.init(barChartDom);
+        }
+
+        // 响应式调整
+        window.addEventListener('resize', function() {
+            faultTypePieChart?.resize();
+            faultFrequencyChart?.resize();
+        });
+    }
+
+    async function loadFaultAnalytics() {
+        try {
+            const response = await fetch('/api/dashboard/fault_analytics');
+            const data = await response.json();
+            await loadFaultAnalyticsData(data);
+        } catch (error) {
+            console.error('Failed to load fault analytics:', error);
+        }
+    }
+    
+    async function loadFaultAnalyticsData(data) {
+        try {
+
+            // 更新故障类型分布饼图
+            if (faultTypePieChart && data.fault_type_distribution) {
+                const distData = data.fault_type_distribution;
+                
+                // 故障类型颜色映射
+                const faultColors = {
+                    '交流窜入': '#ef4444',
+                    '绝缘故障': '#f59e0b',
+                    '直流母线电容老化': '#f97316',
+                    '变流器IGBT开路': '#dc2626',
+                    '直流母线接地故障': '#991b1b',
+                    '正常': '#10b981'
+                };
+                
+                // 动态构建饼图数据（只使用中文故障名，避免标签过长/重复）
+                const pieData = [];
+                for (let i = 0; i < distData.labels.length; i++) {
+                    const label = distData.labels[i];
+                    const value = distData.values[i] || 0;
+                    if (value > 0) {  // 只显示有数据的项
+                        pieData.push({
+                            value: value,
+                            name: label,
+                            itemStyle: { color: faultColors[label] || '#64748b' }
+                        });
+                    }
+                }
+
+                // 标签防重叠策略：只给 Top3 显示外侧标签，剩余信息通过 tooltip/legend 查看
+                const pieDataSorted = [...pieData].sort((a, b) => (b.value || 0) - (a.value || 0));
+                const topNameSet = new Set(pieDataSorted.slice(0, 3).map(d => d.name));
+                const pieDataWithLabelCtrl = pieData.map(d => ({
+                    ...d,
+                    label: { show: topNameSet.has(d.name) },
+                    labelLine: { show: topNameSet.has(d.name) }
+                }));
+                
+                faultTypePieChart.setOption({
+                    tooltip: {
+                        trigger: 'item',
+                        formatter: '{a} <br/>{b}: {c} ({d}%)'
+                    },
+                    legend: {
+                        type: 'scroll',
+                        bottom: '0%',
+                        left: 'center',
+                        orient: 'horizontal',
+                        width: '90%',
+                        itemWidth: 10,
+                        itemHeight: 10,
+                        textStyle: {
+                            fontSize: 12
+                        }
+                    },
+                    series: [{
+                        name: '故障类型',
+                        type: 'pie',
+                        radius: ['35%', '55%'],
+                        center: ['50%', '45%'],
+                        avoidLabelOverlap: true,
+                        itemStyle: {
+                            borderRadius: 10,
+                            borderColor: '#fff',
+                            borderWidth: 2
+                        },
+                        label: {
+                            show: false,
+                            formatter: '{b}\n{d}%',
+                            fontSize: 12,
+                            lineHeight: 16
+                        },
+                        labelLine: {
+                            show: false,
+                            length: 15,
+                            length2: 10
+                        },
+                        emphasis: {
+                            label: {
+                                show: true,
+                                fontSize: 14,
+                                fontWeight: 'bold'
+                            }
+                        },
+                        data: pieDataWithLabelCtrl
+                    }]
+                });
+            }
+
+            // 更新24小时故障频率柱状图
+            if (faultFrequencyChart && data.hourly_fault_frequency) {
+                const freqData = data.hourly_fault_frequency;
+                
+                // 确保数据格式正确
+                if (freqData.hours && freqData.faults && 
+                    Array.isArray(freqData.hours) && Array.isArray(freqData.faults) &&
+                    freqData.hours.length === freqData.faults.length) {
+                    
+                    faultFrequencyChart.setOption({
+                        tooltip: {
+                            trigger: 'axis',
+                            axisPointer: {
+                                type: 'shadow'
+                            },
+                            formatter: function(params) {
+                                let result = params[0].name + '<br/>';
+                                params.forEach(function(item) {
+                                    result += item.marker + ' ' + item.seriesName + ': ' + item.value + '<br/>';
+                                });
+                                return result;
+                            }
+                        },
+                        grid: {
+                            left: '3%',
+                            right: '4%',
+                            bottom: '15%',  // 增加底部空间以容纳旋转的标签
+                            containLabel: true
+                        },
+                        xAxis: {
+                            type: 'category',
+                            data: freqData.hours,
+                            axisLabel: {
+                                rotate: 45,
+                                interval: 1,  // 显示所有标签
+                                fontSize: 11
+                            }
+                        },
+                        yAxis: {
+                            type: 'value',
+                            name: '故障数',
+                            nameLocation: 'middle',
+                            nameGap: 40,
+                            minInterval: 1  // Y轴最小间隔为1
+                        },
+                        series: [{
+                            name: '故障数量',
+                            type: 'bar',
+                            data: freqData.faults,
+                            itemStyle: {
+                                color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                                    { offset: 0, color: '#ef4444' },
+                                    { offset: 1, color: '#fca5a5' }
+                                ]),
+                                borderRadius: [4, 4, 0, 0]
+                            },
+                            emphasis: {
+                                itemStyle: {
+                                    color: '#dc2626'
+                                }
+                            }
+                        }]
+                    }, { notMerge: false });  // 合并选项，保留之前的配置
+                } else {
+                    console.warn('故障频率数据格式不正确:', freqData);
+                }
+            }
+        } catch (error) {
+            console.error('Failed to load fault analytics:', error);
+        }
+    }
+
+    // 跳转到实时监测页面并自动选择节点
+    function navigateToMonitor(deviceId) {
+        if (!deviceId) {
+            console.error('设备ID为空，无法跳转');
+            return;
+        }
+        // 使用localStorage传递选中的设备ID
+        localStorage.setItem('selectedNodeId', deviceId);
+        // 跳转到实时监测页面
+        window.location.href = '/monitor';
+    }
+
+    // 安全：避免把 device_id/location 直接拼进 innerHTML/属性导致注入或引号问题
+    function escapeHtml(s) {
+        return String(s ?? '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    function renderNodeStatusList(devices) {
+        const container = document.getElementById('node-status-list');
+
+        // 仅展示“在线/故障”节点，离线节点不在概览页占位（避免“明明无在线却一堆卡片”的错觉）
+        const visibleDevices = (devices || []).filter(d => d && (d.status === 'online' || d.status === 'faulty' || d.status === 'fault'));
+        
+        if (!visibleDevices || visibleDevices.length === 0) {
+            container.innerHTML = `
+                <div class="text-center text-muted py-5" style="grid-column: 1 / -1;">
+                    <i class="bi bi-wifi-off fs-4 d-block mb-2"></i>
+                    <div>暂无在线边缘节点</div>
+                    <small class="text-muted d-block mt-2">请启动模拟器或检查边缘节点网络连接</small>
+                </div>
+            `;
+            return;
+        }
+
+        // 使用新的网格布局和样式类
+        const html = visibleDevices.map(device => {
+            const deviceId = device.device_id || '';
+            const deviceIdEsc = escapeHtml(deviceId);
+            const statusColor = device.status === 'online' ? '#10b981' : 
+                               device.status === 'faulty' || device.status === 'fault' ? '#ef4444' : '#64748b';
+            const statusText = device.status === 'online' ? '在线' : 
+                              (device.status === 'faulty' || device.status === 'fault') ? '故障' : '离线';
+            
+            // 确定状态类名
+            let stateClass = 'offline-state';
+            if (device.status === 'online') {
+                stateClass = 'online-state';
+            } else if (device.status === 'faulty' || device.status === 'fault') {
+                stateClass = 'fault-state';
+            }
+            
+            // 确定徽章颜色
+            const badgeClass = device.status === 'online' ? 'success' : 
+                              (device.status === 'faulty' || device.status === 'fault') ? 'danger' : 'secondary';
+            
+            // 获取故障代码（如果有）
+            const faultCode = device.fault_code || '';
+            const faultCodeEsc = escapeHtml(faultCode);
+            const faultCodeDisplay = (device.status === 'faulty' || device.status === 'fault') && faultCode ? 
+                                     `<span class="badge bg-danger ms-1">${faultCodeEsc}</span>` : '';
+            
+            // 获取位置信息（如果有，否则使用设备ID）
+            const locationText = device.location || device.device_id || '';
+            const locationTextEsc = escapeHtml(locationText);
+            
+            return `
+                <div class="node-status-card ${stateClass}" data-device-id="${deviceIdEsc}">
+                    <div class="d-flex justify-content-between align-items-start mb-2">
+                        <div class="flex-grow-1" style="min-width: 0;">
+                            <span style="width: 10px; height: 10px; background: ${statusColor}; border-radius: 50%; display: inline-block; margin-right: 8px; flex-shrink: 0;"></span>
+                            <span class="node-id-text" title="${deviceIdEsc}">${deviceIdEsc || '未知边缘节点'}</span>
+                        </div>
+                        <span class="badge bg-${badgeClass} node-status-badge">${statusText}</span>
+                    </div>
+                    ${faultCodeDisplay}
+                    ${locationTextEsc ? `<div class="node-desc-text mt-2">${locationTextEsc}</div>` : ''}
+                </div>
+            `;
+        }).join('');
+        
+        container.innerHTML = html;
+    }
+
+    // 节点卡片点击（事件委托，避免把 device_id 拼进 onclick 字符串导致引号问题）
+    document.addEventListener('click', (e) => {
+        const card = e.target && e.target.closest ? e.target.closest('.node-status-card') : null;
+        if (!card) return;
+        const deviceId = card.dataset ? card.dataset.deviceId : '';
+        if (deviceId) {
+            navigateToMonitor(deviceId);
+        }
+    });
+
+    // 初始化
+    document.addEventListener('DOMContentLoaded', function() {
+        initFaultAnalyticsCharts();
+        loadOverviewData();
+        // 快速轮询模式：从localStorage读取设置，默认800ms
+        const fastPollingEnabled = localStorage.getItem('fastPollingEnabled') !== 'false';
+        const pollingInterval = fastPollingEnabled ? 800 : 3000;
+        
+        // 使用 diffing 方法：只在数据变化时更新
+        let lastStatsHash = null;
+        async function loadOverviewDataWithDiffing() {
+            try {
+                const [statsResponse, devicesResponse, analyticsResponse] = await Promise.all([
+                    fetch('/api/dashboard/stats'),
+                    fetch('/api/devices?online_only=true'),
+                    fetch('/api/dashboard/fault_analytics')
+                ]);
+                
+                const stats = await statsResponse.json();
+                
+                // 计算数据哈希（用于检测变化）
+                const currentHash = JSON.stringify({
+                    online: stats.online_nodes,
+                    faults: stats.current_fault_count,
+                    health: stats.system_health_score,
+                    total: stats.total_nodes
+                });
+                
+                // 只在数据变化时更新DOM
+                if (currentHash !== lastStatsHash) {
+                    lastStatsHash = currentHash;
+                    await loadOverviewData();
+                } else {
+                    // 即使数据未变化，也更新边缘节点列表（可能有新边缘节点）
+                    const devicesData = await devicesResponse.json();
+                    renderNodeStatusList(devicesData.devices || []);
+                }
+            } catch (error) {
+                console.error('Failed to load overview data:', error);
+            }
+        }
+        
+        loadOverviewDataWithDiffing(); // 立即执行一次
+        setInterval(loadOverviewDataWithDiffing, pollingInterval);
+    });
+</script>
+{% endblock %}
+

@@ -1,0 +1,57 @@
+usage: lv_font_conv.js [-h] [-v] --size PIXELS [-o <path>] --bpp {1,2,3,4,8}
+                       [--lcd | --lcd-v] [--use-color-info] --format
+                       {dump,bin,lvgl} --font <path> [-r RANGE]
+                       [--symbols SYMBOLS] [--autohint-off]
+                       [--autohint-strong] [--force-fast-kern-format]
+                       [--no-compress] [--no-prefilter] [--no-kerning]
+                       [--lv-include <path>] [--lv-font-name LV_FONT_NAME]
+                       [--full-info] [--lv-fallback LV_FALLBACK]
+
+optional arguments:
+  -h, --help            show this help message and exit
+  -v, --version         show program's version number and exit
+  --size PIXELS         Output font size, pixels.
+  -o <path>, --output <path>
+                        Output path.
+  --bpp {1,2,3,4,8}     Bits per pixel, for antialiasing.
+  --lcd                 Enable subpixel rendering (horizontal pixel layout).
+  --lcd-v               Enable subpixel rendering (vertical pixel layout).
+  --use-color-info      Try to use glyph color info from font to create
+                        grayscale icons. Since gray tones are emulated via
+                        transparency, result will be good on contrast
+                        background only.
+  --format {dump,bin,lvgl}
+                        Output format.
+  --font <path>         Source font path. Can be used multiple times to merge
+                        glyphs from different fonts.
+  -r RANGE, --range RANGE
+                        Range of glyphs to copy. Can be used multiple times,
+                        belongs to previously declared "--font". Examples:
+                        -r 0x1F450
+                        -r 0x20-0x7F
+                        -r 32-127
+                        -r 32-127,0x1F450
+                        -r '0x1F450=>0xF005'
+                        -r '0x1F450-0x1F470=>0xF005'
+  --symbols SYMBOLS     List of characters to copy, belongs to previously
+                        declared "--font". Examples:
+                        --symbols ,.0123456789
+                        --symbols abcdefghigklmnopqrstuvwxyz
+  --autohint-off        Disable autohinting for previously declared "--font"
+  --autohint-strong     Use more strong autohinting for previously declared
+                        "--font" (will break kerning)
+  --force-fast-kern-format
+                        Always use kern classes instead of pairs (might be
+                        larger but faster).
+  --no-compress         Disable built-in RLE compression.
+  --no-prefilter        Disable bitmap lines filter (XOR), used to improve
+                        compression ratio.
+  --no-kerning          Drop kerning info to reduce size (not recommended).
+  --lv-include <path>   Set alternate "lvgl.h" path (for --format lvgl).
+  --lv-font-name LV_FONT_NAME
+                        Variable name of the lvgl font structure. Defaults to
+                        the output's basename.
+  --full-info           Don't shorten "font_info.json" (include pixels data).
+  --lv-fallback LV_FALLBACK
+                        Variable name of the lvgl font structure to use as
+                        fallback for this font. Defaults to NULL.

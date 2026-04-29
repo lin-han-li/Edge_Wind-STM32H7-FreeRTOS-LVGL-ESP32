@@ -1,0 +1,6 @@
+/build/
+/sdkconfig.old
+
+# Local private defaults
+/main/app_config_private.h
+
