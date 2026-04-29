@@ -29,7 +29,7 @@
 #endif
 
 #ifndef ESP32_SPI_LOG_FULL_CHUNKS
-#define ESP32_SPI_LOG_FULL_CHUNKS 1
+#define ESP32_SPI_LOG_FULL_CHUNKS 0
 #endif
 
 #ifndef ESP32_SPI_LOG_TX_ACCEPTED
@@ -1729,6 +1729,146 @@ static bool send_fft_chunks(uint32_t frame_id,
         offset = (uint16_t)(offset + count);
     }
     return true;
+}
+
+uint16_t ESP32_SPI_FullWaveChunkMaxElements(void)
+{
+    return (uint16_t)((ESP32_SPI_MAX_PAYLOAD - sizeof(esp32_report_chunk_prefix_t)) / sizeof(int32_t));
+}
+
+uint16_t ESP32_SPI_FullFftChunkMaxElements(void)
+{
+    return (uint16_t)((ESP32_SPI_MAX_PAYLOAD - sizeof(esp32_report_chunk_prefix_t)) / sizeof(int16_t));
+}
+
+bool ESP32_SPI_ReportFullBegin(uint32_t frame_id,
+                               uint64_t timestamp_ms,
+                               uint32_t downsample_step,
+                               uint32_t upload_points,
+                               const char *fault_code,
+                               uint8_t status_code,
+                               const esp32_spi_report_channel_t *channels,
+                               uint8_t channel_count,
+                               uint32_t timeout_ms)
+{
+    esp32_report_full_begin_payload_t begin;
+    uint32_t per_packet_timeout = (timeout_ms == 0U) ? 1500U : timeout_ms;
+
+    if (channels == NULL || channel_count == 0U || channel_count > 4U) {
+        return false;
+    }
+
+    s_last_report_full_end_ref_seq = 0U;
+    if (!ESP32_SPI_EnsureReady(ESP32_SPI_DEFAULT_TIMEOUT_MS)) {
+        return false;
+    }
+
+    memset(&begin, 0, sizeof(begin));
+    begin.frame_id = frame_id;
+    begin.timestamp_ms = timestamp_ms;
+    begin.downsample_step = downsample_step;
+    begin.upload_points = upload_points;
+    copy_text(begin.fault_code, sizeof(begin.fault_code), fault_code ? fault_code : "E00");
+    begin.report_mode = 1U;
+    begin.status_code = status_code;
+    begin.channel_count = channel_count;
+
+    for (uint8_t i = 0U; i < channel_count; i++) {
+        begin.channels[i].channel_id = channels[i].channel_id;
+        begin.channels[i].waveform_count = channels[i].waveform_count;
+        begin.channels[i].fft_count = channels[i].fft_count;
+        begin.channels[i].value_scaled = channels[i].value_scaled;
+        begin.channels[i].current_value_scaled = channels[i].current_value_scaled;
+    }
+
+    return send_report_packet_wait(ESP32_MSG_REPORT_FULL_BEGIN,
+                                   &begin,
+                                   (uint16_t)sizeof(begin),
+                                   frame_id,
+                                   per_packet_timeout,
+                                   "begin");
+}
+
+bool ESP32_SPI_ReportFullWaveChunk(uint32_t frame_id,
+                                   uint8_t channel_id,
+                                   const float *waveform,
+                                   uint16_t element_offset,
+                                   uint16_t element_count,
+                                   uint32_t timeout_ms)
+{
+    esp32_full_chunk_builder_ctx_t chunk;
+    uint16_t payload_len;
+    uint32_t per_packet_timeout = (timeout_ms == 0U) ? 1500U : timeout_ms;
+
+    if (waveform == NULL || element_count == 0U ||
+        element_count > ESP32_SPI_FullWaveChunkMaxElements()) {
+        return false;
+    }
+
+    chunk.frame_id = frame_id;
+    chunk.channel_id = channel_id;
+    chunk.element_offset = element_offset;
+    chunk.element_count = element_count;
+    chunk.values = waveform;
+    payload_len = (uint16_t)(sizeof(esp32_report_chunk_prefix_t) +
+                             ((uint32_t)element_count * sizeof(int32_t)));
+
+    return send_report_built_packet_wait(ESP32_MSG_REPORT_FULL_WAVE_CHUNK,
+                                         payload_len,
+                                         build_wave_chunk_payload,
+                                         &chunk,
+                                         frame_id,
+                                         per_packet_timeout,
+                                         "wave");
+}
+
+bool ESP32_SPI_ReportFullFftChunk(uint32_t frame_id,
+                                  uint8_t channel_id,
+                                  const float *fft,
+                                  uint16_t element_offset,
+                                  uint16_t element_count,
+                                  uint32_t timeout_ms)
+{
+    esp32_full_chunk_builder_ctx_t chunk;
+    uint16_t payload_len;
+    uint32_t per_packet_timeout = (timeout_ms == 0U) ? 1500U : timeout_ms;
+
+    if (fft == NULL || element_count == 0U ||
+        element_count > ESP32_SPI_FullFftChunkMaxElements()) {
+        return false;
+    }
+
+    chunk.frame_id = frame_id;
+    chunk.channel_id = channel_id;
+    chunk.element_offset = element_offset;
+    chunk.element_count = element_count;
+    chunk.values = fft;
+    payload_len = (uint16_t)(sizeof(esp32_report_chunk_prefix_t) +
+                             ((uint32_t)element_count * sizeof(int16_t)));
+
+    return send_report_built_packet_wait(ESP32_MSG_REPORT_FULL_FFT_CHUNK,
+                                         payload_len,
+                                         build_fft_chunk_payload,
+                                         &chunk,
+                                         frame_id,
+                                         per_packet_timeout,
+                                         "fft");
+}
+
+bool ESP32_SPI_ReportFullEnd(uint32_t frame_id,
+                             uint32_t timeout_ms)
+{
+    esp32_report_end_payload_t end_payload;
+    uint32_t per_packet_timeout = (timeout_ms == 0U) ? 1500U : timeout_ms;
+
+    memset(&end_payload, 0, sizeof(end_payload));
+    end_payload.frame_id = frame_id;
+    return send_report_packet_wait(ESP32_MSG_REPORT_FULL_END,
+                                   &end_payload,
+                                   (uint16_t)sizeof(end_payload),
+                                   frame_id,
+                                   per_packet_timeout,
+                                   "end");
 }
 
 bool ESP32_SPI_ReportFull(uint32_t frame_id,

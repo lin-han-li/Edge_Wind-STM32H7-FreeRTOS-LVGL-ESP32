@@ -18,6 +18,8 @@
 #include "usart.h"
 #include "arm_math.h"
 #include "cmsis_os.h"
+#include "FreeRTOS.h"
+#include "task.h"
 #include "fatfs.h"
 #include "diskio.h"
 #include "bsp_driver_sd.h"
@@ -78,6 +80,15 @@
 #endif
 #ifndef ESP32_SPI_FULL_RESULT_POLL_MS
 #define ESP32_SPI_FULL_RESULT_POLL_MS 100U
+#endif
+#ifndef ESP_ALGO_MIN_INTERVAL_MS
+#define ESP_ALGO_MIN_INTERVAL_MS 0U
+#endif
+#ifndef ESP32_SPI_FULL_PACKETS_PER_POLL
+#define ESP32_SPI_FULL_PACKETS_PER_POLL 1U
+#endif
+#ifndef ESP_UPLOAD_SNAPSHOT_SLOT_COUNT
+#define ESP_UPLOAD_SNAPSHOT_SLOT_COUNT 2U
 #endif
 
 /* 引用 usart.c 中定义的句柄 */
@@ -283,6 +294,7 @@ void ESP_Config_Apply(const SystemConfig_t *cfg)
 /* DSP 相关变量：用于 FFT 计算 */
 static arm_rfft_fast_instance_f32 S;
 static uint8_t fft_initialized = 0;
+static uint8_t channels_metadata_initialized = 0;
 static float32_t fft_input_buf[WAVEFORM_POINTS] AXI_SRAM_SECTION;  // FFT 输入缓冲（避免破坏原波形）
 static float32_t fft_output_buf[WAVEFORM_POINTS] AXI_SRAM_SECTION; // FFT 输出复数数组
 static float32_t fft_mag_buf[WAVEFORM_POINTS] AXI_SRAM_SECTION;    // FFT 幅值数组
@@ -295,6 +307,11 @@ static void ESP_Init_Channels_And_DSP(void)
     {
         arm_rfft_fast_init_f32(&S, WAVEFORM_POINTS);
         fft_initialized = 1;
+    }
+
+    if (channels_metadata_initialized)
+    {
+        return;
     }
 
     /* 通道元数据（与后端识别规则对应） */
@@ -314,6 +331,7 @@ static void ESP_Init_Channels_And_DSP(void)
     node_channels[3].id = 3;
     strncpy(node_channels[3].label, "漏电流", 31);
     strncpy(node_channels[3].unit, "mA", 7);
+    channels_metadata_initialized = 1;
 }
 
 /* 内部函数声明 */
@@ -358,6 +376,208 @@ static uint8_t ESP_BufContains(const uint8_t *buf, uint16_t len, const char *nee
 
 // 当前上报的故障码（默认正常 E00），可通过串口控制台动态修改
 static char g_fault_code[4] = "E00";
+
+#if (ESP_UPLOAD_SNAPSHOT_SLOT_COUNT < 2)
+#error "ESP_UPLOAD_SNAPSHOT_SLOT_COUNT must be at least 2"
+#endif
+
+#define ESP_UPLOAD_SNAPSHOT_MAGIC      0x45575550UL /* "EWUP" */
+#define ESP_UPLOAD_SNAPSHOT_SDRAM_ADDR ((uintptr_t)0xC0680000UL)
+
+typedef struct
+{
+    uint32_t magic;
+    uint32_t seq;
+    uint32_t tick_ms;
+    uint8_t ready_buffer;
+    uint8_t channel_count;
+    uint8_t report_mode;
+    uint8_t status_code;
+    char fault_code[8];
+    esp32_spi_report_channel_t channels[4];
+    float current_value[4];
+    float waveform[4][WAVEFORM_POINTS];
+    float fft_data[4][FFT_POINTS];
+} ESP_UploadSnapshot_t;
+
+static ESP_UploadSnapshot_t * const g_upload_snapshots =
+    (ESP_UploadSnapshot_t *)ESP_UPLOAD_SNAPSHOT_SDRAM_ADDR;
+static volatile int8_t g_upload_snapshot_latest_idx = -1;
+static volatile int8_t g_upload_snapshot_inflight_idx = -1;
+static volatile int8_t g_upload_snapshot_writing_idx = -1;
+static volatile uint8_t g_upload_snapshot_next_idx = 0U;
+static volatile uint32_t g_upload_snapshot_seq = 0U;
+static volatile uint32_t g_upload_snapshot_publish_count = 0U;
+static volatile uint32_t g_upload_snapshot_drop_count = 0U;
+
+static int8_t ESP_UploadSnapshot_BeginWrite(void)
+{
+    int8_t idx;
+
+    taskENTER_CRITICAL();
+    idx = (int8_t)(g_upload_snapshot_next_idx % ESP_UPLOAD_SNAPSHOT_SLOT_COUNT);
+    if (idx == g_upload_snapshot_inflight_idx)
+    {
+        idx = (int8_t)((idx + 1) % ESP_UPLOAD_SNAPSHOT_SLOT_COUNT);
+    }
+    if (idx == g_upload_snapshot_inflight_idx)
+    {
+        taskEXIT_CRITICAL();
+        return -1;
+    }
+
+    if (g_upload_snapshot_latest_idx >= 0)
+    {
+        g_upload_snapshot_drop_count++;
+        g_upload_snapshot_latest_idx = -1;
+    }
+    g_upload_snapshot_writing_idx = idx;
+    taskEXIT_CRITICAL();
+    return idx;
+}
+
+static void ESP_UploadSnapshot_FinishWrite(int8_t idx, ESP_UploadSnapshot_t *slot)
+{
+    if (idx < 0 || slot == NULL)
+    {
+        return;
+    }
+
+    taskENTER_CRITICAL();
+    slot->seq = ++g_upload_snapshot_seq;
+    slot->magic = ESP_UPLOAD_SNAPSHOT_MAGIC;
+    g_upload_snapshot_latest_idx = idx;
+    g_upload_snapshot_next_idx = (uint8_t)((idx + 1) % ESP_UPLOAD_SNAPSHOT_SLOT_COUNT);
+    g_upload_snapshot_writing_idx = -1;
+    g_upload_snapshot_publish_count++;
+    taskEXIT_CRITICAL();
+}
+
+static void ESP_UploadSnapshot_PublishFromNodeChannels(uint8_t ready_buffer)
+{
+    int8_t idx = ESP_UploadSnapshot_BeginWrite();
+    ESP_UploadSnapshot_t *slot;
+
+    if (idx < 0)
+    {
+        g_upload_snapshot_drop_count++;
+        return;
+    }
+
+    slot = &g_upload_snapshots[(uint8_t)idx];
+    memset(slot, 0, sizeof(*slot));
+    slot->tick_ms = HAL_GetTick();
+    slot->ready_buffer = ready_buffer;
+    slot->channel_count = 4U;
+    slot->report_mode = 1U;
+    slot->status_code = 1U;
+    strncpy(slot->fault_code, g_fault_code, sizeof(slot->fault_code) - 1U);
+    slot->fault_code[sizeof(slot->fault_code) - 1U] = '\0';
+
+    for (uint8_t ch = 0U; ch < 4U; ch++)
+    {
+        int32_t cv_i = ESP_FloatToI32Scaled(node_channels[ch].current_value);
+        slot->channels[ch].channel_id = node_channels[ch].id;
+        slot->channels[ch].waveform_count = (uint16_t)WAVEFORM_POINTS;
+        slot->channels[ch].fft_count = (uint16_t)FFT_POINTS;
+        slot->channels[ch].value_scaled = cv_i;
+        slot->channels[ch].current_value_scaled = cv_i;
+        slot->current_value[ch] = node_channels[ch].current_value;
+        memcpy(slot->waveform[ch], node_channels[ch].waveform, sizeof(slot->waveform[ch]));
+        memcpy(slot->fft_data[ch], node_channels[ch].fft_data, sizeof(slot->fft_data[ch]));
+        ESP_RtosYield();
+    }
+
+    ESP_UploadSnapshot_FinishWrite(idx, slot);
+}
+
+static const ESP_UploadSnapshot_t *ESP_UploadSnapshot_TryAcquireLatest(uint32_t *out_seq)
+{
+    int8_t idx;
+    uint32_t seq;
+
+    taskENTER_CRITICAL();
+    idx = g_upload_snapshot_latest_idx;
+    if (idx < 0 || g_upload_snapshot_inflight_idx >= 0 || idx == g_upload_snapshot_writing_idx)
+    {
+        taskEXIT_CRITICAL();
+        return NULL;
+    }
+    g_upload_snapshot_latest_idx = -1;
+    g_upload_snapshot_inflight_idx = idx;
+    seq = g_upload_snapshots[(uint8_t)idx].seq;
+    taskEXIT_CRITICAL();
+
+    if (g_upload_snapshots[(uint8_t)idx].magic != ESP_UPLOAD_SNAPSHOT_MAGIC)
+    {
+        taskENTER_CRITICAL();
+        if (g_upload_snapshot_inflight_idx == idx)
+        {
+            g_upload_snapshot_inflight_idx = -1;
+        }
+        taskEXIT_CRITICAL();
+        return NULL;
+    }
+
+    if (out_seq != NULL)
+    {
+        *out_seq = seq;
+    }
+    return &g_upload_snapshots[(uint8_t)idx];
+}
+
+static void ESP_UploadSnapshot_Release(uint32_t seq)
+{
+    int8_t idx;
+
+    taskENTER_CRITICAL();
+    idx = g_upload_snapshot_inflight_idx;
+    if (idx >= 0 && g_upload_snapshots[(uint8_t)idx].seq == seq)
+    {
+        g_upload_snapshot_inflight_idx = -1;
+    }
+    taskEXIT_CRITICAL();
+}
+
+#if (EW_USE_ESP32_SPI_UI && ESP32_SPI_ENABLE_FULL_UPLOAD)
+typedef enum
+{
+    ESP_FULL_TX_IDLE = 0,
+    ESP_FULL_TX_BEGIN,
+    ESP_FULL_TX_WAVE,
+    ESP_FULL_TX_FFT,
+    ESP_FULL_TX_END,
+} ESP_FullTxPhase_t;
+
+typedef struct
+{
+    uint8_t active;
+    uint8_t one_shot;
+    uint8_t channel_count;
+    ESP_FullTxPhase_t phase;
+    uint32_t frame_id;
+    uint32_t snapshot_seq;
+    uint32_t start_tick;
+    uint32_t packet_count;
+    const ESP_UploadSnapshot_t *snapshot;
+    esp32_spi_report_channel_t channels[4];
+    const float *waves[4];
+    const float *ffts[4];
+    uint8_t channel_index;
+    uint16_t element_offset;
+} ESP_FullTxState_t;
+
+static ESP_FullTxState_t g_full_tx_sm;
+
+static void ESP_FullTx_ClearAndRelease(void)
+{
+    if (g_full_tx_sm.snapshot_seq != 0U)
+    {
+        ESP_UploadSnapshot_Release(g_full_tx_sm.snapshot_seq);
+    }
+    memset(&g_full_tx_sm, 0, sizeof(g_full_tx_sm));
+}
+#endif
 
 // ---------- 串口控制台（调试串口 RX 中断） ----------
 static uint8_t g_console_rx_byte = 0;
@@ -1262,21 +1482,12 @@ static void Process_Channel_Data(int ch_id, float base_dc, float ripple_amp, flo
 void ESP_Update_Data_And_FFT(void)
 {
     static uint32_t last_calc_tick = 0;
+    static uint32_t last_dsp_log_tick = 0;
     static uint8_t last_ready = 0;
-    uint32_t min_itv = ESP_CommParams_MinIntervalMs();
+    uint32_t min_itv = ESP_ALGO_MIN_INTERVAL_MS;
     uint32_t now = HAL_GetTick();
 
-#if (ESP32_SPI_STRESS_TEST)
-    if (min_itv < ESP32_SPI_STRESS_DATA_UPDATE_MS) {
-        min_itv = ESP32_SPI_STRESS_DATA_UPDATE_MS;
-    }
-#endif
-
-    if (!fft_initialized)
-    {
-        arm_rfft_fast_init_f32(&S, WAVEFORM_POINTS);
-        fft_initialized = 1;
-    }
+    ESP_Init_Channels_And_DSP();
 
     uint8_t ready = 0;
     float (*src)[WAVEFORM_POINTS] = NULL;
@@ -1328,7 +1539,7 @@ void ESP_Update_Data_And_FFT(void)
         sum3 += (double)v3;
         /* 每 1024 点让出 CPU，避免长时间占用导致 UI 卡死（4096 点波形） */
         if ((i + 1) % 1024 == 0)
-            osDelay(0);
+            ESP_RtosYield();
     }
 
     node_channels[0].current_value = ESP_SafeFloat((float)(sum0 / (double)WAVEFORM_POINTS));
@@ -1347,10 +1558,21 @@ void ESP_Update_Data_And_FFT(void)
             node_channels[ch].fft_data[i] = (fft_mag_buf[i] / (float)(WAVEFORM_POINTS / 2)) * 2.0f;
         }
         /* 每通道 FFT 完成后让出 CPU，避免 4 通道连续计算导致 UI 卡死 */
-        osDelay(0);
+        ESP_RtosYield();
     }
 
     last_ready = ready;
+    ESP_UploadSnapshot_PublishFromNodeChannels(ready);
+    if ((HAL_GetTick() - last_dsp_log_tick) >= 2000U)
+    {
+        last_dsp_log_tick = HAL_GetTick();
+        ESP_Log("[DSP] snapshot seq=%lu pub=%lu drop=%lu ready=%u dt=%lums\r\n",
+                (unsigned long)g_upload_snapshot_seq,
+                (unsigned long)g_upload_snapshot_publish_count,
+                (unsigned long)g_upload_snapshot_drop_count,
+                (unsigned int)ready,
+                (unsigned long)(HAL_GetTick() - now));
+    }
 }
 
 static void StrTrimInPlace(char *s)
@@ -1597,6 +1819,7 @@ static void ESP_SPI_ResetLocalReportState(const char *reason)
     g_spi_full_result_start_tick = 0U;
     g_spi_full_result_last_log_tick = 0U;
     g_spi_full_result_last_poll_tick = 0U;
+    ESP_FullTx_ClearAndRelease();
 #endif
     (void)ESP_AutoReconnect_SetLastReporting(false);
     ESP_Log("[ESP32SPI] local report state reset: %s\r\n",
@@ -1913,6 +2136,190 @@ void ESP_Console_Poll(void)
 #endif
 }
 
+#if (EW_USE_ESP32_SPI_UI && ESP32_SPI_ENABLE_FULL_UPLOAD)
+static bool ESP_FullTx_StartFrame(uint32_t frame_id,
+                                  const ESP_UploadSnapshot_t *snapshot,
+                                  uint32_t snapshot_seq,
+                                  uint8_t one_shot)
+{
+    uint8_t channel_count;
+
+    if (snapshot == NULL || snapshot->magic != ESP_UPLOAD_SNAPSHOT_MAGIC)
+    {
+        return false;
+    }
+    channel_count = snapshot->channel_count;
+    if (channel_count == 0U || channel_count > 4U)
+    {
+        return false;
+    }
+
+    memset(&g_full_tx_sm, 0, sizeof(g_full_tx_sm));
+    g_full_tx_sm.active = 1U;
+    g_full_tx_sm.one_shot = one_shot;
+    g_full_tx_sm.channel_count = channel_count;
+    g_full_tx_sm.phase = ESP_FULL_TX_BEGIN;
+    g_full_tx_sm.frame_id = frame_id;
+    g_full_tx_sm.snapshot_seq = snapshot_seq;
+    g_full_tx_sm.start_tick = HAL_GetTick();
+    g_full_tx_sm.snapshot = snapshot;
+    for (uint8_t i = 0U; i < channel_count; i++)
+    {
+        if (snapshot->channels[i].waveform_count > WAVEFORM_POINTS ||
+            snapshot->channels[i].fft_count > FFT_POINTS)
+        {
+            memset(&g_full_tx_sm, 0, sizeof(g_full_tx_sm));
+            return false;
+        }
+        g_full_tx_sm.channels[i] = snapshot->channels[i];
+        g_full_tx_sm.waves[i] = snapshot->waveform[i];
+        g_full_tx_sm.ffts[i] = snapshot->fft_data[i];
+    }
+    return true;
+}
+
+static bool ESP_FullTx_StepPacket(uint32_t timeout_ms)
+{
+    const ESP_UploadSnapshot_t *snapshot = g_full_tx_sm.snapshot;
+    uint8_t ch_idx;
+    uint16_t total;
+    uint16_t max_elements;
+    uint16_t count;
+    bool ok;
+
+    if (g_full_tx_sm.active == 0U || snapshot == NULL)
+    {
+        return true;
+    }
+
+    switch (g_full_tx_sm.phase)
+    {
+    case ESP_FULL_TX_BEGIN:
+        ok = ESP32_SPI_ReportFullBegin(g_full_tx_sm.frame_id,
+                                        (uint64_t)snapshot->tick_ms,
+                                        1U,
+                                        (uint32_t)WAVEFORM_POINTS,
+                                        snapshot->fault_code,
+                                        snapshot->status_code,
+                                        g_full_tx_sm.channels,
+                                        g_full_tx_sm.channel_count,
+                                        timeout_ms);
+        if (!ok)
+        {
+            return false;
+        }
+        g_full_tx_sm.packet_count++;
+        g_full_tx_sm.channel_index = 0U;
+        g_full_tx_sm.element_offset = 0U;
+        g_full_tx_sm.phase = ESP_FULL_TX_WAVE;
+        return true;
+
+    case ESP_FULL_TX_WAVE:
+        ch_idx = g_full_tx_sm.channel_index;
+        if (ch_idx >= g_full_tx_sm.channel_count)
+        {
+            g_full_tx_sm.phase = ESP_FULL_TX_END;
+            return true;
+        }
+        total = g_full_tx_sm.channels[ch_idx].waveform_count;
+        if (g_full_tx_sm.element_offset >= total)
+        {
+            g_full_tx_sm.element_offset = 0U;
+            g_full_tx_sm.phase = ESP_FULL_TX_FFT;
+            return true;
+        }
+        max_elements = ESP32_SPI_FullWaveChunkMaxElements();
+        if (max_elements == 0U)
+        {
+            return false;
+        }
+        count = (uint16_t)(total - g_full_tx_sm.element_offset);
+        if (count > max_elements)
+        {
+            count = max_elements;
+        }
+        ok = ESP32_SPI_ReportFullWaveChunk(g_full_tx_sm.frame_id,
+                                           g_full_tx_sm.channels[ch_idx].channel_id,
+                                           g_full_tx_sm.waves[ch_idx],
+                                           g_full_tx_sm.element_offset,
+                                           count,
+                                           timeout_ms);
+        if (!ok)
+        {
+            return false;
+        }
+        g_full_tx_sm.packet_count++;
+        g_full_tx_sm.element_offset = (uint16_t)(g_full_tx_sm.element_offset + count);
+        if (g_full_tx_sm.element_offset >= total)
+        {
+            g_full_tx_sm.element_offset = 0U;
+            g_full_tx_sm.phase = ESP_FULL_TX_FFT;
+        }
+        return true;
+
+    case ESP_FULL_TX_FFT:
+        ch_idx = g_full_tx_sm.channel_index;
+        if (ch_idx >= g_full_tx_sm.channel_count)
+        {
+            g_full_tx_sm.phase = ESP_FULL_TX_END;
+            return true;
+        }
+        total = g_full_tx_sm.channels[ch_idx].fft_count;
+        if (g_full_tx_sm.element_offset >= total)
+        {
+            g_full_tx_sm.channel_index++;
+            g_full_tx_sm.element_offset = 0U;
+            g_full_tx_sm.phase = (g_full_tx_sm.channel_index >= g_full_tx_sm.channel_count) ?
+                                  ESP_FULL_TX_END : ESP_FULL_TX_WAVE;
+            return true;
+        }
+        max_elements = ESP32_SPI_FullFftChunkMaxElements();
+        if (max_elements == 0U)
+        {
+            return false;
+        }
+        count = (uint16_t)(total - g_full_tx_sm.element_offset);
+        if (count > max_elements)
+        {
+            count = max_elements;
+        }
+        ok = ESP32_SPI_ReportFullFftChunk(g_full_tx_sm.frame_id,
+                                          g_full_tx_sm.channels[ch_idx].channel_id,
+                                          g_full_tx_sm.ffts[ch_idx],
+                                          g_full_tx_sm.element_offset,
+                                          count,
+                                          timeout_ms);
+        if (!ok)
+        {
+            return false;
+        }
+        g_full_tx_sm.packet_count++;
+        g_full_tx_sm.element_offset = (uint16_t)(g_full_tx_sm.element_offset + count);
+        if (g_full_tx_sm.element_offset >= total)
+        {
+            g_full_tx_sm.channel_index++;
+            g_full_tx_sm.element_offset = 0U;
+            g_full_tx_sm.phase = (g_full_tx_sm.channel_index >= g_full_tx_sm.channel_count) ?
+                                  ESP_FULL_TX_END : ESP_FULL_TX_WAVE;
+        }
+        return true;
+
+    case ESP_FULL_TX_END:
+        ok = ESP32_SPI_ReportFullEnd(g_full_tx_sm.frame_id, timeout_ms);
+        if (!ok)
+        {
+            return false;
+        }
+        g_full_tx_sm.packet_count++;
+        g_full_tx_sm.active = 0U;
+        return true;
+
+    default:
+        return false;
+    }
+}
+#endif
+
 /**
  * @brief  数据发送主函数
  * @note   负责打包 JSON，通过 DMA 发送
@@ -2191,15 +2598,12 @@ void ESP_Post_Data(void)
     static uint32_t full_try = 0, full_ok = 0, full_err = 0;
     static uint32_t last_full_log = 0;
     static uint32_t last_not_armed_log = 0;
+    static uint32_t last_no_snapshot_log = 0;
     static uint32_t s_full_frame_id = 0;
     uint32_t now_tick = HAL_GetTick();
     uint32_t min_itv = ESP_CommParams_MinIntervalMs();
-    esp32_spi_report_channel_t ch[4];
-    const float *waves[4];
-    const float *ffts[4];
-    uint32_t elapsed_ms;
-    bool ok;
-    uint8_t one_shot = 0U;
+    uint8_t packets_sent = 0U;
+    bool ok = true;
 
     if (g_spi_full_waiting_result != 0U) {
         int32_t http_status = 0;
@@ -2257,79 +2661,128 @@ void ESP_Post_Data(void)
         return;
     }
 
-    if (min_itv && (now_tick - last_full_send_time < min_itv)) {
-        return;
-    }
+    if (g_full_tx_sm.active == 0U) {
+        const ESP_UploadSnapshot_t *snapshot;
+        uint32_t snapshot_seq = 0U;
+        uint8_t one_shot = 0U;
 
-    if (g_spi_full_continuous == 0U) {
-        if (g_spi_full_manual_frames == 0U) {
-            if ((now_tick - last_not_armed_log) >= ESP32_SPI_FULL_NOT_ARMED_LOG_MS) {
-                last_not_armed_log = now_tick;
-                ESP_Log("[ESP32SPI] full requested but not armed; type full1/full10/fullon on STM32 console.\r\n");
+        if (min_itv && (now_tick - last_full_send_time < min_itv)) {
+            return;
+        }
+
+        if (g_spi_full_continuous == 0U) {
+            if (g_spi_full_manual_frames == 0U) {
+                if ((now_tick - last_not_armed_log) >= ESP32_SPI_FULL_NOT_ARMED_LOG_MS) {
+                    last_not_armed_log = now_tick;
+                    ESP_Log("[ESP32SPI] full requested but not armed; type full1/full10/fullon on STM32 console.\r\n");
+                }
+                return;
+            }
+            one_shot = 1U;
+        }
+
+        snapshot = ESP_UploadSnapshot_TryAcquireLatest(&snapshot_seq);
+        if (snapshot == NULL) {
+            if ((now_tick - last_no_snapshot_log) >= 2000U) {
+                last_no_snapshot_log = now_tick;
+                ESP_Log("[ESP32SPI] full waiting DSP snapshot pub=%lu drop=%lu inflight=%d latest=%d\r\n",
+                        (unsigned long)g_upload_snapshot_publish_count,
+                        (unsigned long)g_upload_snapshot_drop_count,
+                        (int)g_upload_snapshot_inflight_idx,
+                        (int)g_upload_snapshot_latest_idx);
             }
             return;
         }
-        g_spi_full_manual_frames--;
-        one_shot = 1U;
-    }
 
-    last_full_send_time = now_tick;
-
-    for (uint8_t i = 0U; i < 4U; i++) {
-        int32_t cv_i = ESP_FloatToI32Scaled(node_channels[i].current_value);
-        ch[i].channel_id = node_channels[i].id;
-        ch[i].waveform_count = (uint16_t)WAVEFORM_POINTS;
-        ch[i].fft_count = (uint16_t)FFT_POINTS;
-        ch[i].value_scaled = cv_i;
-        ch[i].current_value_scaled = cv_i;
-        waves[i] = node_channels[i].waveform;
-        ffts[i] = node_channels[i].fft_data;
-    }
-
-    full_try++;
-    now_tick = HAL_GetTick();
-    ok = ESP32_SPI_ReportFull(++s_full_frame_id,
-                              (uint64_t)now_tick,
-                              1U,
-                              (uint32_t)WAVEFORM_POINTS,
-                              g_fault_code,
-                              1U,
-                              ch,
-                              4U,
-                              waves,
-                              ffts,
-                              (uint16_t)WAVEFORM_POINTS,
-                              (uint16_t)FFT_POINTS,
-                              1500U);
-    elapsed_ms = HAL_GetTick() - now_tick;
-    if (ok) {
-        full_ok++;
-        g_spi_full_waiting_result = 1U;
-        g_spi_full_result_ref_seq = ESP32_SPI_GetLastFullEndRefSeq();
-        g_spi_full_result_frame_id = s_full_frame_id;
-        g_spi_full_result_start_tick = HAL_GetTick();
-        g_spi_full_result_last_log_tick = g_spi_full_result_start_tick;
-        g_spi_full_result_last_poll_tick = 0U;
-    } else {
-        full_err++;
-        if (ESP32_SPI_GetLastNackReason() == ESP32_SPI_NACK_INVALID_STATE) {
-            ESP_SPI_ResetLocalReportState("full NACK invalid_state");
+        if (!ESP_FullTx_StartFrame(++s_full_frame_id, snapshot, snapshot_seq, one_shot)) {
+            ESP_UploadSnapshot_Release(snapshot_seq);
+            full_err++;
+            ESP_Log("[ESP32SPI] full start failed snapshot=%lu err=%lu\r\n",
+                    (unsigned long)snapshot_seq,
+                    (unsigned long)full_err);
+            return;
         }
+        if (one_shot != 0U && g_spi_full_manual_frames > 0U) {
+            g_spi_full_manual_frames--;
+        }
+        full_try++;
+        last_full_send_time = now_tick;
     }
 
-    if (!ok || (HAL_GetTick() - last_full_log) >= 1000U) {
-        last_full_log = HAL_GetTick();
-        ESP_Log("[ESP32SPI] full tx frame=%lu elapsed=%lums try=%lu ok=%lu err=%lu points=%u fft=%u\r\n",
-                (unsigned long)s_full_frame_id,
+    while (g_full_tx_sm.active != 0U && packets_sent < ESP32_SPI_FULL_PACKETS_PER_POLL) {
+        ok = ESP_FullTx_StepPacket(1500U);
+        if (!ok) {
+            break;
+        }
+        packets_sent++;
+        ESP_RtosYield();
+    }
+
+    if (!ok) {
+        uint32_t failed_frame = g_full_tx_sm.frame_id;
+        uint32_t elapsed_ms = HAL_GetTick() - g_full_tx_sm.start_tick;
+        uint8_t one_shot_failed = g_full_tx_sm.one_shot;
+        full_err++;
+        ESP_Log("[ESP32SPI] full tx fail frame=%lu elapsed=%lums pkt=%lu phase=%u try=%lu ok=%lu err=%lu snapshot=%lu drop=%lu\r\n",
+                (unsigned long)failed_frame,
                 (unsigned long)elapsed_ms,
+                (unsigned long)g_full_tx_sm.packet_count,
+                (unsigned int)g_full_tx_sm.phase,
                 (unsigned long)full_try,
                 (unsigned long)full_ok,
                 (unsigned long)full_err,
-                (unsigned int)WAVEFORM_POINTS,
-                (unsigned int)FFT_POINTS);
+                (unsigned long)g_full_tx_sm.snapshot_seq,
+                (unsigned long)g_upload_snapshot_drop_count);
+        if (ESP32_SPI_GetLastNackReason() == ESP32_SPI_NACK_INVALID_STATE) {
+            ESP_SPI_ResetLocalReportState("full NACK invalid_state");
+        } else {
+            ESP_FullTx_ClearAndRelease();
+        }
+        if (one_shot_failed != 0U && g_spi_full_manual_frames == 0U && g_spi_full_continuous == 0U) {
+            ESP_SetServerReportMode(0U);
+        }
+        return;
     }
-    if (one_shot != 0U && !ok && g_spi_full_manual_frames == 0U && g_spi_full_continuous == 0U) {
-        ESP_SetServerReportMode(0U);
+
+    if (g_full_tx_sm.active == 0U) {
+        uint32_t done_frame = g_full_tx_sm.frame_id;
+        uint32_t done_seq = g_full_tx_sm.snapshot_seq;
+        uint32_t done_packets = g_full_tx_sm.packet_count;
+        uint32_t elapsed_ms = HAL_GetTick() - g_full_tx_sm.start_tick;
+        full_ok++;
+        g_spi_full_waiting_result = 1U;
+        g_spi_full_result_ref_seq = ESP32_SPI_GetLastFullEndRefSeq();
+        g_spi_full_result_frame_id = done_frame;
+        g_spi_full_result_start_tick = HAL_GetTick();
+        g_spi_full_result_last_log_tick = g_spi_full_result_start_tick;
+        g_spi_full_result_last_poll_tick = 0U;
+        ESP_UploadSnapshot_Release(done_seq);
+        memset(&g_full_tx_sm, 0, sizeof(g_full_tx_sm));
+
+        if ((HAL_GetTick() - last_full_log) >= 1000U) {
+            last_full_log = HAL_GetTick();
+            ESP_Log("[ESP32SPI] full tx done frame=%lu snap=%lu elapsed=%lums pkt=%lu try=%lu ok=%lu err=%lu points=%u fft=%u drop=%lu\r\n",
+                    (unsigned long)done_frame,
+                    (unsigned long)done_seq,
+                    (unsigned long)elapsed_ms,
+                    (unsigned long)done_packets,
+                    (unsigned long)full_try,
+                    (unsigned long)full_ok,
+                    (unsigned long)full_err,
+                    (unsigned int)WAVEFORM_POINTS,
+                    (unsigned int)FFT_POINTS,
+                    (unsigned long)g_upload_snapshot_drop_count);
+        }
+    } else if ((HAL_GetTick() - last_full_log) >= 1000U) {
+        last_full_log = HAL_GetTick();
+        ESP_Log("[ESP32SPI] full tx progress frame=%lu snap=%lu phase=%u ch=%u off=%u pkt=%lu drop=%lu\r\n",
+                (unsigned long)g_full_tx_sm.frame_id,
+                (unsigned long)g_full_tx_sm.snapshot_seq,
+                (unsigned int)g_full_tx_sm.phase,
+                (unsigned int)g_full_tx_sm.channel_index,
+                (unsigned int)g_full_tx_sm.element_offset,
+                (unsigned long)g_full_tx_sm.packet_count,
+                (unsigned long)g_upload_snapshot_drop_count);
     }
     return;
     }

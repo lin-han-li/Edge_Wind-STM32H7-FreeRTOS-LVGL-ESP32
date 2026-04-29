@@ -311,6 +311,20 @@ const osThreadAttr_t ESP8266_attributes = {
   .stack_size = 5128 * 4,
   .priority = (osPriority_t) osPriorityAboveNormal,
 };
+/* Definitions for DSPAlgo */
+osThreadId_t DSPAlgoHandle;
+const osThreadAttr_t DSPAlgo_attributes = {
+  .name = "DSPAlgo",
+  .stack_size = 3072 * 4,
+  .priority = (osPriority_t) osPriorityAboveNormal,
+};
+/* Definitions for Upload */
+osThreadId_t UploadHandle;
+const osThreadAttr_t Upload_attributes = {
+  .name = "Upload",
+  .stack_size = 3072 * 4,
+  .priority = (osPriority_t) osPriorityBelowNormal,
+};
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
@@ -323,6 +337,8 @@ void LVGL_Task(void *argument);
 void LED_Task(void *argument);
 void Main_Task(void *argument);
 void ESP8266_Task(void *argument);
+void DSP_Algorithm_Task(void *argument);
+void Upload_Task(void *argument);
 
 void MX_FREERTOS_Init(void); /* (MISRA C 2004 rule 8.1) */
 
@@ -381,6 +397,12 @@ void MX_FREERTOS_Init(void) {
 
   /* creation of ESP8266 */
   ESP8266Handle = osThreadNew(ESP8266_Task, NULL, &ESP8266_attributes);
+
+  /* creation of DSPAlgo */
+  DSPAlgoHandle = osThreadNew(DSP_Algorithm_Task, NULL, &DSPAlgo_attributes);
+
+  /* creation of Upload */
+  UploadHandle = osThreadNew(Upload_Task, NULL, &Upload_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
 #if ESP32_SPI_AUTOTEST_ON_BOOT
@@ -571,19 +593,45 @@ void ESP8266_Task(void *argument)
   {
     ESP_UI_TaskPoll();
     ESP_Console_Poll();
-    /* 上报仅在 UI 开启后执行，避免开机后台自动联网 */
+    /* ESP8266 task now handles only UI/console/control.
+       DSP and upload run in independent producer/consumer tasks. */
+    osDelay(5);
+  }
+  /* USER CODE END ESP8266_Task */
+}
+
+void DSP_Algorithm_Task(void *argument)
+{
+  (void)argument;
+  /* High-priority local path: consume completed acquisition windows,
+     compute FFT/fault features, and publish latest upload snapshots. */
+  for (;;)
+  {
+    ESP_Update_Data_And_FFT();
+    osDelay(1);
+  }
+}
+
+void Upload_Task(void *argument)
+{
+  (void)argument;
+  /* Low-priority consumer: upload only the latest processed snapshot.
+     If ESP32/cloud is busy, DSP keeps running and old upload snapshots are dropped. */
+  for (;;)
+  {
     if (ESP_UI_IsReporting())
     {
-      ESP_Update_Data_And_FFT();
-      if (ESP_ServerReportFull()) {
+      if (ESP_ServerReportFull())
+      {
         ESP_Post_Data();
-      } else {
+      }
+      else
+      {
         ESP_Post_Summary();
       }
     }
-    osDelay(5);  /* 从1ms改为5ms，减少任务切换频率，降低CPU占用 */
+    osDelay(2);
   }
-  /* USER CODE END ESP8266_Task */
 }
 
 /* Private application code --------------------------------------------------*/
@@ -600,4 +648,3 @@ void ESP32_SPI_TestTask(void *argument)
 }
 
 /* USER CODE END Application */
-

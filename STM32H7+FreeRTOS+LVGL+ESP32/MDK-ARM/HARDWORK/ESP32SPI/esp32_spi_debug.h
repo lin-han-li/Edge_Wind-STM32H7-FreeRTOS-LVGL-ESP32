@@ -87,6 +87,31 @@ bool ESP32_SPI_ReportSummary(uint32_t frame_id,
                              uint8_t channel_count,
                              uint32_t timeout_ms);
 #if (ESP32_SPI_ENABLE_FULL_UPLOAD)
+uint16_t ESP32_SPI_FullWaveChunkMaxElements(void);
+uint16_t ESP32_SPI_FullFftChunkMaxElements(void);
+bool ESP32_SPI_ReportFullBegin(uint32_t frame_id,
+                               uint64_t timestamp_ms,
+                               uint32_t downsample_step,
+                               uint32_t upload_points,
+                               const char *fault_code,
+                               uint8_t status_code,
+                               const esp32_spi_report_channel_t *channels,
+                               uint8_t channel_count,
+                               uint32_t timeout_ms);
+bool ESP32_SPI_ReportFullWaveChunk(uint32_t frame_id,
+                                   uint8_t channel_id,
+                                   const float *waveform,
+                                   uint16_t element_offset,
+                                   uint16_t element_count,
+                                   uint32_t timeout_ms);
+bool ESP32_SPI_ReportFullFftChunk(uint32_t frame_id,
+                                  uint8_t channel_id,
+                                  const float *fft,
+                                  uint16_t element_offset,
+                                  uint16_t element_count,
+                                  uint32_t timeout_ms);
+bool ESP32_SPI_ReportFullEnd(uint32_t frame_id,
+                             uint32_t timeout_ms);
 bool ESP32_SPI_ReportFull(uint32_t frame_id,
                           uint64_t timestamp_ms,
                           uint32_t downsample_step,
