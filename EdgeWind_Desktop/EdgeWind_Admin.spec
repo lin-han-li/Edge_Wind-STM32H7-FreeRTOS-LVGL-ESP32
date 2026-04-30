@@ -7,9 +7,9 @@ hiddenimports += collect_submodules('eventlet')
 
 a = Analysis(
     ['run_desktop.py'],
-    pathex=['C:\\Users\\pengjianzhong\\Desktop\\MY_Project\\Edge_Wind_System+ESP8266\\EdgeWind_Desktop\\..\\Edge_Wind_System'],
+    pathex=['C:\\Users\\pengjianzhong\\Desktop\\MY_Project\\EdgeWind_STM32_ESP32\\EdgeWind_Desktop\\..\\Edge_Wind_System'],
     binaries=[],
-    datas=[('C:\\Users\\pengjianzhong\\Desktop\\MY_Project\\Edge_Wind_System+ESP8266\\EdgeWind_Desktop\\..\\Edge_Wind_System\\app.py', '.'), ('C:\\Users\\pengjianzhong\\Desktop\\MY_Project\\Edge_Wind_System+ESP8266\\EdgeWind_Desktop\\..\\Edge_Wind_System\\templates', 'templates'), ('C:\\Users\\pengjianzhong\\Desktop\\MY_Project\\Edge_Wind_System+ESP8266\\EdgeWind_Desktop\\..\\Edge_Wind_System\\static', 'static'), ('C:\\Users\\pengjianzhong\\Desktop\\MY_Project\\Edge_Wind_System+ESP8266\\EdgeWind_Desktop\\..\\Edge_Wind_System\\edgewind', 'edgewind'), ('C:\\Users\\pengjianzhong\\Desktop\\MY_Project\\Edge_Wind_System+ESP8266\\EdgeWind_Desktop\\.env', '.')],
+    datas=[('C:\\Users\\pengjianzhong\\Desktop\\MY_Project\\EdgeWind_STM32_ESP32\\EdgeWind_Desktop\\..\\Edge_Wind_System\\app.py', '.'), ('C:\\Users\\pengjianzhong\\Desktop\\MY_Project\\EdgeWind_STM32_ESP32\\EdgeWind_Desktop\\..\\Edge_Wind_System\\templates', 'templates'), ('C:\\Users\\pengjianzhong\\Desktop\\MY_Project\\EdgeWind_STM32_ESP32\\EdgeWind_Desktop\\..\\Edge_Wind_System\\static', 'static'), ('C:\\Users\\pengjianzhong\\Desktop\\MY_Project\\EdgeWind_STM32_ESP32\\EdgeWind_Desktop\\..\\Edge_Wind_System\\edgewind', 'edgewind'), ('C:\\Users\\pengjianzhong\\Desktop\\MY_Project\\EdgeWind_STM32_ESP32\\EdgeWind_Desktop\\.env', '.')],
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
@@ -39,5 +39,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['C:\\Users\\pengjianzhong\\Desktop\\MY_Project\\Edge_Wind_System+ESP8266\\EdgeWind_Desktop\\Admin_build.ico'],
+    icon=['C:\\Users\\pengjianzhong\\Desktop\\MY_Project\\EdgeWind_STM32_ESP32\\EdgeWind_Desktop\\Admin_build.ico'],
 )

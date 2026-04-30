@@ -500,6 +500,25 @@ def _latest_pending_command_values(node_id: str, mark_delivered: bool = False) -
     return out
 
 
+def _latest_pending_command_value(node_id: str, key: str):
+    """Return latest pending/delivered value for one key from DB without changing status."""
+    if not node_id or key not in CONFIG_COMMAND_KEYS:
+        return None
+    try:
+        row = (NodePendingCommand.query
+               .filter(NodePendingCommand.target_node == node_id,
+                       NodePendingCommand.key == key,
+                       NodePendingCommand.status.in_(('pending', 'delivered')))
+               .order_by(NodePendingCommand.id.desc())
+               .first())
+    except Exception as exc:
+        logger.warning(f"[node_command] query pending value failed node={node_id} key={key}: {exc}")
+        return None
+    if not row:
+        return None
+    return _normalize_command_value(key, row.value)
+
+
 def _append_pending_config_commands(node_id: str, response_payload: dict, mark_delivered: bool = True) -> dict:
     pending = _latest_pending_command_values(node_id, mark_delivered=mark_delivered)
     for key, value in pending.items():
@@ -546,7 +565,14 @@ def _ack_config_commands_from_payload(node_id: str, payload: dict) -> None:
         mode = mode_raw
         node_report_modes[node_id] = mode
         _mark_command_applied(node_id, 'report_mode', mode)
-    for key in ('downsample_step', 'upload_points', 'heartbeat_ms', 'min_interval_ms', 'http_timeout_ms', 'chunk_kb', 'chunk_delay_ms'):
+    # upload_points 不能只根据 JSON 顶层字段确认 applied。
+    #
+    # STM32/ESP32 的 full snapshot 在切换点数时，顶层 upload_points 字段可能仍是旧值，
+    # 但 channels[*].waveform 的真实长度已经变化；如果这里直接相信顶层字段，会出现：
+    # 1) 4096 命令还没真正下发到 STM32，就被服务器误标记为 applied；
+    # 2) 2048/1024 已经按真实波形长度生效，却因为顶层旧值没有被标记 applied。
+    # upload_points 的 ACK 统一交给 _ack_upload_points_command()，并优先使用实际波形长度。
+    for key in ('downsample_step', 'heartbeat_ms', 'min_interval_ms', 'http_timeout_ms', 'chunk_kb', 'chunk_delay_ms'):
         value = _normalize_command_value(key, payload.get(key))
         if value is not None:
             try:
@@ -672,6 +698,13 @@ def _ack_downsample_command(node_id: str, payload: dict) -> int | None:
         return None
 
     pending = node_downsample_commands.get(node_id)
+    if pending is None:
+        pending = _latest_pending_command_value(node_id, 'downsample_step')
+        if pending is not None:
+            try:
+                node_downsample_commands[node_id] = int(pending)
+            except Exception:
+                pass
     reported_step = _parse_downsample_step(payload.get('downsample_step'))
     if reported_step is None:
         # 设备没上报时，用 pending 目标值回填（避免 UI 每次刷新回退到默认值）。
@@ -726,7 +759,34 @@ def _sync_active_node_upload_points(node_id: str, points: int) -> None:
         pass
 
 
-def _ack_upload_points_command(node_id: str, payload: dict) -> int | None:
+def _actual_upload_points_from_raw_series(raw_series_lens) -> int | None:
+    """
+    从服务器实际收到的各通道 waveform 长度推断当前上传点数。
+
+    只在所有非零通道长度一致时确认，避免坏帧/半包导致命令被误 ACK。
+    """
+    wave_lengths: list[int] = []
+    for item in raw_series_lens or []:
+        try:
+            wave_len = int(item[1])
+        except Exception:
+            continue
+        if wave_len > 0:
+            wave_lengths.append(wave_len)
+
+    if not wave_lengths:
+        return None
+    if len(set(wave_lengths)) != 1:
+        return None
+    return _parse_upload_points(wave_lengths[0])
+
+
+def _ack_upload_points_command(
+    node_id: str,
+    payload: dict,
+    actual_points: int | None = None,
+    allow_payload_fallback: bool = True,
+) -> int | None:
     """
     设备上报 upload_points 时做 ACK：
     - 更新 active_nodes 中的当前值/目标值
@@ -736,7 +796,16 @@ def _ack_upload_points_command(node_id: str, payload: dict) -> int | None:
         return None
 
     pending = node_upload_points_commands.get(node_id)
-    reported = _parse_upload_points(payload.get('upload_points'))
+    if pending is None:
+        pending = _latest_pending_command_value(node_id, 'upload_points')
+        if pending is not None:
+            try:
+                node_upload_points_commands[node_id] = int(pending)
+            except Exception:
+                pass
+    reported = _parse_upload_points(actual_points)
+    if reported is None and allow_payload_fallback:
+        reported = _parse_upload_points(payload.get('upload_points'))
     if reported is None:
         if pending is not None:
             _sync_active_node_upload_points(node_id, int(pending))
@@ -1149,11 +1218,6 @@ def node_heartbeat():
             pending_step = node_downsample_commands.get(node_id)
             if pending_step is not None:
                 _sync_active_node_downsample_step(node_id, int(pending_step))
-        reported_upload_points = _ack_upload_points_command(node_id, data)
-        if reported_upload_points is None:
-            pending_points = node_upload_points_commands.get(node_id)
-            if pending_points is not None:
-                _sync_active_node_upload_points(node_id, int(pending_points))
         _ack_config_commands_from_payload(node_id, data)
 
         # 2. Initialize Data Structure
@@ -1275,6 +1339,27 @@ def node_heartbeat():
                     processed_data['leakage_spectrum'] = spec
 
         processed_data['channels'] = processed_channels
+
+        # upload_points 必须用服务器实际收到的 waveform 长度确认。
+        # 本帧带 channels 时禁止退回使用 JSON 顶层 upload_points，避免旧顶层值把命令误标 applied。
+        actual_upload_points = _actual_upload_points_from_raw_series(raw_series_lens)
+        reported_upload_points = _ack_upload_points_command(
+            node_id,
+            data,
+            actual_points=actual_upload_points,
+            allow_payload_fallback=(len(raw_channels) == 0),
+        )
+        if reported_upload_points is not None:
+            data['upload_points_actual'] = int(reported_upload_points)
+            top_points = _parse_upload_points(data.get('upload_points'))
+            if top_points is not None and top_points != reported_upload_points:
+                data['upload_points_top'] = top_points
+            data['upload_points'] = int(reported_upload_points)
+        else:
+            pending_points = node_upload_points_commands.get(node_id)
+            if pending_points is not None:
+                _sync_active_node_upload_points(node_id, int(pending_points))
+
         t_parse = time.perf_counter()
 
         # 3.5) 兜底：检测“疑似坏帧”（解析到的 channels/波形/频谱为空或类型异常）
