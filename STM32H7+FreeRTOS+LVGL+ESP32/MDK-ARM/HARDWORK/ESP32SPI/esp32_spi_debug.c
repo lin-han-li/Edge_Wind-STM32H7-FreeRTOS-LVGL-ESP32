@@ -12,6 +12,8 @@
 #include "semphr.h"
 #include "task.h"
 
+extern void ESP_UI_Internal_OnLog(const char *line);
+
 #define ESP32_SPI_MAGIC 0x43505243UL
 #define ESP32_SPI_VERSION 0x01U
 #define ESP32_SPI_MAX_PAYLOAD 1536U
@@ -305,6 +307,9 @@ static uint8_t s_pending_server_chunk_kb_valid = 0U;
 static uint32_t s_pending_server_chunk_kb = 0U;
 static uint8_t s_pending_server_chunk_delay_valid = 0U;
 static uint32_t s_pending_server_chunk_delay_ms = 0U;
+static char s_last_server_cmd_log_key[65];
+static uint32_t s_last_server_cmd_log_value = 0U;
+static uint32_t s_last_server_cmd_log_tick = 0U;
 
 static uint16_t crc16_le_update(uint16_t crc, const uint8_t *data, uint32_t len)
 {
@@ -443,6 +448,60 @@ static void copy_fixed_text(char *dst, size_t dst_size, const char *src, size_t 
         n++;
     }
     dst[n] = '\0';
+}
+
+static bool log_server_command_to_ui(const char *key, uint32_t value)
+{
+    char line[128];
+    uint32_t now = HAL_GetTick();
+
+    if (key == NULL) {
+        key = "";
+    }
+
+    if (strncmp(s_last_server_cmd_log_key, key, sizeof(s_last_server_cmd_log_key)) == 0 &&
+        s_last_server_cmd_log_value == value &&
+        (now - s_last_server_cmd_log_tick) < 10000U) {
+        return false;
+    }
+    copy_text(s_last_server_cmd_log_key, sizeof(s_last_server_cmd_log_key), key);
+    s_last_server_cmd_log_value = value;
+    s_last_server_cmd_log_tick = now;
+
+    if (strcmp(key, "reset") == 0) {
+        snprintf(line, sizeof(line), "[服务器命令] 收到命令：清除故障码\r\n");
+    } else if (strcmp(key, "report_mode") == 0) {
+        snprintf(line, sizeof(line), "[服务器命令] 收到命令：上报模式=%s\r\n",
+                 value ? "全量" : "摘要");
+    } else if (strcmp(key, "downsample_step") == 0) {
+        snprintf(line, sizeof(line), "[服务器命令] 收到命令：降采样步进=%lu\r\n",
+                 (unsigned long)value);
+    } else if (strcmp(key, "upload_points") == 0) {
+        snprintf(line, sizeof(line), "[服务器命令] 收到命令：上传点数=%lu\r\n",
+                 (unsigned long)value);
+    } else if (strcmp(key, "heartbeat_ms") == 0) {
+        snprintf(line, sizeof(line), "[服务器命令] 收到命令：心跳间隔=%lums\r\n",
+                 (unsigned long)value);
+    } else if (strcmp(key, "min_interval_ms") == 0) {
+        snprintf(line, sizeof(line), "[服务器命令] 收到命令：最小上传间隔=%lums\r\n",
+                 (unsigned long)value);
+    } else if (strcmp(key, "http_timeout_ms") == 0) {
+        snprintf(line, sizeof(line), "[服务器命令] 收到命令：HTTP超时=%lums\r\n",
+                 (unsigned long)value);
+    } else if (strcmp(key, "chunk_kb") == 0) {
+        snprintf(line, sizeof(line), "[服务器命令] 收到命令：分块大小=%luKB\r\n",
+                 (unsigned long)value);
+    } else if (strcmp(key, "chunk_delay_ms") == 0) {
+        snprintf(line, sizeof(line), "[服务器命令] 收到命令：分块延时=%lums\r\n",
+                 (unsigned long)value);
+    } else {
+        snprintf(line, sizeof(line), "[服务器命令] 收到命令：%s=%lu\r\n",
+                 key, (unsigned long)value);
+    }
+
+    printf("%s", line);
+    ESP_UI_Internal_OnLog(line);
+    return true;
 }
 
 static void packet_prepare(esp32_spi_packet_t *packet, uint8_t msg_type)
@@ -775,6 +834,9 @@ static void update_status_from_event(const esp32_event_payload_t *event)
         copy_fixed_text(text, sizeof(text), event->text, sizeof(event->text));
         copy_text(s_status.last_error, sizeof(s_status.last_error), text);
         if (event->result_code != ESP32_RESULT_OK) {
+            break;
+        }
+        if (!log_server_command_to_ui(text, event->value1)) {
             break;
         }
         if (strcmp(text, "reset") == 0) {

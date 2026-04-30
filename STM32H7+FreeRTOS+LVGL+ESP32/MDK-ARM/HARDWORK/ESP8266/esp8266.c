@@ -2182,9 +2182,9 @@ static void ESP_SPI_ApplyCommParamsToCoprocessor(const ESP_CommParams_t *p)
                                    p->hardreset_sec,
                                    p->chunk_kb,
                                    p->chunk_delay_ms)) {
-        ESP_Log("[SERVER_CMD] failed to re-apply comm params to ESP32\r\n");
+        ESP_Log("[服务器命令] ESP32同步通信参数失败\r\n");
     } else {
-        ESP_Log("[SERVER_CMD] comm params re-applied to ESP32\r\n");
+        ESP_Log("[服务器命令] ESP32同步通信参数成功\r\n");
     }
 #else
     (void)p;
@@ -2277,13 +2277,22 @@ void ESP_Console_Poll(void)
                 if (has_chunk_delay) {
                     p.chunk_delay_ms = chunk_delay_ms;
                 }
+                ESP_Log("[服务器命令] 收到命令：通信参数 心跳=%lums 间隔=%lums HTTP=%lums 降采样=%lu 上传点数=%lu 分块=%luKB 延时=%lums\r\n",
+                        (unsigned long)p.heartbeat_ms,
+                        (unsigned long)p.min_interval_ms,
+                        (unsigned long)p.http_timeout_ms,
+                        (unsigned long)p.wave_step,
+                        (unsigned long)p.upload_points,
+                        (unsigned long)p.chunk_kb,
+                        (unsigned long)p.chunk_delay_ms);
                 ESP_CommParams_Apply(&p);
+                ESP_Log("[服务器命令] 运行态已应用：通信参数\r\n");
                 if (ESP_CommParams_SaveToSD()) {
-                    ESP_Log("[SERVER_CMD] comm params applied and saved to SD\r\n");
+                    ESP_Log("[服务器命令] SD卡保存成功：通信参数\r\n");
                     ESP_SPI_ApplyCommParamsToCoprocessor(&p);
                 } else {
-                    ESP_Log("[SERVER_CMD] comm params applied but SD save failed\r\n");
                     ESP_CommParams_Apply(&old_p);
+                    ESP_Log("[服务器命令] SD卡保存失败：通信参数，运行态已回滚\r\n");
                 }
             }
         }
@@ -2294,21 +2303,24 @@ void ESP_Console_Poll(void)
     if (g_server_reset_pending)
     {
         g_server_reset_pending = 0;
-        ESP_Log("[服务器命令] 收到 reset：清除故障码 -> E00\r\n");
         ESP_SetFaultCode("E00");
+        ESP_Log("[服务器命令] 运行态已应用：故障码清除为E00\r\n");
     }
 
     // 2.0) Apply server-issued report_mode.
     if (g_server_report_full_dirty)
     {
         uint8_t full = g_server_report_full ? 1U : 0U;
+        const char *mode_text = full ? "全量" : "摘要";
         g_server_report_full_dirty = 0;
+        ESP_Log("[服务器命令] 开始应用：上报模式=%s\r\n", mode_text);
         if (!ESP_UploadMode_SaveToSD(full)) {
             g_server_report_full = full ? 0U : 1U;
-            ESP_Log("[SERVER_CMD] report_mode=%s rejected: SD save failed\r\n",
-                    full ? "full" : "summary");
+            ESP_Log("[服务器命令] SD卡保存失败：上报模式=%s，运行态未切换\r\n",
+                    mode_text);
             return;
         }
+        ESP_Log("[服务器命令] SD卡保存成功：上报模式=%s\r\n", mode_text);
 #if (EW_USE_ESP32_SPI_UI && ESP32_SPI_ENABLE_FULL_UPLOAD)
         g_spi_full_continuous = full;
         if (!full) {
@@ -2324,11 +2336,16 @@ void ESP_Console_Poll(void)
 #if (ESP32_SPI_ENABLE_FULL_UPLOAD)
             ESP_SPI_FullResetUploadRuntimeState();
 #endif
-            (void)ESP32_SPI_StartReport(full, 3000U);
+            if (ESP32_SPI_StartReport(full, 3000U)) {
+                ESP_Log("[服务器命令] ESP32同步成功：上报模式=%s\r\n",
+                        mode_text);
+            } else {
+                ESP_Log("[服务器命令] ESP32同步失败：上报模式=%s\r\n",
+                        mode_text);
+            }
         }
 #endif
-        ESP_Log("[SERVER_CMD] report_mode=%s saved to SD\r\n",
-                full ? "full" : "summary");
+        ESP_Log("[服务器命令] 运行态已应用：上报模式=%s\r\n", mode_text);
     }
 
     // 2.1) 处理“服务器下发 downsample_step”指令
@@ -2343,19 +2360,21 @@ void ESP_Console_Poll(void)
         uint32_t target = (uint32_t)g_server_downsample_step;
         if (target < 1U) target = 1U;
         if (target > 64U) target = 64U;
-        ESP_Log("[服务器命令] downsample_step=%lu：应用降采样并写入SD\r\n", (unsigned long)target);
+        ESP_Log("[服务器命令] 开始应用：降采样步进=%lu\r\n", (unsigned long)target);
 
         if (p.wave_step != target) {
             p.wave_step = target;
             ESP_CommParams_Apply(&p);
         }
+        ESP_Log("[服务器命令] 运行态已应用：降采样步进=%lu\r\n", (unsigned long)target);
 
         if (ESP_CommParams_SaveToSD()) {
-            ESP_Log("[服务器命令] downsample_step=%lu：已生效并保存到SD\r\n", (unsigned long)target);
+            ESP_Log("[服务器命令] SD卡保存成功：降采样步进=%lu\r\n", (unsigned long)target);
             ESP_SPI_ApplyCommParamsToCoprocessor(&p);
         } else {
-            ESP_Log("[服务器命令] downsample_step=%lu：已生效，但保存SD失败\r\n", (unsigned long)target);
             ESP_CommParams_Apply(&old_p);
+            ESP_Log("[服务器命令] SD卡保存失败：降采样步进=%lu，运行态已回滚\r\n",
+                    (unsigned long)target);
         }
     }
 
@@ -2369,19 +2388,21 @@ void ESP_Console_Poll(void)
         ESP_CommParams_Get(&old_p);
         p = old_p;
         uint32_t target = (uint32_t)g_server_upload_points;
-        ESP_Log("[服务器命令] upload_points=%lu：应用上传点数并写入SD\r\n", (unsigned long)target);
+        ESP_Log("[服务器命令] 开始应用：上传点数=%lu\r\n", (unsigned long)target);
 
         if (p.upload_points != target) {
             p.upload_points = target;
             ESP_CommParams_Apply(&p);
         }
+        ESP_Log("[服务器命令] 运行态已应用：上传点数=%lu\r\n", (unsigned long)target);
 
         if (ESP_CommParams_SaveToSD()) {
-            ESP_Log("[服务器命令] upload_points=%lu：已生效并保存到SD\r\n", (unsigned long)target);
+            ESP_Log("[服务器命令] SD卡保存成功：上传点数=%lu\r\n", (unsigned long)target);
             ESP_SPI_ApplyCommParamsToCoprocessor(&p);
         } else {
-            ESP_Log("[服务器命令] upload_points=%lu：已生效，但保存SD失败\r\n", (unsigned long)target);
             ESP_CommParams_Apply(&old_p);
+            ESP_Log("[服务器命令] SD卡保存失败：上传点数=%lu，运行态已回滚\r\n",
+                    (unsigned long)target);
         }
     }
 

@@ -2185,6 +2185,8 @@ static bool dc_log_line_should_show(const char *line)
 
     /* Keep explicit user actions, connection steps and real problems. */
     if (dc_line_has(line, "[UI]") ||
+        dc_line_has(line, "[SERVER_CMD]") ||
+        dc_line_has(line, "[服务器命令]") ||
         dc_line_has(line, "Executing") ||
         dc_line_has(line, "AutoReconnect") ||
         dc_line_has(line, "Config") ||
@@ -2195,6 +2197,8 @@ static bool dc_log_line_should_show(const char *line)
         dc_line_has(line, "Register") ||
         dc_line_has(line, "register") ||
         dc_line_has(line, "report_mode") ||
+        dc_line_has(line, "upload_points") ||
+        dc_line_has(line, "downsample_step") ||
         dc_line_has(line, "server command") ||
         dc_line_has(line, "failed") ||
         dc_line_has(line, "Failed") ||
@@ -2223,14 +2227,18 @@ static void dc_post_log_from_esp(const char *line, void *ctx)
     if (!dc_log_line_should_show(line)) {
         return;
     }
+    bool is_server_cmd = dc_line_has(line, "[服务器命令]") ||
+                         dc_line_has(line, "[SERVER_CMD]");
     /* Throttle visible UI logs. Do not print "dropped N lines" into the
      * textarea; that message itself becomes high-rate noise during full upload. */
     static uint32_t last_log_tick = 0;
     uint32_t now = lv_tick_get();
-    if (last_log_tick != 0U && (now - last_log_tick) < 500U) {
+    if (!is_server_cmd && last_log_tick != 0U && (now - last_log_tick) < 500U) {
         return;
     }
-    last_log_tick = now;
+    if (!is_server_cmd) {
+        last_log_tick = now;
+    }
     dc_queue_log_line(line);
 }
 
@@ -2797,7 +2805,7 @@ static void dc_timer_cb(lv_timer_t *t)
         if (m.type == DC_MSG_LOG)
         {
             /* 自动流程中优先处理“步骤结果”，日志会明显拖慢状态刷新；这里丢弃日志以保证 UI 及时推进。 */
-            if (!g_dc_auto_running) {
+            if (!g_dc_auto_running || dc_line_has(m.text, "[服务器命令]") || dc_line_has(m.text, "[SERVER_CMD]")) {
                 dc_console_append(g_dc_ui, m.text);
             }
         }
