@@ -66,6 +66,9 @@
 #ifndef ESP32_SPI_NACK_BUSY
 #define ESP32_SPI_NACK_BUSY 5U
 #endif
+#ifndef ESP32_SPI_NACK_UNSUPPORTED_VERSION
+#define ESP32_SPI_NACK_UNSUPPORTED_VERSION 3U
+#endif
 #ifndef ESP32_SPI_NACK_INVALID_STATE
 #define ESP32_SPI_NACK_INVALID_STATE 7U
 #endif
@@ -91,7 +94,7 @@
 #define ESP32_SPI_FULL_WAIT_LOG_MS 5000U
 #endif
 #ifndef ESP32_SPI_FULL_RESULT_POLL_MS
-#define ESP32_SPI_FULL_RESULT_POLL_MS 100U
+#define ESP32_SPI_FULL_RESULT_POLL_MS 20U
 #endif
 #ifndef ESP32_SPI_FULL_TIMEOUT_HOLDOFF_MS
 #define ESP32_SPI_FULL_TIMEOUT_HOLDOFF_MS 1000U
@@ -106,10 +109,22 @@
 #define ESP_ALGO_MIN_INTERVAL_MS 0U
 #endif
 #ifndef ESP32_SPI_FULL_PACKETS_PER_POLL
-#define ESP32_SPI_FULL_PACKETS_PER_POLL 1U
+#define ESP32_SPI_FULL_PACKETS_PER_POLL 8U
+#endif
+#ifndef ESP32_SPI_FULL_YIELD_EVERY
+#define ESP32_SPI_FULL_YIELD_EVERY 2U
 #endif
 #ifndef ESP32_SPI_FULL_PACKET_ACCEPT_TIMEOUT_MS
 #define ESP32_SPI_FULL_PACKET_ACCEPT_TIMEOUT_MS 500U
+#endif
+#ifndef ESP32_SPI_AUTO_RECOVER_POLL_MS
+#define ESP32_SPI_AUTO_RECOVER_POLL_MS 1500U
+#endif
+#ifndef ESP32_SPI_AUTO_RECOVER_RETRY_MS
+#define ESP32_SPI_AUTO_RECOVER_RETRY_MS 3000U
+#endif
+#ifndef ESP32_SPI_AUTO_RECOVER_FAIL_BACKOFF_MS
+#define ESP32_SPI_AUTO_RECOVER_FAIL_BACKOFF_MS 5000U
 #endif
 #ifndef ESP_UPLOAD_SNAPSHOT_SLOT_COUNT
 #define ESP_UPLOAD_SNAPSHOT_SLOT_COUNT 2U
@@ -281,6 +296,10 @@ Channel_Data_t node_channels[4] AXI_SRAM_SECTION;
 volatile uint8_t g_esp_ready = 0; // 全局标志：1 表示 WiFi/TCP 就绪，可以发送
 /* UI“开始/停止上报”开关：用于门控后台自动重连等行为 */
 static volatile uint8_t g_report_enabled = 0;
+static volatile uint8_t g_ui_wifi_ok;
+static volatile uint8_t g_ui_tcp_ok;
+static volatile uint8_t g_ui_reg_ok;
+static volatile uint8_t g_ui_auto_recover_want_report;
 
 static SystemConfig_t g_sys_cfg;
 static uint8_t g_sys_cfg_loaded = 0;
@@ -402,6 +421,20 @@ static bool ESP_UploadMode_SaveToSD(uint8_t full);
 static void ESP_SPI_FullArmFrames(uint16_t frames);
 static void ESP_SPI_FullSetContinuous(uint8_t enable);
 static void ESP_SPI_FullPrintStatus(void);
+static void ESP_UI_SPI_LogStatus(const char *prefix);
+static bool ESP_UI_DoApplyConfig(void);
+static bool ESP_UI_DoWiFi(void);
+static bool ESP_UI_DoTCP(void);
+static bool ESP_UI_DoRegister(void);
+static bool ESP_UI_EnsureReportStarted(uint8_t mode, const char *reason_tag);
+static void ESP_UI_ScheduleAutoRecover(const char *reason, uint8_t want_report);
+static void ESP_UI_PollAutoRecover(void);
+#if (EW_USE_ESP32_SPI_UI && ESP32_SPI_ENABLE_FULL_UPLOAD)
+static uint8_t ESP_SPI_FullControlBusy(void);
+static void ESP_SPI_QueueCommParamsSync(const ESP_CommParams_t *p);
+static void ESP_SPI_QueueReportModeSync(uint8_t full);
+static void ESP_SPI_ServiceDeferredSync(void);
+#endif
 
 // “核武器”：强制停止 USART2 的 RX DMA/中断状态机，切换到 AT(阻塞收发)前必须调用
 static void ESP_ForceStop_DMA(void);
@@ -647,6 +680,12 @@ static volatile uint8_t g_server_downsample_dirty = 0;
 // 服务器请求的上传点数（降采样后）：256..4096，256步进
 static volatile uint32_t g_server_upload_points = (uint32_t)WAVEFORM_POINTS;
 static volatile uint8_t g_server_upload_points_dirty = 0;
+#if (EW_USE_ESP32_SPI_UI && ESP32_SPI_ENABLE_FULL_UPLOAD)
+static volatile uint8_t g_spi_comm_params_sync_pending = 0U;
+static volatile uint8_t g_spi_report_mode_sync_pending = 0U;
+static volatile uint8_t g_spi_report_mode_sync_target = 0U;
+static ESP_CommParams_t g_spi_pending_comm_params;
+#endif
 // 当检测到链路异常关键字（CLOSED/ERROR）时置 1，主循环触发软重连
 static volatile uint8_t g_link_reconnect_pending = 0;
 
@@ -1989,15 +2028,28 @@ static void ESP_SetServerReportMode(uint8_t full)
 static void ESP_SPI_ResetLocalReportState(const char *reason)
 {
 #if (EW_USE_ESP32_SPI_UI)
-    g_report_enabled = 0U;
-    ESP_SetServerReportMode(0U);
+    uint8_t want_report = (g_report_enabled != 0U) ? 1U : 0U;
+    g_esp_ready = 0U;
+    g_ui_reg_ok = 0U;
+    g_ui_tcp_ok = 0U;
+    g_ui_wifi_ok = 0U;
 #if (ESP32_SPI_ENABLE_FULL_UPLOAD)
     g_spi_full_manual_frames = 0U;
     ESP_SPI_FullResetUploadRuntimeState();
 #endif
-    (void)ESP_AutoReconnect_SetLastReporting(false);
-    ESP_Log("[ESP32SPI] local report state reset: %s\r\n",
-            (reason != NULL) ? reason : "unspecified");
+    if (want_report != 0U) {
+        g_ui_auto_recover_want_report = 1U;
+        (void)ESP_AutoReconnect_SetLastReporting(true);
+        ESP_Log("[ESP32SPI] local report path degraded, keep desired reporting and recover: %s\r\n",
+                (reason != NULL) ? reason : "unspecified");
+        ESP_UI_ScheduleAutoRecover(reason, 1U);
+    } else {
+        g_report_enabled = 0U;
+        ESP_SetServerReportMode(0U);
+        (void)ESP_AutoReconnect_SetLastReporting(false);
+        ESP_Log("[ESP32SPI] local report state reset: %s\r\n",
+                (reason != NULL) ? reason : "unspecified");
+    }
 #else
     (void)reason;
 #endif
@@ -2059,6 +2111,86 @@ static bool ESP_SPI_FullHoldoffActive(uint32_t now_tick)
     g_spi_full_holdoff_until_tick = 0U;
     ESP_Log("[ESP32SPI] full recovery holdoff ended\r\n");
     return false;
+}
+
+static uint8_t ESP_SPI_FullControlBusy(void)
+{
+    return (g_full_tx_sm.active != 0U || g_spi_full_waiting_result != 0U) ? 1U : 0U;
+}
+
+static void ESP_SPI_QueueCommParamsSync(const ESP_CommParams_t *p)
+{
+    if (p == NULL) {
+        return;
+    }
+    taskENTER_CRITICAL();
+    g_spi_pending_comm_params = *p;
+    g_spi_comm_params_sync_pending = 1U;
+    taskEXIT_CRITICAL();
+}
+
+static void ESP_SPI_QueueReportModeSync(uint8_t full)
+{
+    taskENTER_CRITICAL();
+    g_spi_report_mode_sync_target = (full != 0U) ? 1U : 0U;
+    g_spi_report_mode_sync_pending = 1U;
+    taskEXIT_CRITICAL();
+}
+
+static void ESP_SPI_ServiceDeferredSync(void)
+{
+    uint8_t do_comm_sync = 0U;
+    uint8_t do_report_sync = 0U;
+    uint8_t report_target = 0U;
+    ESP_CommParams_t pending_comm;
+
+    if (!g_esp_ready || ESP_SPI_FullControlBusy()) {
+        return;
+    }
+
+    taskENTER_CRITICAL();
+    if (g_spi_comm_params_sync_pending != 0U) {
+        pending_comm = g_spi_pending_comm_params;
+        g_spi_comm_params_sync_pending = 0U;
+        do_comm_sync = 1U;
+    }
+    if (g_spi_report_mode_sync_pending != 0U) {
+        report_target = g_spi_report_mode_sync_target;
+        g_spi_report_mode_sync_pending = 0U;
+        do_report_sync = 1U;
+    }
+    taskEXIT_CRITICAL();
+
+    if (do_comm_sync != 0U) {
+        if (!ESP32_SPI_ApplyCommParams(pending_comm.heartbeat_ms,
+                                       pending_comm.min_interval_ms,
+                                       pending_comm.http_timeout_ms,
+                                       3000U,
+                                       pending_comm.wave_step,
+                                       pending_comm.upload_points,
+                                       pending_comm.hardreset_sec,
+                                       pending_comm.chunk_kb,
+                                       pending_comm.chunk_delay_ms)) {
+            ESP_Log("[服务器命令] ESP32同步通信参数失败，延后重试\r\n");
+            ESP_SPI_QueueCommParamsSync(&pending_comm);
+            ESP_SPI_FullEnterHoldoff("deferred comm sync failed",
+                                     ESP32_SPI_FULL_BUSY_HOLDOFF_MS);
+            return;
+        }
+        ESP_Log("[服务器命令] ESP32同步通信参数成功\r\n");
+    }
+
+    if (do_report_sync != 0U && g_report_enabled != 0U) {
+        ESP_SPI_FullResetUploadRuntimeState();
+        if (!ESP32_SPI_StartReport(report_target, 3000U)) {
+            ESP_Log("[服务器命令] ESP32同步上报模式失败，延后重试\r\n");
+            ESP_SPI_QueueReportModeSync(report_target);
+            ESP_SPI_FullEnterHoldoff("deferred report sync failed",
+                                     ESP32_SPI_FULL_BUSY_HOLDOFF_MS);
+            return;
+        }
+        ESP_Log("[服务器命令] ESP32同步上报模式成功\r\n");
+    }
 }
 #endif
 
@@ -2173,6 +2305,13 @@ static void ESP_SPI_ApplyCommParamsToCoprocessor(const ESP_CommParams_t *p)
     if (!p || !g_esp_ready) {
         return;
     }
+#if (ESP32_SPI_ENABLE_FULL_UPLOAD)
+    if (ESP_SPI_FullControlBusy()) {
+        ESP_SPI_QueueCommParamsSync(p);
+        ESP_Log("[服务器命令] ESP32通信参数同步延后：等待 full 链路空闲\r\n");
+        return;
+    }
+#endif
     if (!ESP32_SPI_ApplyCommParams(p->heartbeat_ms,
                                    p->min_interval_ms,
                                    p->http_timeout_ms,
@@ -2325,7 +2464,6 @@ void ESP_Console_Poll(void)
         g_spi_full_continuous = full;
         if (!full) {
             g_spi_full_manual_frames = 0U;
-            ESP_SPI_FullResetUploadRuntimeState();
         }
 #endif
         /* The final clean status log is emitted below.  Avoid an extra
@@ -2333,16 +2471,29 @@ void ESP_Console_Poll(void)
          */
 #if (EW_USE_ESP32_SPI_UI)
         if (g_esp_ready && g_report_enabled) {
-#if (ESP32_SPI_ENABLE_FULL_UPLOAD)
-            ESP_SPI_FullResetUploadRuntimeState();
-#endif
+#if (EW_USE_ESP32_SPI_UI && ESP32_SPI_ENABLE_FULL_UPLOAD)
+            if (ESP_SPI_FullControlBusy()) {
+                ESP_SPI_QueueReportModeSync(full);
+                ESP_Log("[server-cmd] defer ESP32 report mode sync until full idle\r\n");
+            } else {
+                ESP_SPI_FullResetUploadRuntimeState();
+                if (ESP32_SPI_StartReport(full, 3000U)) {
+                    ESP_Log("[æå¡å¨å½ä»¤] ESP32åæ­¥æåï¼ä¸æ¥æ¨¡å¼=%s\r\n",
+                            mode_text);
+                } else {
+                    ESP_Log("[æå¡å¨å½ä»¤] ESP32åæ­¥å¤±è´¥ï¼ä¸æ¥æ¨¡å¼=%s\r\n",
+                            mode_text);
+                }
+            }
+#else
             if (ESP32_SPI_StartReport(full, 3000U)) {
-                ESP_Log("[服务器命令] ESP32同步成功：上报模式=%s\r\n",
+                ESP_Log("[æå¡å¨å½ä»¤] ESP32åæ­¥æåï¼ä¸æ¥æ¨¡å¼=%s\r\n",
                         mode_text);
             } else {
-                ESP_Log("[服务器命令] ESP32同步失败：上报模式=%s\r\n",
+                ESP_Log("[æå¡å¨å½ä»¤] ESP32åæ­¥å¤±è´¥ï¼ä¸æ¥æ¨¡å¼=%s\r\n",
                         mode_text);
             }
+#endif
         }
 #endif
         ESP_Log("[服务器命令] 运行态已应用：上报模式=%s\r\n", mode_text);
@@ -2766,6 +2917,7 @@ void ESP_Post_Summary(void)
         return;
 
 #if (EW_USE_ESP32_SPI_UI && ESP32_SPI_ENABLE_FULL_UPLOAD)
+    ESP_SPI_ServiceDeferredSync();
     /* Full-upload stress mode must not be mixed with summary packets.
        This keeps the 10-minute test as continuous full frames only. */
     if (ESP_ServerReportFull() || g_spi_full_continuous) {
@@ -3035,6 +3187,7 @@ void ESP_Post_Data(void)
 
 #if (EW_USE_ESP32_SPI_UI)
 #if (ESP32_SPI_ENABLE_FULL_UPLOAD)
+    ESP_SPI_ServiceDeferredSync();
     {
     static uint32_t last_full_send_time = 0;
     static uint32_t full_try = 0, full_ok = 0, full_err = 0;
@@ -3169,7 +3322,10 @@ void ESP_Post_Data(void)
             break;
         }
         packets_sent++;
-        ESP_RtosYield();
+        if (ESP32_SPI_FULL_YIELD_EVERY > 0U &&
+            (packets_sent % ESP32_SPI_FULL_YIELD_EVERY) == 0U) {
+            ESP_RtosYield();
+        }
     }
 
     if (!ok) {
@@ -4460,6 +4616,12 @@ static osMessageQueueId_t g_esp_ui_q = NULL;
 static volatile uint8_t g_ui_wifi_ok = 0;
 static volatile uint8_t g_ui_tcp_ok = 0;
 static volatile uint8_t g_ui_reg_ok = 0;
+static volatile uint8_t g_ui_auto_recover_pending = 0U;
+static volatile uint8_t g_ui_auto_recover_want_report = 0U;
+static uint32_t g_ui_auto_recover_next_poll_tick = 0U;
+static uint32_t g_ui_auto_recover_next_attempt_tick = 0U;
+static uint32_t g_ui_last_session_epoch = 0U;
+static uint8_t g_ui_last_session_valid = 0U;
 
 void ESP_UI_SetHooks(esp_ui_log_hook_t log_hook, void *log_ctx,
                      esp_ui_step_hook_t step_hook, void *step_ctx)
@@ -4564,6 +4726,242 @@ void ESP_UI_InvalidateReg(void)
 }
 
 /* 从 ESP_Init 抽取的“进入可用 AT 模式”最小流程 */
+static void ESP_UI_SyncLinkFlagsFromStatus(const esp32_spi_status_t *st)
+{
+#if (EW_USE_ESP32_SPI_UI)
+    if (st == NULL) {
+        return;
+    }
+    g_ui_wifi_ok = st->wifi_connected ? 1U : 0U;
+    g_ui_tcp_ok = (st->cloud_connected || st->registered_with_cloud || st->reporting_enabled) ? 1U : 0U;
+    g_ui_reg_ok = (st->registered_with_cloud || st->reporting_enabled) ? 1U : 0U;
+    g_esp_ready = (st->registered_with_cloud || st->reporting_enabled) ? 1U : 0U;
+#else
+    (void)st;
+#endif
+}
+
+static void ESP_UI_ScheduleAutoRecover(const char *reason, uint8_t want_report)
+{
+#if (EW_USE_ESP32_SPI_UI)
+    uint32_t now = HAL_GetTick();
+    uint8_t should_log = (g_ui_auto_recover_pending == 0U);
+
+    g_ui_auto_recover_pending = 1U;
+    if (want_report != 0U) {
+        g_ui_auto_recover_want_report = 1U;
+    }
+    if (g_ui_auto_recover_next_attempt_tick == 0U ||
+        (int32_t)(g_ui_auto_recover_next_attempt_tick - now) > 1000) {
+        g_ui_auto_recover_next_attempt_tick = now + 500U;
+    }
+    if (should_log) {
+        ESP_Log("[ESP32SPI] scheduled auto recovery: %s (want_report=%u)\r\n",
+                (reason != NULL) ? reason : "unspecified",
+                (unsigned int)((want_report != 0U) ? 1U : g_ui_auto_recover_want_report));
+    }
+#else
+    (void)reason;
+    (void)want_report;
+#endif
+}
+
+static bool ESP_UI_EnsureReportStarted(uint8_t mode, const char *reason_tag)
+{
+#if (EW_USE_ESP32_SPI_UI)
+    esp32_spi_status_t st;
+    uint8_t target_mode = (mode != 0U) ? 1U : 0U;
+
+    if (!g_esp_ready) {
+        ESP_Log("[ESP32SPI] start report denied: link not ready.\r\n");
+        return false;
+    }
+
+#if (ESP32_SPI_ENABLE_FULL_UPLOAD)
+    ESP_SPI_FullResetUploadRuntimeState();
+#endif
+
+    if (ESP32_SPI_QueryStatus(&st, 500U)) {
+        ESP_UI_SyncLinkFlagsFromStatus(&st);
+        if (st.reporting_enabled && st.report_mode == target_mode) {
+            g_report_enabled = 1U;
+            (void)ESP_AutoReconnect_SetLastReporting(true);
+            return true;
+        }
+    }
+
+    if (!ESP32_SPI_StartReport(target_mode, 3000U)) {
+        if (ESP32_SPI_QueryStatus(&st, 1000U)) {
+            ESP_UI_SyncLinkFlagsFromStatus(&st);
+            if (st.reporting_enabled && st.report_mode == target_mode) {
+                g_report_enabled = 1U;
+                (void)ESP_AutoReconnect_SetLastReporting(true);
+                return true;
+            }
+        }
+        ESP_UI_SPI_LogStatus((reason_tag != NULL) ? reason_tag : "start report failed");
+        return false;
+    }
+
+    g_report_enabled = 1U;
+    (void)ESP_AutoReconnect_SetLastReporting(true);
+    return true;
+#else
+    (void)mode;
+    (void)reason_tag;
+    return false;
+#endif
+}
+
+static void ESP_UI_PollAutoRecover(void)
+{
+#if (EW_USE_ESP32_SPI_UI)
+    uint32_t now = HAL_GetTick();
+    bool auto_reconnect_en = false;
+    bool last_reporting = false;
+    uint8_t want_report = 0U;
+    esp32_spi_status_t st;
+    bool st_ok;
+    bool need_recover = false;
+
+    if ((int32_t)(now - g_ui_auto_recover_next_poll_tick) < 0) {
+        return;
+    }
+    g_ui_auto_recover_next_poll_tick = now + ESP32_SPI_AUTO_RECOVER_POLL_MS;
+
+    (void)ESP_AutoReconnect_Read(&auto_reconnect_en, &last_reporting);
+    if (g_report_enabled != 0U || g_ui_auto_recover_want_report != 0U ||
+        (auto_reconnect_en && last_reporting)) {
+        want_report = 1U;
+    }
+
+#if (ESP32_SPI_ENABLE_FULL_UPLOAD)
+    if (ESP_SPI_FullControlBusy()) {
+        return;
+    }
+#endif
+
+    st_ok = ESP32_SPI_QueryStatus(&st, 500U);
+    if (st_ok) {
+        ESP_UI_SyncLinkFlagsFromStatus(&st);
+        if (st.session_epoch != 0U) {
+            if (g_ui_last_session_valid != 0U &&
+                st.session_epoch != g_ui_last_session_epoch) {
+                ESP_Log("[ESP32SPI] detected ESP32 session change old=%lu new=%lu\r\n",
+                        (unsigned long)g_ui_last_session_epoch,
+                        (unsigned long)st.session_epoch);
+                need_recover = true;
+            }
+            g_ui_last_session_epoch = st.session_epoch;
+            g_ui_last_session_valid = 1U;
+        }
+        if (want_report != 0U) {
+            if (!st.wifi_connected ||
+                !st.registered_with_cloud ||
+                !st.reporting_enabled) {
+                need_recover = true;
+            }
+        }
+    } else if (want_report != 0U) {
+        need_recover = true;
+        g_ui_wifi_ok = 0U;
+        g_ui_tcp_ok = 0U;
+        g_ui_reg_ok = 0U;
+        g_esp_ready = 0U;
+    }
+
+    if (need_recover) {
+        ESP_UI_ScheduleAutoRecover(st_ok ? "status degraded" : "status query failed",
+                                   want_report);
+    }
+
+    if (g_ui_auto_recover_pending == 0U) {
+        return;
+    }
+    if ((int32_t)(now - g_ui_auto_recover_next_attempt_tick) < 0) {
+        return;
+    }
+
+    g_ui_auto_recover_next_attempt_tick = now + ESP32_SPI_AUTO_RECOVER_RETRY_MS;
+    want_report = (g_ui_auto_recover_want_report != 0U || g_report_enabled != 0U ||
+                   (auto_reconnect_en && last_reporting)) ? 1U : 0U;
+
+    ESP_Log("[ESP32SPI] auto recovery start want_report=%u auto=%u last=%u\r\n",
+            (unsigned int)want_report,
+            (unsigned int)(auto_reconnect_en ? 1U : 0U),
+            (unsigned int)(last_reporting ? 1U : 0U));
+
+    if (!ESP_Config_LoadRuntimeFromSD()) {
+        ESP_Log("[ESP32SPI] auto recovery aborted: SD runtime config invalid.\r\n");
+        g_ui_auto_recover_next_attempt_tick = now + ESP32_SPI_AUTO_RECOVER_FAIL_BACKOFF_MS;
+        return;
+    }
+
+    if (!st_ok) {
+        memset(&st, 0, sizeof(st));
+    }
+    if (!st_ok || !st.wifi_connected) {
+        if (!ESP_UI_DoWiFi()) {
+            ESP_Log("[ESP32SPI] auto recovery failed at WIFI step.\r\n");
+            g_ui_auto_recover_next_attempt_tick = now + ESP32_SPI_AUTO_RECOVER_FAIL_BACKOFF_MS;
+            return;
+        }
+        st_ok = ESP32_SPI_QueryStatus(&st, 1000U);
+        if (st_ok) {
+            ESP_UI_SyncLinkFlagsFromStatus(&st);
+        }
+    }
+    if (!st_ok || (!st.cloud_connected && !st.registered_with_cloud && !st.reporting_enabled)) {
+        if (!ESP_UI_DoTCP()) {
+            ESP_Log("[ESP32SPI] auto recovery failed at TCP/cloud step.\r\n");
+            g_ui_auto_recover_next_attempt_tick = now + ESP32_SPI_AUTO_RECOVER_FAIL_BACKOFF_MS;
+            return;
+        }
+        st_ok = ESP32_SPI_QueryStatus(&st, 1000U);
+        if (st_ok) {
+            ESP_UI_SyncLinkFlagsFromStatus(&st);
+        }
+    }
+    if (!st_ok || !st.registered_with_cloud) {
+        if (!ESP_UI_DoRegister()) {
+            ESP_Log("[ESP32SPI] auto recovery failed at REG step.\r\n");
+            g_ui_auto_recover_next_attempt_tick = now + ESP32_SPI_AUTO_RECOVER_FAIL_BACKOFF_MS;
+            return;
+        }
+        st_ok = ESP32_SPI_QueryStatus(&st, 1000U);
+        if (st_ok) {
+            ESP_UI_SyncLinkFlagsFromStatus(&st);
+        }
+    }
+    if (want_report != 0U &&
+        (!st_ok || !st.reporting_enabled || st.report_mode != (ESP_ServerReportFull() ? 1U : 0U))) {
+        if (!ESP_UI_EnsureReportStarted(ESP_ServerReportFull() ? 1U : 0U,
+                                        "auto recovery start report failed")) {
+            ESP_Log("[ESP32SPI] auto recovery failed at report start step.\r\n");
+            g_ui_auto_recover_next_attempt_tick = now + ESP32_SPI_AUTO_RECOVER_FAIL_BACKOFF_MS;
+            return;
+        }
+        st_ok = ESP32_SPI_QueryStatus(&st, 1000U);
+        if (st_ok) {
+            ESP_UI_SyncLinkFlagsFromStatus(&st);
+        }
+    }
+
+    g_ui_auto_recover_pending = 0U;
+    g_ui_auto_recover_want_report = 0U;
+    if (st_ok && st.session_epoch != 0U) {
+        g_ui_last_session_epoch = st.session_epoch;
+        g_ui_last_session_valid = 1U;
+    }
+    ESP_Log("[ESP32SPI] auto recovery complete: wifi=%u cloud=%u reg=%u report=%u mode=%u\r\n",
+            st_ok ? (unsigned int)st.wifi_connected : 0U,
+            st_ok ? (unsigned int)st.cloud_connected : 0U,
+            st_ok ? (unsigned int)st.registered_with_cloud : 0U,
+            st_ok ? (unsigned int)st.reporting_enabled : 0U,
+            st_ok ? (unsigned int)st.report_mode : 0U);
+#endif
+}
+
 static bool ESP_UI_PrepareAtMode(void)
 {
     /* 进 AT 前清场 */
@@ -5109,16 +5507,10 @@ static bool ESP_UI_ToggleReport(void)
             ESP_Log("[UI] Report denied: link not ready (need REG first)\r\n");
             return false;
         }
-#if (ESP32_SPI_ENABLE_FULL_UPLOAD)
-        ESP_SPI_FullResetUploadRuntimeState();
-#endif
-        if (!ESP32_SPI_StartReport(mode, 3000U)) {
-            ESP_UI_SPI_LogStatus("start report failed");
+        if (!ESP_UI_EnsureReportStarted(mode, "start report failed")) {
             return false;
         }
-        g_report_enabled = 1U;
         ESP_Log("[UI] Started ESP32 SPI data upload loop.\r\n");
-        (void)ESP_AutoReconnect_SetLastReporting(true);
         return true;
     }
     else
@@ -5190,6 +5582,11 @@ static void ESP_UI_AutoConnect(void)
             return;
         }
     }
+    else if (!ESP_UI_EnsureReportStarted(ESP_ServerReportFull() ? 1U : 0U,
+                                         "auto connect start report failed")) {
+        esp_ui_step_done(ESP_UI_CMD_REPORT_TOGGLE, false);
+        return;
+    }
     esp_ui_step_done(ESP_UI_CMD_REPORT_TOGGLE, true);
 }
 
@@ -5201,7 +5598,10 @@ void ESP_UI_TaskPoll(void)
     uint8_t c = 0xFF;
     /* 保持 FIFO：不要丢弃前置 WiFi/TCP/REG 等控制命令。按钮侧已做禁用/节流。 */
     if (osMessageQueueGet(g_esp_ui_q, &c, NULL, 0U) != osOK)
+    {
+        ESP_UI_PollAutoRecover();
         return;
+    }
 
     {
         esp_ui_cmd_t cmd = (esp_ui_cmd_t)c;
@@ -5250,5 +5650,9 @@ void ESP_UI_TaskPoll(void)
         default:
             break;
         }
+    }
+
+    if (osMessageQueueGetCount(g_esp_ui_q) == 0U) {
+        ESP_UI_PollAutoRecover();
     }
 }

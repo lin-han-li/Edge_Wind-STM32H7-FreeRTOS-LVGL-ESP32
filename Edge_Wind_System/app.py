@@ -285,7 +285,7 @@ db_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="DB-Worker")
 # ==================== 注册蓝图 ====================
 from edgewind.routes.auth import auth_bp
 from edgewind.routes.pages import pages_bp
-from edgewind.routes.api import api_bp, init_api_blueprint, register_device, upload_data, node_heartbeat, delete_node_history
+from edgewind.routes.api import api_bp, init_api_blueprint, register_device, upload_data, node_heartbeat, node_full_frame_bin, delete_node_history
 
 # 初始化API蓝图
 init_api_blueprint(
@@ -311,6 +311,7 @@ if csrf is not None:
     csrf.exempt(register_device)
     csrf.exempt(upload_data)
     csrf.exempt(node_heartbeat)
+    csrf.exempt(node_full_frame_bin)
     csrf.exempt(delete_node_history)  # 历史数据删除API
     app.logger.info("CSRF：已豁免设备上报接口和内部管理API")
 

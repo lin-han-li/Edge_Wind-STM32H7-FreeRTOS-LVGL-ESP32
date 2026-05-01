@@ -6,6 +6,7 @@ from flask import Blueprint, request, jsonify
 from flask_login import login_required
 from datetime import datetime, timedelta
 from edgewind.models import db, Device, DataPoint, WorkOrder, SystemConfig, FaultSnapshot, HistoryData, NodePendingCommand
+from edgewind.full_frame_binary import FullFrameBinaryError, decode_full_frame_binary
 from edgewind.knowledge_graph import FAULT_KNOWLEDGE_GRAPH, FAULT_CODE_MAP, generate_ai_report, get_fault_knowledge_graph
 from edgewind.utils import (
     save_to_buffer, get_latest_normal_data, get_latest_fault_data,
@@ -23,6 +24,10 @@ from io import BytesIO
 import base64
 from urllib.parse import quote
 import re
+try:
+    import orjson  # type: ignore[import-not-found]
+except Exception:
+    orjson = None
 
 from flask import send_file
 from edgewind.time_utils import fmt_beijing, iso_beijing, to_beijing
@@ -86,9 +91,12 @@ STATUS_EMIT_HZ = max(1.0, _env_float("EDGEWIND_STATUS_EMIT_HZ", 5))
 # 每个节点的监控推送频率（Hz）：影响 monitor_update（波形/频谱）
 MONITOR_EMIT_HZ = max(1.0, _env_float("EDGEWIND_MONITOR_EMIT_HZ", 20))
 
-# 波形/频谱降采样点数（0 表示不降采样）
-MAX_WAVEFORM_POINTS = max(0, _env_int("EDGEWIND_WAVEFORM_POINTS", 0))
-MAX_SPECTRUM_POINTS = max(0, _env_int("EDGEWIND_SPECTRUM_POINTS", 0))
+# 波形/频谱监控展示点数（默认显示全量：4096 waveform + 2048 FFT）
+# 仍保留环境变量覆盖能力，便于低性能主机手动降回轻量显示。
+MAX_WAVEFORM_POINTS = max(0, _env_int("EDGEWIND_WAVEFORM_POINTS", 4096))
+MAX_SPECTRUM_POINTS = max(0, _env_int("EDGEWIND_SPECTRUM_POINTS", 2048))
+MONITOR_WAVEFORM_POINTS = MAX_WAVEFORM_POINTS if MAX_WAVEFORM_POINTS > 0 else 4096
+MONITOR_SPECTRUM_POINTS = MAX_SPECTRUM_POINTS if MAX_SPECTRUM_POINTS > 0 else 2048
 
 # active_nodes 是否仅保存“轻量数据”（不保留 1024 点全量波形）
 LIGHT_ACTIVE_NODES = str(os.environ.get("EDGEWIND_LIGHT_ACTIVE_NODES", "true")).strip().lower() == "true"
@@ -112,20 +120,39 @@ HB_PERF_LOG_SEC = max(1.0, _env_float("EDGEWIND_HEARTBEAT_PERF_LOG_SEC", 5))
 
 def _get_json_payload() -> dict:
     """
-    更稳健的 JSON 解析：
-    - 硬件端若漏发 Content-Type: application/json，Flask 的 request.get_json() 可能返回 None。
-    - 这里优先 silent=True，然后回退到解析原始 body（UTF-8）。
+    更稳健且更轻量的 JSON 解析：
+    - 优先直接读取原始 body(bytes) 并解析，避免 request.get_json() + as_text=True 的双重开销。
+    - 若安装了 orjson，则优先走更快的 bytes 解析路径。
+    - 硬件端若漏发 Content-Type: application/json 也仍能正常解析。
     """
-    data = request.get_json(silent=True)
-    if isinstance(data, dict):
-        return data
-    # 兼容：如果 body 是 JSON 字符串但 header 不对，尝试手动解析
+    raw = b""
     try:
-        raw = request.get_data(as_text=True)  # type: ignore[arg-type]
-        if raw:
+        raw = request.get_data(cache=True) or b""
+    except Exception:
+        raw = b""
+    if raw:
+        if orjson is not None:
+            try:
+                obj = orjson.loads(raw)
+                if isinstance(obj, dict):
+                    return obj
+            except Exception:
+                pass
+        try:
             obj = json.loads(raw)
             if isinstance(obj, dict):
                 return obj
+        except Exception:
+            try:
+                obj = json.loads(raw.decode('utf-8', errors='ignore'))
+                if isinstance(obj, dict):
+                    return obj
+            except Exception:
+                pass
+    try:
+        data = request.get_json(silent=True, cache=True)
+        if isinstance(data, dict):
+            return data
     except Exception:
         pass
     return {}
@@ -923,10 +950,13 @@ def register_device():
                     }, namespace='/')
             except Exception:
                 pass
-            return jsonify({
+            response_payload = {
                 'message': 'Device updated',
-                'device_id': device_id
-            }), 200
+                'device_id': device_id,
+                'report_mode': _get_report_mode(device_id),
+            }
+            _append_pending_config_commands(device_id, response_payload, mark_delivered=True)
+            return jsonify(response_payload), 200
         else:
             # 创建新设备
             device = Device(
@@ -977,10 +1007,13 @@ def register_device():
                     }, namespace='/')
             except Exception:
                 pass
-            return jsonify({
+            response_payload = {
                 'message': 'Device registered successfully',
-                'device_id': device_id
-            }), 201
+                'device_id': device_id,
+                'report_mode': _get_report_mode(device_id),
+            }
+            _append_pending_config_commands(device_id, response_payload, mark_delivered=True)
+            return jsonify(response_payload), 201
             
     except Exception as e:
         db.session.rollback()
@@ -1165,9 +1198,446 @@ def upload_data():
 
 # ==================== 节点心跳API ====================
 
+def _process_node_report(data: dict,
+                         *,
+                         request_tag: str,
+                         decode_label: str,
+                         decode_ms: float,
+                         content_length: int | None,
+                         response_extra: dict | None = None,
+                         perf_extra: dict | None = None):
+    """????????????? JSON heartbeat ? binary full frame?"""
+    if not isinstance(data, dict):
+        data = {}
+
+    t_parse_start = time.perf_counter()
+    node_id = _normalize_node_id(data.get('node_id') or data.get('device_id'))
+    fault_code = (data.get('fault_code') or 'E00').strip() or 'E00'
+
+    if not node_id:
+        return jsonify({'error': 'Missing node_id'}), 400
+    if len(node_id) > 100:
+        return jsonify({'error': 'node_id too long (max 100)'}), 400
+
+    current_timestamp = time.time()
+    last = _last_hb_log_ts.get(f'{request_tag}:{node_id}', 0)
+    if current_timestamp - last >= 5:
+        _last_hb_log_ts[f'{request_tag}:{node_id}'] = current_timestamp
+        logger.info(f'[{request_tag}] node_id={node_id} fault={fault_code} ch={len(data.get("channels") or [])}')
+
+    if LIGHT_ACTIVE_NODES:
+        data_light = dict(data)
+        if 'channels' in data_light:
+            data_light['channels'] = _lighten_channels(data_light.get('channels'))
+        data_light['report_mode'] = _get_report_mode(node_id)
+        active_nodes[node_id] = {
+            'timestamp': current_timestamp,
+            'status': data.get('status', 'offline'),
+            'fault_code': fault_code,
+            'data': data_light,
+        }
+    else:
+        data['report_mode'] = _get_report_mode(node_id)
+        active_nodes[node_id] = {
+            'timestamp': current_timestamp,
+            'status': data.get('status', 'offline'),
+            'fault_code': fault_code,
+            'data': data,
+        }
+
+    reported_downsample_step = _ack_downsample_command(node_id, data)
+    if reported_downsample_step is None:
+        pending_step = node_downsample_commands.get(node_id)
+        if pending_step is not None:
+            _sync_active_node_downsample_step(node_id, int(pending_step))
+    _ack_config_commands_from_payload(node_id, data)
+
+    processed_data = {
+        'voltage': 0, 'voltage_neg': 0, 'current': 0, 'leakage': 0,
+        'voltage_waveform': [], 'voltage_spectrum': [],
+        'voltage_neg_waveform': [], 'voltage_neg_spectrum': [],
+        'current_waveform': [], 'current_spectrum': [],
+        'leakage_waveform': [], 'leakage_spectrum': [],
+        'channels': [],
+    }
+
+    raw_channels = data.get('channels') or []
+    if not isinstance(raw_channels, list):
+        raw_channels = []
+    bad_wave_type = 0
+    bad_spec_type = 0
+    bad_id_type = 0
+    bad_val = 0
+    raw_series_lens = []
+    processed_channels = []
+    for ch in raw_channels:
+        if not isinstance(ch, dict):
+            continue
+        ch_id = ch.get('id')
+        if ch_id is None:
+            ch_id = ch.get('channel_id')
+        if isinstance(ch_id, str):
+            try:
+                ch_id = int(ch_id)
+            except Exception:
+                pass
+        label = (ch.get('label') or '').strip()
+        val = ch.get('value', ch.get('current_value', 0))
+        wave = ch.get('waveform', [])
+        spec = ch.get('fft_spectrum', ch.get('fft', []))
+
+        if (ch_id is not None) and (not isinstance(ch_id, int)):
+            bad_id_type += 1
+        if not isinstance(wave, list):
+            bad_wave_type += 1
+            wave = []
+        if not isinstance(spec, list):
+            bad_spec_type += 1
+            spec = []
+
+        raw_wave_count = ch.get('waveform_count_raw', len(wave))
+        raw_fft_count = ch.get('fft_count_raw', len(spec))
+        try:
+            raw_wave_count = int(raw_wave_count)
+        except Exception:
+            raw_wave_count = len(wave)
+        try:
+            raw_fft_count = int(raw_fft_count)
+        except Exception:
+            raw_fft_count = len(spec)
+        raw_series_lens.append((ch_id, raw_wave_count, raw_fft_count))
+
+        wave = _downsample_list(wave, MONITOR_WAVEFORM_POINTS)
+        spec = _downsample_list(spec, MONITOR_SPECTRUM_POINTS)
+
+        try:
+            val_float = float(val) if val is not None else 0.0
+        except Exception:
+            val_float = 0.0
+            bad_val += 1
+
+        processed_channels.append({
+            'id': ch_id,
+            'channel_id': ch_id,
+            'label': label,
+            'name': ch.get('name', label),
+            'unit': ch.get('unit', ''),
+            'type': ch.get('type', ''),
+            'range': ch.get('range', ''),
+            'color': ch.get('color', ''),
+            'value': val_float,
+            'currentValue': val_float,
+            'current_value': val_float,
+            'waveform_count_raw': raw_wave_count,
+            'fft_count_raw': raw_fft_count,
+            'waveform': wave,
+            'fft_spectrum': spec,
+        })
+
+        mapped = False
+        if '??' in label:
+            if ('-' in label) or ('?' in label):
+                processed_data['voltage_neg'] = val_float
+                processed_data['voltage_neg_waveform'] = wave
+                processed_data['voltage_neg_spectrum'] = spec
+            else:
+                processed_data['voltage'] = val_float
+                processed_data['voltage_waveform'] = wave
+                processed_data['voltage_spectrum'] = spec
+            mapped = True
+        elif '?' in label:
+            processed_data['leakage'] = val_float
+            processed_data['leakage_waveform'] = wave
+            processed_data['leakage_spectrum'] = spec
+            mapped = True
+        elif ('??' in label or '??' in label) and '?' not in label:
+            processed_data['current'] = val_float
+            processed_data['current_waveform'] = wave
+            processed_data['current_spectrum'] = spec
+            mapped = True
+
+        if (not mapped) and isinstance(ch_id, int):
+            if ch_id == 0:
+                processed_data['voltage'] = val_float
+                processed_data['voltage_waveform'] = wave
+                processed_data['voltage_spectrum'] = spec
+            elif ch_id == 1:
+                processed_data['voltage_neg'] = val_float
+                processed_data['voltage_neg_waveform'] = wave
+                processed_data['voltage_neg_spectrum'] = spec
+            elif ch_id == 2:
+                processed_data['current'] = val_float
+                processed_data['current_waveform'] = wave
+                processed_data['current_spectrum'] = spec
+            elif ch_id == 3:
+                processed_data['leakage'] = val_float
+                processed_data['leakage_waveform'] = wave
+                processed_data['leakage_spectrum'] = spec
+
+    processed_data['channels'] = processed_channels
+    processed_data['waveform_points_raw_max'] = max((wave_len for _, wave_len, _ in raw_series_lens), default=0)
+    processed_data['spectrum_points_raw_max'] = max((fft_len for _, _, fft_len in raw_series_lens), default=0)
+    processed_data['waveform_points_emit_max'] = max((len(ch.get('waveform') or []) for ch in processed_channels), default=0)
+    processed_data['spectrum_points_emit_max'] = max((len(ch.get('fft_spectrum') or []) for ch in processed_channels), default=0)
+
+    actual_upload_points = _actual_upload_points_from_raw_series(raw_series_lens)
+    reported_upload_points = _ack_upload_points_command(
+        node_id,
+        data,
+        actual_points=actual_upload_points,
+        allow_payload_fallback=(len(raw_channels) == 0),
+    )
+    if reported_upload_points is not None:
+        data['upload_points_actual'] = int(reported_upload_points)
+        top_points = _parse_upload_points(data.get('upload_points'))
+        if top_points is not None and top_points != reported_upload_points:
+            data['upload_points_top'] = top_points
+        data['upload_points'] = int(reported_upload_points)
+    else:
+        pending_points = node_upload_points_commands.get(node_id)
+        if pending_points is not None:
+            _sync_active_node_upload_points(node_id, int(pending_points))
+
+    t_parse = time.perf_counter()
+
+    prev = _last_processed_cache.get(node_id)
+    series_keys = (
+        'voltage_waveform', 'voltage_spectrum',
+        'voltage_neg_waveform', 'voltage_neg_spectrum',
+        'current_waveform', 'current_spectrum',
+        'leakage_waveform', 'leakage_spectrum',
+    )
+    has_any_series = any(isinstance(processed_data.get(k), list) and len(processed_data.get(k)) > 0 for k in series_keys)
+    if has_any_series:
+        last_series = _last_series_log_ts.get(f'{request_tag}:{node_id}', 0)
+        if current_timestamp - last_series >= 2:
+            _last_series_log_ts[f'{request_tag}:{node_id}'] = current_timestamp
+            series_lens = [
+                (
+                    ch.get('id'),
+                    len(ch.get('waveform') or []),
+                    len(ch.get('fft_spectrum') or []),
+                )
+                for ch in processed_channels
+                if isinstance(ch, dict)
+            ]
+            logger.info('[%s][series] node_id=%s mode=%s step=%s upload_points=%s ch=%d raw_lens=%s emit_lens=%s',
+                        request_tag,
+                        node_id,
+                        data.get('report_mode'),
+                        data.get('downsample_step'),
+                        data.get('upload_points'),
+                        len(processed_channels),
+                        raw_series_lens,
+                        series_lens)
+    metrics_all_zero = (
+        float(processed_data.get('voltage') or 0) == 0.0 and
+        float(processed_data.get('voltage_neg') or 0) == 0.0 and
+        float(processed_data.get('current') or 0) == 0.0 and
+        float(processed_data.get('leakage') or 0) == 0.0
+    )
+    is_bad_frame = (len(raw_channels) == 0) or ((not has_any_series) and metrics_all_zero) or (bad_wave_type > 0) or (bad_spec_type > 0) or (bad_id_type > 0)
+
+    if isinstance(prev, dict) and is_bad_frame:
+        processed_data = prev
+        last_bad = _last_bad_frame_log_ts.get(f'{request_tag}:{node_id}', 0)
+        if current_timestamp - last_bad >= 5:
+            _last_bad_frame_log_ts[f'{request_tag}:{node_id}'] = current_timestamp
+            logger.warning(
+                '[%s][bad-frame] node_id=%s content_length=%s ch=%d bad_id=%d bad_wave=%d bad_spec=%d bad_val=%d',
+                request_tag,
+                node_id,
+                content_length,
+                len(raw_channels),
+                bad_id_type,
+                bad_wave_type,
+                bad_spec_type,
+                bad_val,
+            )
+    else:
+        if isinstance(prev, dict) and not has_any_series:
+            for key in series_keys:
+                prev_series = prev.get(key)
+                if isinstance(prev_series, list) and prev_series:
+                    processed_data[key] = prev_series
+
+            prev_channels = prev.get('channels') or []
+            if isinstance(prev_channels, list) and processed_channels:
+                prev_by_id = {
+                    ch.get('id'): ch for ch in prev_channels
+                    if isinstance(ch, dict) and ch.get('id') is not None
+                }
+                for ch in processed_channels:
+                    if not isinstance(ch, dict):
+                        continue
+                    prev_ch = prev_by_id.get(ch.get('id'))
+                    if not isinstance(prev_ch, dict):
+                        continue
+                    if not ch.get('waveform') and isinstance(prev_ch.get('waveform'), list):
+                        ch['waveform'] = prev_ch['waveform']
+                    if not ch.get('fft_spectrum') and isinstance(prev_ch.get('fft_spectrum'), list):
+                        ch['fft_spectrum'] = prev_ch['fft_spectrum']
+                processed_data['channels'] = processed_channels
+
+        _last_processed_cache[node_id] = processed_data
+        _submit_history_data(node_id, processed_data)
+
+    if fault_code == 'E00':
+        save_to_buffer(node_id, data, is_fault=False)
+    else:
+        save_to_buffer(node_id, data, is_fault=True)
+
+    previous_fault = node_fault_states.get(node_id, 'E00')
+    current_fault = fault_code
+    db_op_submitted = False
+
+    if previous_fault == 'E00' and current_fault != 'E00':
+        logger.info(f'?? ???????: {node_id} -> {current_fault}')
+
+        if node_id not in node_snapshot_saved or node_snapshot_saved[node_id].get('fault_code') != current_fault:
+            before_data = get_latest_normal_data(node_id)
+            if before_data:
+                db_executor.submit(save_fault_snapshot, db, app_instance, node_id, current_fault, 'before', before_data['data'])
+
+            db_executor.submit(save_fault_snapshot, db, app_instance, node_id, current_fault, 'after', data)
+
+            node_snapshot_saved[node_id] = {
+                'fault_code': current_fault,
+                'saved_types': ['before', 'after']
+            }
+
+        if db_executor:
+            db_executor.submit(_handle_fault_database_operation, node_id, current_fault, data)
+            db_op_submitted = True
+
+    elif previous_fault != 'E00' and current_fault == 'E00':
+        logger.info(f'?? ???????: {node_id} {previous_fault} -> E00')
+
+        fault_data = get_latest_fault_data(node_id)
+        if fault_data:
+            db_executor.submit(save_fault_snapshot, db, app_instance, node_id, previous_fault, 'before_recovery', fault_data['data'])
+
+        db_executor.submit(save_fault_snapshot, db, app_instance, node_id, previous_fault, 'after_recovery', data)
+
+        if node_id in node_snapshot_saved:
+            del node_snapshot_saved[node_id]
+
+    node_fault_states[node_id] = current_fault
+
+    status_payload = None
+    monitor_payload = None
+    if _should_emit(node_id, current_timestamp, STATUS_EMIT_HZ, _last_emit_status_ts):
+        status_payload = {
+            'node_id': node_id,
+            'status': data.get('status', 'online'),
+            'fault_code': fault_code,
+            'timestamp': current_timestamp,
+            'report_mode': _get_report_mode(node_id),
+            'downsample_step': (active_nodes.get(node_id, {}).get('data', {}) or {}).get('downsample_step'),
+            'upload_points': (active_nodes.get(node_id, {}).get('data', {}) or {}).get('upload_points'),
+            'heartbeat_ms': (active_nodes.get(node_id, {}).get('data', {}) or {}).get('heartbeat_ms'),
+            'min_interval_ms': (active_nodes.get(node_id, {}).get('data', {}) or {}).get('min_interval_ms'),
+            'http_timeout_ms': (active_nodes.get(node_id, {}).get('data', {}) or {}).get('http_timeout_ms'),
+            'chunk_kb': (active_nodes.get(node_id, {}).get('data', {}) or {}).get('chunk_kb'),
+            'chunk_delay_ms': (active_nodes.get(node_id, {}).get('data', {}) or {}).get('chunk_delay_ms'),
+            'metrics': {
+                'voltage': processed_data.get('voltage', 0),
+                'voltage_neg': processed_data.get('voltage_neg', 0),
+                'current': processed_data.get('current', 0),
+                'leakage': processed_data.get('leakage', 0),
+            }
+        }
+
+    if _should_emit(node_id, current_timestamp, MONITOR_EMIT_HZ, _last_emit_monitor_ts):
+        monitor_payload = {
+            'node_id': node_id,
+            'data': processed_data,
+            'fault_code': fault_code,
+        }
+    if socketio_instance and (status_payload is not None or monitor_payload is not None):
+        try:
+            socketio_instance.start_background_task(
+                _emit_socket_updates_async,
+                status_payload,
+                monitor_payload,
+                f'node_{node_id}',
+            )
+        except Exception as exc:
+            logger.warning(f'[SocketIO] ??????????: {exc}')
+
+    t_emit = time.perf_counter()
+
+    if db_executor and (not db_op_submitted) and previous_fault == 'E00' and current_fault != 'E00':
+        db_executor.submit(_handle_fault_database_operation, node_id, current_fault, data)
+
+    response_payload = {
+        'success': True,
+        'node_id': node_id,
+        'timestamp': current_timestamp,
+    }
+    if response_extra:
+        response_payload.update(response_extra)
+
+    cmd = node_commands.get(node_id)
+    if cmd:
+        response_payload['command'] = cmd
+        if cmd == 'reset' and fault_code == 'E00':
+            node_commands.pop(node_id, None)
+    pending_step = node_downsample_commands.get(node_id)
+    if pending_step is not None:
+        response_payload['downsample_step'] = int(pending_step)
+    pending_points = node_upload_points_commands.get(node_id)
+    if pending_points is not None:
+        response_payload['upload_points'] = int(pending_points)
+    _append_pending_config_commands(node_id, response_payload, mark_delivered=True)
+
+    last_db = _last_db_heartbeat_ts.get(node_id, 0)
+    if current_timestamp - last_db >= DEVICE_DB_UPDATE_INTERVAL_SEC:
+        _last_db_heartbeat_ts[node_id] = current_timestamp
+        _submit_update_device_heartbeat(node_id, data, fault_code, current_timestamp)
+
+    parse_ms = (t_parse - t_parse_start) * 1000.0
+    emit_ms = (t_emit - t_parse) * 1000.0
+    total_ms = decode_ms + parse_ms + emit_ms
+    raw_waveform_max = max((wave_len for _, wave_len, _ in raw_series_lens), default=0)
+    raw_spectrum_max = max((fft_len for _, _, fft_len in raw_series_lens), default=0)
+    rx_bytes = None
+    if isinstance(perf_extra, dict):
+        try:
+            raw_waveform_max = max(raw_waveform_max, int(perf_extra.get('waveform_max') or 0))
+            raw_spectrum_max = max(raw_spectrum_max, int(perf_extra.get('fft_max') or 0))
+        except Exception:
+            pass
+        rx_bytes = perf_extra.get('rx_bytes')
+
+    if total_ms >= HB_SLOW_MS:
+        perf_key = f'{request_tag}:{node_id}'
+        lastp = _last_perf_log_ts.get(perf_key, 0)
+        if current_timestamp - lastp >= HB_PERF_LOG_SEC:
+            _last_perf_log_ts[perf_key] = current_timestamp
+            logger.warning(
+                '[%s][perf] node_id=%s total=%.1fms %s=%.1fms parse=%.1fms emit=%.1fms ch=%d rx=%s waveRaw=%d specRaw=%d waveEmit=%d specEmit=%d',
+                request_tag,
+                node_id,
+                total_ms,
+                decode_label,
+                decode_ms,
+                parse_ms,
+                emit_ms,
+                len(raw_channels) if isinstance(raw_channels, list) else 0,
+                rx_bytes if rx_bytes is not None else '-',
+                raw_waveform_max,
+                raw_spectrum_max,
+                MONITOR_WAVEFORM_POINTS,
+                MONITOR_SPECTRUM_POINTS,
+            )
+
+    return jsonify(response_payload), 200
+
+
 @api_bp.route('/node/heartbeat', methods=['POST'])
 def node_heartbeat():
-    """节点心跳接口 - 接收STM32节点的实时数据"""
+    """?????? - ?? STM32/ESP32 JSON ???"""
     try:
         t0 = time.perf_counter()
         auth_resp = _device_auth_or_401()
@@ -1175,442 +1645,77 @@ def node_heartbeat():
             return auth_resp
 
         data = _get_json_payload()
-        t_json = time.perf_counter()
-        node_id = _normalize_node_id(data.get('node_id') or data.get('device_id'))
-        fault_code = (data.get('fault_code') or 'E00').strip() or 'E00'
-        
-        if not node_id:
-            return jsonify({'error': 'Missing node_id'}), 400
-        if len(node_id) > 100:
-            return jsonify({'error': 'node_id too long (max 100)'}), 400
-
-        # 0. Update timestamp + Debug log (rate limited per node)
-        current_timestamp = time.time()
-        last = _last_hb_log_ts.get(node_id, 0)
-        if current_timestamp - last >= 5:
-            _last_hb_log_ts[node_id] = current_timestamp
-            logger.info(f"[/api/node/heartbeat] node_id={node_id} fault={fault_code} ch={len(data.get('channels') or [])}")
-
-        # 1. Update Active Node
-        # 1. Update Active Node（可选：轻量化存储，避免多节点时内存/序列化成本过高）
-        if LIGHT_ACTIVE_NODES:
-            data_light = dict(data)
-            # 剥离大数组，只保留必须元数据和值（便于概览/订阅初始数据）
-            if 'channels' in data_light:
-                data_light['channels'] = _lighten_channels(data_light.get('channels'))
-            data_light['report_mode'] = _get_report_mode(node_id)
-            active_nodes[node_id] = {
-                'timestamp': current_timestamp,
-                'status': data.get('status', 'offline'),
-                'fault_code': fault_code,
-                'data': data_light
-            }
-        else:
-            data['report_mode'] = _get_report_mode(node_id)
-            active_nodes[node_id] = {
-                'timestamp': current_timestamp,
-                'status': data.get('status', 'offline'),
-                'fault_code': fault_code,
-                'data': data
-            }
-        reported_downsample_step = _ack_downsample_command(node_id, data)
-        if reported_downsample_step is None:
-            pending_step = node_downsample_commands.get(node_id)
-            if pending_step is not None:
-                _sync_active_node_downsample_step(node_id, int(pending_step))
-        _ack_config_commands_from_payload(node_id, data)
-
-        # 2. Initialize Data Structure
-        processed_data = {
-            'voltage': 0, 'voltage_neg': 0, 'current': 0, 'leakage': 0,
-            'voltage_waveform': [], 'voltage_spectrum': [],
-            'voltage_neg_waveform': [], 'voltage_neg_spectrum': [],
-            'current_waveform': [], 'current_spectrum': [],
-            'leakage_waveform': [], 'leakage_spectrum': [],
-            'channels': []
-        }
-
-        # 3. Parse Channels（注意：这里会处理波形/频谱大数组；后续 emit 时会按需降采样）
-        raw_channels = data.get('channels') or []
-        if not isinstance(raw_channels, list):
-            raw_channels = []
-        bad_wave_type = 0
-        bad_spec_type = 0
-        bad_id_type = 0
-        bad_val = 0
-        raw_series_lens = []
-        processed_channels = []
-        for ch in raw_channels:
-            if not isinstance(ch, dict):
-                continue
-            ch_id = ch.get('id')
-            if ch_id is None:
-                ch_id = ch.get('channel_id')
-            if isinstance(ch_id, str):
-                try:
-                    ch_id = int(ch_id)
-                except Exception:
-                    pass
-            label = (ch.get('label') or '').strip()
-            val = ch.get('value', ch.get('current_value', 0))
-            wave = ch.get('waveform', [])
-            # 统一字段名：优先 fft_spectrum；兼容历史设备的 fft
-            spec = ch.get('fft_spectrum', ch.get('fft', []))
-
-            if (ch_id is not None) and (not isinstance(ch_id, int)):
-                bad_id_type += 1
-            if not isinstance(wave, list):
-                bad_wave_type += 1
-                wave = []
-            if not isinstance(spec, list):
-                bad_spec_type += 1
-                spec = []
-
-            # 先记录原始长度，用于证明服务器实际收到的是 4096 点波形 + 2048 点 FFT 全量包。
-            raw_series_lens.append((ch_id, len(wave), len(spec)))
-
-            # 降采样：减少 SocketIO JSON 体积（尤其多节点时效果明显）
-            wave = _downsample_list(wave, MAX_WAVEFORM_POINTS)
-            spec = _downsample_list(spec, MAX_SPECTRUM_POINTS)
-
-            try:
-                val_float = float(val) if val is not None else 0.0
-            except Exception:
-                val_float = 0.0
-                bad_val += 1
-
-            processed_channels.append({
-                'id': ch_id,
-                'channel_id': ch_id,
-                'label': label,
-                'name': ch.get('name', label),
-                'unit': ch.get('unit', ''),
-                'type': ch.get('type', ''),
-                'range': ch.get('range', ''),
-                'color': ch.get('color', ''),
-                'value': val_float,
-                'currentValue': val_float,
-                'current_value': val_float,
-                'waveform': wave,
-                'fft_spectrum': spec,
-            })
-
-            # 先按 label 识别（中文优先）
-            mapped = False
-            if "直流" in label:
-                # 兼容：label=“直流母线” 未标注正负时，默认当作正母线
-                if ("-" in label) or ("负" in label):
-                    processed_data['voltage_neg'] = val_float
-                    processed_data['voltage_neg_waveform'] = wave
-                    processed_data['voltage_neg_spectrum'] = spec
-                else:
-                    processed_data['voltage'] = val_float
-                    processed_data['voltage_waveform'] = wave
-                    processed_data['voltage_spectrum'] = spec
-                mapped = True
-            elif "漏" in label:
-                processed_data['leakage'] = val_float
-                processed_data['leakage_waveform'] = wave
-                processed_data['leakage_spectrum'] = spec
-                mapped = True
-            elif ("负载" in label or "电流" in label) and "漏" not in label:
-                processed_data['current'] = val_float
-                processed_data['current_waveform'] = wave
-                processed_data['current_spectrum'] = spec
-                mapped = True
-
-            # label 无法识别时，按通道 id 做兜底映射（与你给的示例结构一致）
-            if (not mapped) and isinstance(ch_id, int):
-                if ch_id == 0:
-                    processed_data['voltage'] = val_float
-                    processed_data['voltage_waveform'] = wave
-                    processed_data['voltage_spectrum'] = spec
-                elif ch_id == 1:
-                    processed_data['voltage_neg'] = val_float
-                    processed_data['voltage_neg_waveform'] = wave
-                    processed_data['voltage_neg_spectrum'] = spec
-                elif ch_id == 2:
-                    processed_data['current'] = val_float
-                    processed_data['current_waveform'] = wave
-                    processed_data['current_spectrum'] = spec
-                elif ch_id == 3:
-                    processed_data['leakage'] = val_float
-                    processed_data['leakage_waveform'] = wave
-                    processed_data['leakage_spectrum'] = spec
-
-        processed_data['channels'] = processed_channels
-
-        # upload_points 必须用服务器实际收到的 waveform 长度确认。
-        # 本帧带 channels 时禁止退回使用 JSON 顶层 upload_points，避免旧顶层值把命令误标 applied。
-        actual_upload_points = _actual_upload_points_from_raw_series(raw_series_lens)
-        reported_upload_points = _ack_upload_points_command(
-            node_id,
+        decode_ms = (time.perf_counter() - t0) * 1000.0
+        return _process_node_report(
             data,
-            actual_points=actual_upload_points,
-            allow_payload_fallback=(len(raw_channels) == 0),
+            request_tag='/api/node/heartbeat',
+            decode_label='json',
+            decode_ms=decode_ms,
+            content_length=request.content_length,
         )
-        if reported_upload_points is not None:
-            data['upload_points_actual'] = int(reported_upload_points)
-            top_points = _parse_upload_points(data.get('upload_points'))
-            if top_points is not None and top_points != reported_upload_points:
-                data['upload_points_top'] = top_points
-            data['upload_points'] = int(reported_upload_points)
-        else:
-            pending_points = node_upload_points_commands.get(node_id)
-            if pending_points is not None:
-                _sync_active_node_upload_points(node_id, int(pending_points))
-
-        t_parse = time.perf_counter()
-
-        # 3.5) 兜底：检测“疑似坏帧”（解析到的 channels/波形/频谱为空或类型异常）
-        # 说明：MCU 端在透传 TCP 下连续发送 HTTP 请求；若 Content-Length/JSON 结构偶发异常，
-        # 可能出现短时间 processed_data 全 0/数组为空，前端表现为“服务器看到 0，几秒后又恢复”。
-        prev = _last_processed_cache.get(node_id)
-        series_keys = (
-            'voltage_waveform', 'voltage_spectrum',
-            'voltage_neg_waveform', 'voltage_neg_spectrum',
-            'current_waveform', 'current_spectrum',
-            'leakage_waveform', 'leakage_spectrum',
-        )
-        has_any_series = any(isinstance(processed_data.get(k), list) and len(processed_data.get(k)) > 0 for k in series_keys)
-        if has_any_series:
-            last_series = _last_series_log_ts.get(node_id, 0)
-            if current_timestamp - last_series >= 2:
-                _last_series_log_ts[node_id] = current_timestamp
-                series_lens = [
-                    (
-                        ch.get('id'),
-                        len(ch.get('waveform') or []),
-                        len(ch.get('fft_spectrum') or []),
-                    )
-                    for ch in processed_channels
-                    if isinstance(ch, dict)
-                ]
-                logger.info("[/api/node/heartbeat][series] node_id=%s mode=%s step=%s upload_points=%s ch=%d raw_lens=%s emit_lens=%s",
-                            node_id,
-                            data.get('report_mode'),
-                            data.get('downsample_step'),
-                            data.get('upload_points'),
-                            len(processed_channels),
-                            raw_series_lens,
-                            series_lens)
-        metrics_all_zero = (
-            float(processed_data.get('voltage') or 0) == 0.0 and
-            float(processed_data.get('voltage_neg') or 0) == 0.0 and
-            float(processed_data.get('current') or 0) == 0.0 and
-            float(processed_data.get('leakage') or 0) == 0.0
-        )
-        is_bad_frame = (len(raw_channels) == 0) or ((not has_any_series) and metrics_all_zero) or (bad_wave_type > 0) or (bad_spec_type > 0) or (bad_id_type > 0)
-
-        if isinstance(prev, dict) and is_bad_frame:
-            # 直接沿用上一帧完整 processed_data（包括 metrics + series），避免 UI 变 0/空。
-            processed_data = prev
-            # 限频打印坏帧摘要（便于定位根因）
-            last_bad = _last_bad_frame_log_ts.get(node_id, 0)
-            if current_timestamp - last_bad >= 5:
-                _last_bad_frame_log_ts[node_id] = current_timestamp
-                logger.warning(
-                    "[/api/node/heartbeat][bad-frame] node_id=%s content_length=%s ch=%d bad_id=%d bad_wave=%d bad_spec=%d bad_val=%d",
-                    node_id,
-                    request.content_length,
-                    len(raw_channels),
-                    bad_id_type,
-                    bad_wave_type,
-                    bad_spec_type,
-                    bad_val,
-                )
-        else:
-            # 正常帧：写入缓存
-            if isinstance(prev, dict) and not has_any_series:
-                for key in series_keys:
-                    prev_series = prev.get(key)
-                    if isinstance(prev_series, list) and prev_series:
-                        processed_data[key] = prev_series
-
-                prev_channels = prev.get('channels') or []
-                if isinstance(prev_channels, list) and processed_channels:
-                    prev_by_id = {
-                        ch.get('id'): ch for ch in prev_channels
-                        if isinstance(ch, dict) and ch.get('id') is not None
-                    }
-                    for ch in processed_channels:
-                        if not isinstance(ch, dict):
-                            continue
-                        prev_ch = prev_by_id.get(ch.get('id'))
-                        if not isinstance(prev_ch, dict):
-                            continue
-                        if not ch.get('waveform') and isinstance(prev_ch.get('waveform'), list):
-                            ch['waveform'] = prev_ch['waveform']
-                        if not ch.get('fft_spectrum') and isinstance(prev_ch.get('fft_spectrum'), list):
-                            ch['fft_spectrum'] = prev_ch['fft_spectrum']
-                    processed_data['channels'] = processed_channels
-
-            _last_processed_cache[node_id] = processed_data
-            
-            # 3.6) 保存历史数据（用于历史曲线回放）
-            # 仅对正常帧存储，避免坏帧污染历史数据
-            _submit_history_data(node_id, processed_data)
-
-        # 4. Save to buffer
-        if fault_code == 'E00':
-            save_to_buffer(node_id, data, is_fault=False)
-        else:
-            save_to_buffer(node_id, data, is_fault=True)
-        
-        # 5. Fault snapshot logic
-        previous_fault = node_fault_states.get(node_id, 'E00')
-        current_fault = fault_code
-        db_op_submitted = False  # 防止同一次故障事件被重复建单（同一秒出现两条记录）
-        
-        # Fault occurred
-        if previous_fault == 'E00' and current_fault != 'E00':
-            logger.info(f"🔴 检测到故障发生: {node_id} -> {current_fault}")
-            
-            if node_id not in node_snapshot_saved or node_snapshot_saved[node_id].get('fault_code') != current_fault:
-                # Save before snapshot
-                before_data = get_latest_normal_data(node_id)
-                if before_data:
-                    db_executor.submit(save_fault_snapshot, db, app_instance, node_id, current_fault, 'before', before_data['data'])
-                
-                # Save after snapshot
-                db_executor.submit(save_fault_snapshot, db, app_instance, node_id, current_fault, 'after', data)
-                
-                node_snapshot_saved[node_id] = {
-                    'fault_code': current_fault,
-                    'saved_types': ['before', 'after']
-                }
-
-            # 关键修复：故障发生时必须创建/更新工单（不应被 node_commands=reset 等指令阻断）
-            # 说明：故障快照保存与工单创建是两条链路，快照能保存但工单没创建会导致：
-            # - 故障管理页看不到新故障（依赖 /api/faults -> work_orders）
-            # - 实时监测页“系统故障日志”历史回填看不到新故障
-            if db_executor:
-                db_executor.submit(_handle_fault_database_operation, node_id, current_fault, data)
-                db_op_submitted = True
-        
-        # Fault recovered
-        elif previous_fault != 'E00' and current_fault == 'E00':
-            logger.info(f"🟢 检测到故障恢复: {node_id} {previous_fault} -> E00")
-            
-            # Save recovery snapshots
-            fault_data = get_latest_fault_data(node_id)
-            if fault_data:
-                db_executor.submit(save_fault_snapshot, db, app_instance, node_id, previous_fault, 'before_recovery', fault_data['data'])
-            
-            db_executor.submit(save_fault_snapshot, db, app_instance, node_id, previous_fault, 'after_recovery', data)
-            
-            if node_id in node_snapshot_saved:
-                del node_snapshot_saved[node_id]
-        
-        node_fault_states[node_id] = current_fault
-        
-        # 6. WebSocket 推送（关键性能优化：按节点节流，避免多节点事件风暴）
-        # 6.1 轻量状态推送（概览/侧边栏/指标）
-        status_payload = None
-        monitor_payload = None
-        if _should_emit(node_id, current_timestamp, STATUS_EMIT_HZ, _last_emit_status_ts):
-            status_payload = {
-                'node_id': node_id,
-                'status': data.get('status', 'online'),
-                'fault_code': fault_code,
-                'timestamp': current_timestamp,
-                'report_mode': _get_report_mode(node_id),
-                'downsample_step': (active_nodes.get(node_id, {}).get('data', {}) or {}).get('downsample_step'),
-                'upload_points': (active_nodes.get(node_id, {}).get('data', {}) or {}).get('upload_points'),
-                'heartbeat_ms': (active_nodes.get(node_id, {}).get('data', {}) or {}).get('heartbeat_ms'),
-                'min_interval_ms': (active_nodes.get(node_id, {}).get('data', {}) or {}).get('min_interval_ms'),
-                'http_timeout_ms': (active_nodes.get(node_id, {}).get('data', {}) or {}).get('http_timeout_ms'),
-                'chunk_kb': (active_nodes.get(node_id, {}).get('data', {}) or {}).get('chunk_kb'),
-                'chunk_delay_ms': (active_nodes.get(node_id, {}).get('data', {}) or {}).get('chunk_delay_ms'),
-                'metrics': {
-                    'voltage': processed_data.get('voltage', 0),
-                    'voltage_neg': processed_data.get('voltage_neg', 0),
-                    'current': processed_data.get('current', 0),
-                    'leakage': processed_data.get('leakage', 0)
-                }
-            }
-
-        # 6.2 监控推送（仅订阅房间）：波形/频谱（也节流）
-        if _should_emit(node_id, current_timestamp, MONITOR_EMIT_HZ, _last_emit_monitor_ts):
-            monitor_payload = {
-                'node_id': node_id,
-                'data': processed_data,
-                'fault_code': fault_code
-            }
-        if socketio_instance and (status_payload is not None or monitor_payload is not None):
-            try:
-                socketio_instance.start_background_task(
-                    _emit_socket_updates_async,
-                    status_payload,
-                    monitor_payload,
-                    f'node_{node_id}',
-                )
-            except Exception as e:
-                logger.warning(f"[SocketIO] 提交后台推送任务失败: {e}")
-
-        t_emit = time.perf_counter()
-
-        # 7. Database operation in background（保底）
-        # 说明：建单只应在“故障发生事件(E00->E0X)”触发一次。
-        # 若上面已提交过任务，则不再重复提交，避免同一秒出现重复工单。
-        if db_executor and (not db_op_submitted) and previous_fault == 'E00' and current_fault != 'E00':
-            db_executor.submit(_handle_fault_database_operation, node_id, current_fault, data)
-        
-        # 8. Command response
-        response_payload = {
-            'success': True, 
-            'node_id': node_id, 
-            'timestamp': current_timestamp
-        }
-        # 命令下发（不要 pop，避免命令丢失；fault_code=E00 时视为已执行并清除）
-        cmd = node_commands.get(node_id)
-        if cmd:
-            response_payload['command'] = cmd
-            if cmd == 'reset' and fault_code == 'E00':
-                node_commands.pop(node_id, None)
-        # Do not echo normal report_mode as a command.  Pending config commands
-        # are appended below with command_id; ESP32 treats command_id-bearing
-        # fields as actionable server commands.
-        pending_step = node_downsample_commands.get(node_id)
-        if pending_step is not None:
-            response_payload['downsample_step'] = int(pending_step)
-        pending_points = node_upload_points_commands.get(node_id)
-        if pending_points is not None:
-            response_payload['upload_points'] = int(pending_points)
-        _append_pending_config_commands(node_id, response_payload, mark_delivered=True)
-        
-        # 9. 节流更新数据库设备心跳（避免 50Hz 高频心跳把 SQLite 打爆）
-        last_db = _last_db_heartbeat_ts.get(node_id, 0)
-        if current_timestamp - last_db >= DEVICE_DB_UPDATE_INTERVAL_SEC:
-            _last_db_heartbeat_ts[node_id] = current_timestamp
-            _submit_update_device_heartbeat(node_id, data, fault_code, current_timestamp)
-
-        # 慢请求诊断：打印耗时分解（每节点限频）
-        total_ms = (t_emit - t0) * 1000.0
-        if total_ms >= HB_SLOW_MS:
-            lastp = _last_perf_log_ts.get(node_id, 0)
-            if current_timestamp - lastp >= HB_PERF_LOG_SEC:
-                _last_perf_log_ts[node_id] = current_timestamp
-                logger.warning(
-                    "[/api/node/heartbeat][perf] node_id=%s total=%.1fms json=%.1fms parse=%.1fms emit=%.1fms ch=%d waveMax=%d specMax=%d",
-                    node_id,
-                    total_ms,
-                    (t_json - t0) * 1000.0,
-                    (t_parse - t_json) * 1000.0,
-                    (t_emit - t_parse) * 1000.0,
-                    len(raw_channels) if isinstance(raw_channels, list) else 0,
-                    MAX_WAVEFORM_POINTS,
-                    MAX_SPECTRUM_POINTS,
-                )
-
-        return jsonify(response_payload), 200
-
-    except Exception as e:
+    except Exception as exc:
         db.session.rollback()
-        logger.error(f"❌ Heartbeat failed: {str(e)}")
+        logger.error(f'? Heartbeat failed: {exc}')
         import traceback
         logger.error(traceback.format_exc())
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': str(exc)}), 500
+
+
+@api_bp.route('/node/full_frame_bin', methods=['POST'])
+def node_full_frame_bin():
+    """????? full frame ?????"""
+    try:
+        t0 = time.perf_counter()
+        auth_resp = _device_auth_or_401()
+        if auth_resp:
+            return auth_resp
+
+        proto = (request.headers.get('X-EdgeWind-Proto') or '').strip().lower()
+        if proto and proto != 'ewfull/1':
+            logger.warning('[/api/node/full_frame_bin][bad] reason=bad_proto proto=%s len=%s', proto, request.content_length)
+            return jsonify({'error': f'Unsupported proto: {proto}'}), 400
+
+        body = request.get_data(cache=True) or b''
+        if not body:
+            logger.warning('[/api/node/full_frame_bin][bad] reason=empty_body len=%s', request.content_length)
+            return jsonify({'error': 'empty body'}), 400
+
+        decoded = decode_full_frame_binary(
+            body,
+            waveform_limit=MONITOR_WAVEFORM_POINTS,
+            fft_limit=MONITOR_SPECTRUM_POINTS,
+        )
+        decode_ms = (time.perf_counter() - t0) * 1000.0
+        response_extra = {
+            'seq': decoded.payload.get('seq'),
+            'report_mode': decoded.payload.get('report_mode'),
+            'downsample_step': decoded.payload.get('downsample_step'),
+            'upload_points': decoded.payload.get('upload_points'),
+            'rx_bytes': decoded.rx_bytes,
+        }
+        return _process_node_report(
+            decoded.payload,
+            request_tag='/api/node/full_frame_bin',
+            decode_label='binary',
+            decode_ms=decode_ms,
+            content_length=len(body),
+            response_extra=response_extra,
+            perf_extra={
+                'rx_bytes': decoded.rx_bytes,
+                'waveform_max': decoded.waveform_max,
+                'fft_max': decoded.fft_max,
+            },
+        )
+    except FullFrameBinaryError as exc:
+        db.session.rollback()
+        logger.warning('[/api/node/full_frame_bin][bad] reason=%s len=%s', exc, request.content_length)
+        return jsonify({'error': str(exc)}), 400
+    except Exception as exc:
+        db.session.rollback()
+        logger.error(f'? Full frame binary failed: {exc}')
+        import traceback
+        logger.error(traceback.format_exc())
+        return jsonify({'error': str(exc)}), 500
 
 
 def _handle_fault_database_operation(node_id, fault_code, data):
@@ -2295,7 +2400,7 @@ def get_faults():
     """
     try:
         start_ts = time.time()
-        logger.info("[/api/faults] 开始获取故障日志（work_orders -> faults）")
+        logger.debug("[/api/faults] 开始获取故障日志（work_orders -> faults）")
 
         def _infer_fault_code(fault_type: str | None) -> str:
             """根据故障中文名称推断故障代码（用于兼容旧前端展示/知识图谱加载）"""
@@ -2382,7 +2487,7 @@ def get_faults():
                 'time': fault_time_display
             })
         cost_ms = int((time.time() - start_ts) * 1000)
-        logger.info(f"[/api/faults] 完成：数量={len(faults)} 耗时={cost_ms}ms")
+        logger.debug(f"[/api/faults] 完成：数量={len(faults)} 耗时={cost_ms}ms")
         return jsonify({'faults': faults}), 200
     except Exception as e:
         logger.exception(f"[/api/faults] 失败: {e}")

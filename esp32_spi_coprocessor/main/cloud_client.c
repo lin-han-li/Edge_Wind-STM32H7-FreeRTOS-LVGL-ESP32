@@ -29,10 +29,10 @@ static const char *TAG = "cloud_client";
 #define CLOUD_LOOP_POLL_MS 200
 #define CLOUD_SUBMIT_QUEUE_TIMEOUT_MS 20
 #define CLOUD_SUMMARY_COALESCE_THRESHOLD 4
-#define CLOUD_FULL_HTTP_TIMEOUT_MS 3000U
-#define CLOUD_FULL_HTTP_TOTAL_BUDGET_MS 6000U
-#define CLOUD_REPORT_REREGISTER_FAIL_STREAK 3U
-#define CLOUD_REPORT_WIFI_RECOVER_FAIL_STREAK 3U
+#define CLOUD_FULL_HTTP_TIMEOUT_MS 15000U
+#define CLOUD_FULL_HTTP_TOTAL_BUDGET_MS 20000U
+#define CLOUD_REPORT_REREGISTER_FAIL_STREAK 8U
+#define CLOUD_REPORT_WIFI_RECOVER_FAIL_STREAK 6U
 #define CLOUD_REPORT_WIFI_RECOVER_COOLDOWN_MS 45000U
 #define CLOUD_REPORT_WIFI_RECONNECT_SETTLE_MS 500U
 
@@ -171,6 +171,7 @@ static esp_err_t post_register_request(const app_config_snapshot_t *snapshot)
     char url[160];
     char response[CLOUD_RESPONSE_MAX_LEN];
     int http_status = 0;
+    server_command_event_t server_command;
     esp_http_client_config_t cfg = {
         .url = url,
         .timeout_ms = (int) snapshot->comm.http_timeout_ms,
@@ -208,6 +209,15 @@ static esp_err_t post_register_request(const app_config_snapshot_t *snapshot)
         if (err == ESP_OK) {
             s_registered = (http_status >= 200 && http_status < 300);
             touch_request_timestamp();
+            if (report_codec_parse_server_command(response, &server_command)) {
+                post_event(CLOUD_CLIENT_EVENT_SERVER_COMMAND,
+                           ESP_OK,
+                           http_status,
+                           0,
+                           0,
+                           &server_command,
+                           "server_command_from_register");
+            }
             post_event(CLOUD_CLIENT_EVENT_REGISTER_RESULT,
                        ESP_OK,
                        http_status,
@@ -238,9 +248,10 @@ static uint32_t report_request_timeout_ms(const app_config_snapshot_t *snapshot,
     uint32_t timeout_ms = snapshot != NULL ? snapshot->comm.http_timeout_ms : 0U;
 
     if (frame != NULL && frame->mode == REPORT_MODE_FULL) {
-        /* Full snapshots are best-effort streaming frames.  A stalled TCP write
-         * must not block the whole upload pipeline for 8-10 seconds; drop the
-         * stale full frame and let STM32 send a newer snapshot instead. */
+        /* Full snapshots are best-effort streaming frames, but 3s/6s proved too
+         * aggressive for large JSON payloads over local/WiFi links and caused
+         * unnecessary re-register loops.  Keep an upper bound, just not such a
+         * tight one that transient TCP backpressure is treated as a fatal fault. */
         if (timeout_ms == 0U || timeout_ms > CLOUD_FULL_HTTP_TIMEOUT_MS) {
             timeout_ms = CLOUD_FULL_HTTP_TIMEOUT_MS;
         }
@@ -336,6 +347,7 @@ static esp_err_t post_report_request(const app_config_snapshot_t *snapshot,
 {
     esp_err_t err;
     size_t payload_len = 0;
+    report_full_binary_info_t binary_info = { 0 };
     char url[160];
     char scratch[CLOUD_JSON_SCRATCH_LEN];
     char response[CLOUD_RESPONSE_MAX_LEN];
@@ -351,6 +363,9 @@ static esp_err_t post_report_request(const app_config_snapshot_t *snapshot,
     int64_t stream_ms = 0;
     int64_t fetch_ms = 0;
     int64_t read_ms = 0;
+    const bool use_full_binary = (frame->mode == REPORT_MODE_FULL);
+    const int http_buffer_size = use_full_binary ? 4096 : 2048;
+    const int http_buffer_size_tx = use_full_binary ? 4096 : 2048;
 
     if (snapshot == NULL || frame == NULL) {
         return ESP_ERR_INVALID_ARG;
@@ -363,8 +378,8 @@ static esp_err_t post_report_request(const app_config_snapshot_t *snapshot,
     esp_http_client_config_t cfg = {
         .url = url,
         .timeout_ms = (int) timeout_ms,
-        .buffer_size = 2048,
-        .buffer_size_tx = 2048,
+        .buffer_size = http_buffer_size,
+        .buffer_size_tx = http_buffer_size_tx,
         .keep_alive_enable = false,
     };
 
@@ -393,23 +408,35 @@ static esp_err_t post_report_request(const app_config_snapshot_t *snapshot,
     }
     apply_request_interval(snapshot);
 
-    snprintf(url, sizeof(url), "http://%s:%u/api/node/heartbeat", snapshot->device.server_host, snapshot->device.server_port);
-
-    err = report_codec_measure_heartbeat_json(snapshot, frame, &payload_len);
-    if (err != ESP_OK) {
-        post_event(CLOUD_CLIENT_EVENT_REPORT_RESULT, err, 0, frame->ref_seq, frame->frame_id, NULL, "measure_json_failed");
-        return err;
+    if (use_full_binary) {
+        snprintf(url, sizeof(url), "http://%s:%u/api/node/full_frame_bin", snapshot->device.server_host, snapshot->device.server_port);
+        err = report_codec_measure_full_binary(snapshot, frame, &binary_info);
+        if (err != ESP_OK) {
+            post_event(CLOUD_CLIENT_EVENT_REPORT_RESULT, err, 0, frame->ref_seq, frame->frame_id, NULL, "measure_full_binary_failed");
+            return err;
+        }
+        payload_len = binary_info.body_len;
+    } else {
+        snprintf(url, sizeof(url), "http://%s:%u/api/node/heartbeat", snapshot->device.server_host, snapshot->device.server_port);
+        err = report_codec_measure_heartbeat_json(snapshot, frame, &payload_len);
+        if (err != ESP_OK) {
+            post_event(CLOUD_CLIENT_EVENT_REPORT_RESULT, err, 0, frame->ref_seq, frame->frame_id, NULL, "measure_json_failed");
+            return err;
+        }
     }
 
     t0_us = esp_timer_get_time();
     ESP_LOGI(TAG,
-             "report start frame=%" PRIu32 " ref=%" PRIu32 " mode=%u len=%u timeout=%ums budget=%ums heap=%u largest=%u q=%u",
+             "report start frame=%" PRIu32 " ref=%" PRIu32 " mode=%u transport=%s len=%u timeout=%ums budget=%ums scratch=%u httpbuf=%u heap=%u largest=%u q=%u",
              frame->frame_id,
              frame->ref_seq,
              (unsigned int) frame->mode,
+             use_full_binary ? "bin" : "json",
              (unsigned int) payload_len,
              (unsigned int) timeout_ms,
              (unsigned int) total_budget_ms,
+             (unsigned int) CLOUD_JSON_SCRATCH_LEN,
+             (unsigned int) http_buffer_size_tx,
              (unsigned int) heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
              (unsigned int) heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
              (unsigned int) (s_queue != NULL ? uxQueueMessagesWaiting(s_queue) : 0U));
@@ -420,7 +447,10 @@ static esp_err_t post_report_request(const app_config_snapshot_t *snapshot,
         return ESP_ERR_NO_MEM;
     }
     esp_http_client_set_method(client, HTTP_METHOD_POST);
-    esp_http_client_set_header(client, "Content-Type", "application/json");
+    esp_http_client_set_header(client, "Content-Type", use_full_binary ? "application/octet-stream" : "application/json");
+    if (use_full_binary) {
+        esp_http_client_set_header(client, "X-EdgeWind-Proto", "ewfull/1");
+    }
     esp_http_client_set_header(client, "Connection", "close");
 
     stage = "open";
@@ -436,11 +466,15 @@ static esp_err_t post_report_request(const app_config_snapshot_t *snapshot,
 
     stage = "stream";
     t_stage_us = esp_timer_get_time();
-    err = report_codec_stream_heartbeat_json(snapshot, frame, scratch, sizeof(scratch), client, total_budget_ms);
+    if (use_full_binary) {
+        err = report_codec_stream_full_binary(snapshot, frame, binary_info.data_crc32, client, total_budget_ms);
+    } else {
+        err = report_codec_stream_heartbeat_json(snapshot, frame, scratch, sizeof(scratch), client, total_budget_ms);
+    }
     stream_ms = (esp_timer_get_time() - t_stage_us) / 1000LL;
     if (err != ESP_OK) {
         char detail[64];
-        format_err_message(detail, sizeof(detail), "report_stream_fail", err);
+        format_err_message(detail, sizeof(detail), use_full_binary ? "report_bin_stream_fail" : "report_stream_fail", err);
         post_event(CLOUD_CLIENT_EVENT_REPORT_RESULT, err, 0, frame->ref_seq, frame->frame_id, NULL, detail);
         goto cleanup;
     }

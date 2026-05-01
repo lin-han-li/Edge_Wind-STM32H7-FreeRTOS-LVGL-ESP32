@@ -146,6 +146,9 @@ static void spi_link_task(void *arg)
         } else {
             bool malformed = (rx_bytes < sizeof(protocol_header_t)) ||
                              (rx_packet->header.magic != PROTOCOL_MAGIC);
+            bool is_noop_like = (!malformed) &&
+                                ((rx_packet->header.seq == 0U) ||
+                                 (rx_packet->header.msg_type == PROTOCOL_MSG_NOOP));
             ESP_LOGW(TAG,
                      "Dropped invalid RX packet, reason=%u, rx_bytes=%u, magic=0x%08" PRIx32 ", type=0x%02x, len=%u",
                      (unsigned) nack_reason,
@@ -155,7 +158,7 @@ static void spi_link_task(void *arg)
                          (unsigned) rx_packet->header.msg_type : 0U,
                      (rx_bytes >= offsetof(protocol_header_t, payload_len) + sizeof(rx_packet->header.payload_len)) ?
                          (unsigned) rx_packet->header.payload_len : 0U);
-            if (!malformed) {
+            if (!malformed && !is_noop_like) {
                 queue_link_nack(nack_reason, rx_packet->header.seq);
             }
         }

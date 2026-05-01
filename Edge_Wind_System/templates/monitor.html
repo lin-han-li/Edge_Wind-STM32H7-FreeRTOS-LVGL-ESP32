@@ -2063,8 +2063,8 @@
 
     function startFaultLogPolling() {
         if (faultLogPollTimer) return;
-        // 每2秒同步一次（兼顾实时性与开销）
-        faultLogPollTimer = setInterval(pollFaultLogFromApi, 2000);
+        // 每5秒同步一次，降低 full upload 压力下的后台轮询开销
+        faultLogPollTimer = setInterval(pollFaultLogFromApi, 5000);
     }
     
     // ========== 共享渲染逻辑（辅助函数） ==========
@@ -2080,7 +2080,13 @@
     }
 
     // 轻量性能辅助：用于定位“数据间隔卡顿” vs “渲染卡顿”
-    window.__edgewindPerfExtra = window.__edgewindPerfExtra || { lastMsgDeltaMs: 0, lastWaveLen: 0, lastSpecLen: 0 };
+    window.__edgewindPerfExtra = window.__edgewindPerfExtra || {
+        lastMsgDeltaMs: 0,
+        lastWaveLen: 0,
+        lastSpecLen: 0,
+        lastWaveRawLen: 0,
+        lastSpecRawLen: 0
+    };
 
     // ========== 性能优化：复用数组，减少 GC 抖动 ==========
     // 说明：monitor_update 约 5Hz；如果每次都创建大量新数组/对象（尤其 1024 点波形 -> 1024 个 [x,y]），
@@ -2310,7 +2316,7 @@
             {
                 const ex = window.__edgewindPerfExtra || {};
                 document.getElementById('perf-subscribed-node').textContent =
-                    (currentNodeId || '无') + ` | Δt=${ex.lastMsgDeltaMs || 0}ms wave=${ex.lastWaveLen || 0} spec=${ex.lastSpecLen || 0}`;
+                    (currentNodeId || '无') + ` | Δt=${ex.lastMsgDeltaMs || 0}ms wave=${ex.lastWaveRawLen || 0}/${ex.lastWaveLen || 0} spec=${ex.lastSpecRawLen || 0}/${ex.lastSpecLen || 0}`;
             }
             
             // 更新渲染延迟
@@ -2675,6 +2681,16 @@
                 // 3. Update Main View - 全量更新（不合并批处理）
                 if (currentNodeId && msg.node_id === currentNodeId) {
                     const d = msg.data;
+                    try {
+                        const rawWave = Number(d?.waveform_points_raw_max ?? 0);
+                        const rawSpec = Number(d?.spectrum_points_raw_max ?? 0);
+                        if (Number.isFinite(rawWave) && rawWave >= 0) {
+                            window.__edgewindPerfExtra.lastWaveRawLen = rawWave;
+                        }
+                        if (Number.isFinite(rawSpec) && rawSpec >= 0) {
+                            window.__edgewindPerfExtra.lastSpecRawLen = rawSpec;
+                        }
+                    } catch (e) {}
                     
                     // 缓存最新数据包
                     lastCachedData = d;

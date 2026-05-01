@@ -13,3 +13,4 @@ gevent>=23.0.0  # 可选：作为 eventlet 的备选异步模式
 setuptools>=70.0.0
 numpy==1.26.4
 gunicorn==23.0.0
+orjson>=3.10.0

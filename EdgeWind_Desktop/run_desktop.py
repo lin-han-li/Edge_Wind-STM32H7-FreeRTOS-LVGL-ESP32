@@ -131,6 +131,9 @@ def _force_light_nodes_off():
     只在进程环境变量层面强制设置，不改配置文件。
     """
     os.environ["EDGEWIND_LIGHT_ACTIVE_NODES"] = "false"
+    os.environ.setdefault("EDGEWIND_WAVEFORM_POINTS", "4096")
+    os.environ.setdefault("EDGEWIND_SPECTRUM_POINTS", "2048")
+    os.environ.setdefault("EDGEWIND_MONITOR_EMIT_HZ", "1")
 
 
 def _desktop_socketio_env_fix():

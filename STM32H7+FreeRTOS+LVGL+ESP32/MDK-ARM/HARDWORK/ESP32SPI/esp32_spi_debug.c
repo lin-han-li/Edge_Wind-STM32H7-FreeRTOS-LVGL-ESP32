@@ -21,6 +21,8 @@ extern void ESP_UI_Internal_OnLog(const char *line);
 #define ESP32_SPI_READY_TIMEOUT_MS 3000U
 #define ESP32_SPI_READY_RELEASE_TIMEOUT_MS 2U
 #define ESP32_SPI_XFER_TIMEOUT_MS 300U
+#define ESP32_SPI_REPORT_RETRY_ATTEMPTS 5U
+#define ESP32_SPI_REPORT_RETRY_BACKOFF_MS 1U
 #define ESP32_SPI_DEFAULT_TIMEOUT_MS 3000U
 #define ESP32_SPI_WIFI_POLL_INTERVAL_MS 1000U
 #define ESP32_SPI_RESULT_PENDING 0xFFFFU
@@ -36,6 +38,10 @@ extern void ESP_UI_Internal_OnLog(const char *line);
 
 #ifndef ESP32_SPI_LOG_TX_ACCEPTED
 #define ESP32_SPI_LOG_TX_ACCEPTED 0
+#endif
+
+#ifndef ESP32_SPI_LOG_RETRYABLE_NACKS
+#define ESP32_SPI_LOG_RETRYABLE_NACKS 0
 #endif
 
 typedef enum {
@@ -287,6 +293,7 @@ static int32_t s_last_tx_result_http_status = 0;
 static uint32_t s_last_tx_result_frame_id = 0U;
 static uint32_t s_last_report_full_end_ref_seq = 0U;
 static SemaphoreHandle_t s_spi_mutex = NULL;
+static SemaphoreHandle_t s_spi_op_mutex = NULL;
 static uint32_t s_last_nack_ref_seq = 0U;
 static uint16_t s_last_nack_reason = 0U;
 static uint8_t s_session_mismatch_seen = 0U;
@@ -310,6 +317,8 @@ static uint32_t s_pending_server_chunk_delay_ms = 0U;
 static char s_last_server_cmd_log_key[65];
 static uint32_t s_last_server_cmd_log_value = 0U;
 static uint32_t s_last_server_cmd_log_tick = 0U;
+
+static bool nack_reason_is_retryable(uint16_t reason);
 
 static uint16_t crc16_le_update(uint16_t crc, const uint8_t *data, uint32_t len)
 {
@@ -611,6 +620,40 @@ static void spi_bus_unlock(void)
     }
     if (s_spi_mutex != NULL) {
         (void)xSemaphoreGive(s_spi_mutex);
+    }
+}
+
+static bool spi_op_lock(void)
+{
+    SemaphoreHandle_t mutex;
+
+    if (__get_IPSR() != 0U || xTaskGetSchedulerState() == taskSCHEDULER_NOT_STARTED) {
+        return true;
+    }
+
+    mutex = s_spi_op_mutex;
+    if (mutex == NULL) {
+        mutex = xSemaphoreCreateRecursiveMutex();
+        if (mutex == NULL) {
+            return true;
+        }
+        s_spi_op_mutex = mutex;
+    }
+
+    if (xSemaphoreTakeRecursive(mutex, pdMS_TO_TICKS(ESP32_SPI_LOCK_TIMEOUT_MS)) == pdTRUE) {
+        return true;
+    }
+    printf("[ESP32SPI] SPI op lock timeout\r\n");
+    return false;
+}
+
+static void spi_op_unlock(void)
+{
+    if (__get_IPSR() != 0U || xTaskGetSchedulerState() == taskSCHEDULER_NOT_STARTED) {
+        return;
+    }
+    if (s_spi_op_mutex != NULL) {
+        (void)xSemaphoreGiveRecursive(s_spi_op_mutex);
     }
 }
 
@@ -1013,9 +1056,11 @@ static bool handle_rx_packet(const esp32_spi_packet_t *packet)
                 s_status.session_epoch = 0U;
                 s_session_mismatch_seen = 1U;
             }
-            printf("[ESP32SPI] NACK ref_seq=%lu reason=%u\r\n",
-                   (unsigned long)nack->ref_seq,
-                   (unsigned int)nack->reason);
+            if (!nack_reason_is_retryable(nack->reason) || ESP32_SPI_LOG_RETRYABLE_NACKS) {
+                printf("[ESP32SPI] NACK ref_seq=%lu reason=%u\r\n",
+                       (unsigned long)nack->ref_seq,
+                       (unsigned int)nack->reason);
+            }
         }
         break;
     default:
@@ -1205,6 +1250,10 @@ bool ESP32_SPI_EnsureReady(uint32_t timeout_ms)
     uint32_t start;
     uint8_t rx_type = ESP32_MSG_NOOP;
 
+    if (!spi_op_lock()) {
+        return false;
+    }
+
     if (timeout_ms == 0U) {
         timeout_ms = ESP32_SPI_DEFAULT_TIMEOUT_MS;
     }
@@ -1213,6 +1262,7 @@ bool ESP32_SPI_EnsureReady(uint32_t timeout_ms)
     HAL_GPIO_WritePin(ESP32_CS_GPIO_Port, ESP32_CS_Pin, GPIO_PIN_SET);
 
     if (s_session_epoch != 0U && s_status.ready != 0U) {
+        spi_op_unlock();
         return true;
     }
 
@@ -1228,24 +1278,28 @@ bool ESP32_SPI_EnsureReady(uint32_t timeout_ms)
 
     if (!transact_and_handle_payload(ESP32_MSG_HELLO_REQ, NULL, 0U, &rx_type)) {
         printf("[ESP32SPI] HELLO transaction failed\r\n");
+        spi_op_unlock();
         return false;
     }
 
     while (s_session_epoch == 0U && (HAL_GetTick() - start) < timeout_ms) {
         HAL_Delay(20);
         if (!transact_and_handle_payload(ESP32_MSG_NOOP, NULL, 0U, &rx_type)) {
+            spi_op_unlock();
             return false;
         }
     }
 
     if (s_session_epoch == 0U) {
         printf("[ESP32SPI] handshake timeout\r\n");
+        spi_op_unlock();
         return false;
     }
 
     drain_pending_packets(2000U, 3U);
     (void)query_status_internal(1000U);
     printf("[ESP32SPI] ready, session=%lu\r\n", (unsigned long)s_session_epoch);
+    spi_op_unlock();
     return true;
 }
 
@@ -1293,6 +1347,7 @@ bool ESP32_SPI_ApplyDeviceConfig(const char *ssid,
                                  const char *hw_version)
 {
     esp32_device_config_payload_t payload;
+    bool ok;
 
     if (!ESP32_SPI_EnsureReady(ESP32_SPI_DEFAULT_TIMEOUT_MS)) {
         return false;
@@ -1313,11 +1368,16 @@ bool ESP32_SPI_ApplyDeviceConfig(const char *ssid,
            (unsigned int)payload.server_port,
            payload.node_id);
 
-    return request_wait_response_session_retry(ESP32_MSG_SET_DEVICE_CONFIG_REQ,
-                                               &payload,
-                                               (uint16_t)sizeof(payload),
-                                               ESP32_MSG_SET_DEVICE_CONFIG_RESP,
-                                               8000U);
+    if (!spi_op_lock()) {
+        return false;
+    }
+    ok = request_wait_response_session_retry(ESP32_MSG_SET_DEVICE_CONFIG_REQ,
+                                             &payload,
+                                             (uint16_t)sizeof(payload),
+                                             ESP32_MSG_SET_DEVICE_CONFIG_RESP,
+                                             8000U);
+    spi_op_unlock();
+    return ok;
 }
 
 bool ESP32_SPI_ApplyCommParams(uint32_t heartbeat_ms,
@@ -1331,6 +1391,7 @@ bool ESP32_SPI_ApplyCommParams(uint32_t heartbeat_ms,
                                uint32_t chunk_delay_ms)
 {
     esp32_comm_params_payload_t payload;
+    bool ok;
 
     if (!ESP32_SPI_EnsureReady(ESP32_SPI_DEFAULT_TIMEOUT_MS)) {
         return false;
@@ -1354,28 +1415,41 @@ bool ESP32_SPI_ApplyCommParams(uint32_t heartbeat_ms,
            (unsigned long)downsample_step,
            (unsigned long)upload_points);
 
-    return request_wait_response_session_retry(ESP32_MSG_SET_COMM_PARAMS_REQ,
-                                               &payload,
-                                               (uint16_t)sizeof(payload),
-                                               ESP32_MSG_SET_COMM_PARAMS_RESP,
-                                               5000U);
+    if (!spi_op_lock()) {
+        return false;
+    }
+    ok = request_wait_response_session_retry(ESP32_MSG_SET_COMM_PARAMS_REQ,
+                                             &payload,
+                                             (uint16_t)sizeof(payload),
+                                             ESP32_MSG_SET_COMM_PARAMS_RESP,
+                                             5000U);
+    spi_op_unlock();
+    return ok;
 }
 
 bool ESP32_SPI_QueryStatus(esp32_spi_status_t *out_status, uint32_t timeout_ms)
 {
+    bool ok;
+
     if (!ESP32_SPI_EnsureReady(ESP32_SPI_DEFAULT_TIMEOUT_MS)) {
         return false;
     }
-    if (!query_status_internal(timeout_ms == 0U ? 1000U : timeout_ms)) {
+    if (!spi_op_lock()) {
+        return false;
+    }
+    ok = query_status_internal(timeout_ms == 0U ? 1000U : timeout_ms);
+    if (!ok) {
         if (!last_failure_was_session_mismatch() ||
             !recover_session_mismatch("QUERY_STATUS_REQ") ||
             !query_status_internal(timeout_ms == 0U ? 1000U : timeout_ms)) {
+            spi_op_unlock();
             return false;
         }
     }
     if (out_status != NULL) {
         *out_status = s_status;
     }
+    spi_op_unlock();
     return true;
 }
 
@@ -1386,7 +1460,14 @@ const esp32_spi_status_t *ESP32_SPI_GetStatus(void)
 
 bool ESP32_SPI_PollEvents(uint32_t timeout_ms)
 {
-    return poll_noop(timeout_ms);
+    bool ok;
+
+    if (!spi_op_lock()) {
+        return false;
+    }
+    ok = poll_noop(timeout_ms);
+    spi_op_unlock();
+    return ok;
 }
 
 uint32_t ESP32_SPI_GetLastTxSeq(void)
@@ -1528,9 +1609,13 @@ bool ESP32_SPI_ConnectWifi(uint32_t timeout_ms)
     if (!ESP32_SPI_EnsureReady(ESP32_SPI_DEFAULT_TIMEOUT_MS)) {
         return false;
     }
+    if (!spi_op_lock()) {
+        return false;
+    }
 
     s_wifi_failed_seen = 0U;
     if (!request_wait_response_session_retry(ESP32_MSG_CONNECT_REQ, NULL, 0U, ESP32_MSG_CONNECT_RESP, 3000U)) {
+        spi_op_unlock();
         return false;
     }
 
@@ -1538,38 +1623,51 @@ bool ESP32_SPI_ConnectWifi(uint32_t timeout_ms)
     while ((HAL_GetTick() - start) < timeout_ms) {
         if (s_status.wifi_connected) {
             (void)query_status_internal(500U);
+            spi_op_unlock();
             return true;
         }
         if (s_wifi_failed_seen) {
             (void)query_status_internal(500U);
+            spi_op_unlock();
             return false;
         }
         HAL_Delay(ESP32_SPI_WIFI_POLL_INTERVAL_MS);
         (void)query_status_internal(800U);
         if (s_status.wifi_connected) {
+            spi_op_unlock();
             return true;
         }
         if (s_wifi_failed_seen) {
+            spi_op_unlock();
             return false;
         }
     }
 
     printf("[ESP32SPI] WiFi connect timeout, last_error=%s\r\n", s_status.last_error);
+    spi_op_unlock();
     return false;
 }
 
 bool ESP32_SPI_CloudConnect(uint32_t timeout_ms)
 {
+    bool ok;
+
     (void)timeout_ms;
     if (!ESP32_SPI_EnsureReady(ESP32_SPI_DEFAULT_TIMEOUT_MS)) {
         return false;
     }
+    if (!spi_op_lock()) {
+        return false;
+    }
     if (!request_wait_response_session_retry(ESP32_MSG_CLOUD_CONNECT_REQ, NULL, 0U, ESP32_MSG_CLOUD_CONNECT_RESP, 3000U)) {
         (void)query_status_internal(500U);
+        spi_op_unlock();
         return false;
     }
     (void)query_status_internal(500U);
-    return s_status.cloud_connected || s_status.wifi_connected;
+    ok = s_status.cloud_connected || s_status.wifi_connected;
+    spi_op_unlock();
+    return ok;
 }
 
 bool ESP32_SPI_RegisterNode(uint32_t timeout_ms)
@@ -1579,28 +1677,38 @@ bool ESP32_SPI_RegisterNode(uint32_t timeout_ms)
     if (!ESP32_SPI_EnsureReady(ESP32_SPI_DEFAULT_TIMEOUT_MS)) {
         return false;
     }
+    if (!spi_op_lock()) {
+        return false;
+    }
 
     s_register_event_seen = 0U;
     s_register_result = ESP32_SPI_RESULT_PENDING;
     if (!request_wait_response_session_retry(ESP32_MSG_REGISTER_REQ, NULL, 0U, ESP32_MSG_REGISTER_RESP, 3000U)) {
         (void)query_status_internal(500U);
+        spi_op_unlock();
         return false;
     }
 
     start = HAL_GetTick();
     while ((HAL_GetTick() - start) < timeout_ms) {
         if (s_status.registered_with_cloud) {
+            spi_op_unlock();
             return true;
         }
         if (s_register_event_seen) {
-            return s_register_result == ESP32_RESULT_OK;
+            bool ok = (s_register_result == ESP32_RESULT_OK);
+            spi_op_unlock();
+            return ok;
         }
         (void)query_status_internal(600U);
         if (s_status.registered_with_cloud) {
+            spi_op_unlock();
             return true;
         }
         if (s_register_event_seen) {
-            return s_register_result == ESP32_RESULT_OK;
+            bool ok = (s_register_result == ESP32_RESULT_OK);
+            spi_op_unlock();
+            return ok;
         }
         HAL_Delay(100);
     }
@@ -1608,15 +1716,20 @@ bool ESP32_SPI_RegisterNode(uint32_t timeout_ms)
     printf("[ESP32SPI] register timeout, http=%ld err=%s\r\n",
            (long)s_status.last_http_status,
            s_status.last_error);
+    spi_op_unlock();
     return false;
 }
 
 bool ESP32_SPI_StartReport(uint8_t report_mode, uint32_t timeout_ms)
 {
     esp32_start_report_payload_t payload;
+    bool ok;
 
     (void)timeout_ms;
     if (!ESP32_SPI_EnsureReady(ESP32_SPI_DEFAULT_TIMEOUT_MS)) {
+        return false;
+    }
+    if (!spi_op_lock()) {
         return false;
     }
 
@@ -1629,24 +1742,35 @@ bool ESP32_SPI_StartReport(uint8_t report_mode, uint32_t timeout_ms)
                                              ESP32_MSG_START_REPORT_RESP,
                                              3000U)) {
         (void)query_status_internal(500U);
+        spi_op_unlock();
         return false;
     }
     (void)query_status_internal(500U);
-    return s_status.reporting_enabled != 0U;
+    ok = (s_status.reporting_enabled != 0U);
+    spi_op_unlock();
+    return ok;
 }
 
 bool ESP32_SPI_StopReport(uint32_t timeout_ms)
 {
+    bool ok;
+
     (void)timeout_ms;
     if (!ESP32_SPI_EnsureReady(ESP32_SPI_DEFAULT_TIMEOUT_MS)) {
         return false;
     }
+    if (!spi_op_lock()) {
+        return false;
+    }
     if (!request_wait_response_session_retry(ESP32_MSG_STOP_REPORT_REQ, NULL, 0U, ESP32_MSG_STOP_REPORT_RESP, 3000U)) {
         (void)query_status_internal(500U);
+        spi_op_unlock();
         return false;
     }
     (void)query_status_internal(500U);
-    return true;
+    ok = true;
+    spi_op_unlock();
+    return ok;
 }
 
 bool ESP32_SPI_ReportSummary(uint32_t frame_id,
@@ -1668,6 +1792,9 @@ bool ESP32_SPI_ReportSummary(uint32_t frame_id,
         return false;
     }
     if (!ESP32_SPI_EnsureReady(ESP32_SPI_DEFAULT_TIMEOUT_MS)) {
+        return false;
+    }
+    if (!spi_op_lock()) {
         return false;
     }
 
@@ -1700,6 +1827,7 @@ bool ESP32_SPI_ReportSummary(uint32_t frame_id,
                                      &payload,
                                      (uint16_t)sizeof(payload),
                                      NULL)) {
+        spi_op_unlock();
         return false;
     }
 
@@ -1707,16 +1835,23 @@ bool ESP32_SPI_ReportSummary(uint32_t frame_id,
     start = HAL_GetTick();
     while ((HAL_GetTick() - start) < timeout_ms) {
         if (s_last_tx_accepted_ref_seq == ref_seq) {
+            spi_op_unlock();
             return true;
         }
         if (s_last_tx_result_ref_seq == ref_seq) {
-            return s_last_tx_result_code == ESP32_RESULT_OK;
+            bool ok = (s_last_tx_result_code == ESP32_RESULT_OK);
+            spi_op_unlock();
+            return ok;
         }
         if (s_last_nack_ref_seq == ref_seq) {
-            printf("[ESP32SPI] summary NACK reason=%u\r\n", (unsigned int)s_last_nack_reason);
+            if (!nack_reason_is_retryable(s_last_nack_reason) || ESP32_SPI_LOG_RETRYABLE_NACKS) {
+                printf("[ESP32SPI] summary NACK reason=%u\r\n", (unsigned int)s_last_nack_reason);
+            }
+            spi_op_unlock();
             return false;
         }
         if (!poll_noop(40U)) {
+            spi_op_unlock();
             return false;
         }
     }
@@ -1724,6 +1859,7 @@ bool ESP32_SPI_ReportSummary(uint32_t frame_id,
     printf("[ESP32SPI] summary accepted timeout frame=%lu ref=%lu\r\n",
            (unsigned long)frame_id,
            (unsigned long)ref_seq);
+    spi_op_unlock();
     return false;
 }
 
@@ -1774,11 +1910,13 @@ static bool wait_report_packet_accepted(uint32_t frame_id, uint32_t ref_seq, uin
             return s_last_tx_result_code == ESP32_RESULT_OK;
         }
         if (s_last_nack_ref_seq == ref_seq) {
-            printf("[ESP32SPI] full %s NACK frame=%lu ref=%lu reason=%u\r\n",
-                   label ? label : "packet",
-                   (unsigned long)frame_id,
-                   (unsigned long)ref_seq,
-                   (unsigned int)s_last_nack_reason);
+            if (!nack_reason_is_retryable(s_last_nack_reason) || ESP32_SPI_LOG_RETRYABLE_NACKS) {
+                printf("[ESP32SPI] full %s NACK frame=%lu ref=%lu reason=%u\r\n",
+                       label ? label : "packet",
+                       (unsigned long)frame_id,
+                       (unsigned long)ref_seq,
+                       (unsigned int)s_last_nack_reason);
+            }
             return false;
         }
         if (!poll_noop(40U)) {
@@ -1798,8 +1936,13 @@ static bool report_nack_is_retryable(uint32_t ref_seq)
     if (s_last_nack_ref_seq != ref_seq) {
         return true;
     }
-    return (s_last_nack_reason == ESP32_NACK_CRC_FAIL ||
-            s_last_nack_reason == ESP32_NACK_BAD_LENGTH);
+    return nack_reason_is_retryable(s_last_nack_reason);
+}
+
+static bool nack_reason_is_retryable(uint16_t reason)
+{
+    return (reason == ESP32_NACK_CRC_FAIL ||
+            reason == ESP32_NACK_BAD_LENGTH);
 }
 
 static void log_report_accept_retry(const char *label,
@@ -1807,12 +1950,31 @@ static void log_report_accept_retry(const char *label,
                                     uint32_t ref_seq,
                                     uint8_t attempt)
 {
+#if ESP32_SPI_LOG_RETRYABLE_NACKS
     printf("[ESP32SPI] full %s accepted retry frame=%lu ref=%lu reason=%u attempt=%u\r\n",
            label ? label : "packet",
            (unsigned long)frame_id,
            (unsigned long)ref_seq,
            (unsigned int)((s_last_nack_ref_seq == ref_seq) ? s_last_nack_reason : 0U),
            (unsigned int)(attempt + 1U));
+#else
+    (void)label;
+    (void)frame_id;
+    (void)ref_seq;
+    (void)attempt;
+#endif
+}
+
+static void report_retry_backoff(uint32_t ref_seq)
+{
+    if (s_last_nack_ref_seq != ref_seq) {
+        return;
+    }
+    if (s_last_nack_reason == ESP32_NACK_CRC_FAIL ||
+        s_last_nack_reason == ESP32_NACK_BAD_LENGTH) {
+        wait_ready_release(ESP32_SPI_READY_RELEASE_TIMEOUT_MS);
+        HAL_Delay(ESP32_SPI_REPORT_RETRY_BACKOFF_MS);
+    }
 }
 
 static bool send_report_packet_wait(uint8_t msg_type,
@@ -1825,7 +1987,11 @@ static bool send_report_packet_wait(uint8_t msg_type,
     uint32_t ref_seq;
     uint32_t recover_timeout = (timeout_ms < 150U) ? timeout_ms : 150U;
 
-    for (uint8_t attempt = 0U; attempt < 3U; attempt++) {
+    if (!spi_op_lock()) {
+        return false;
+    }
+
+    for (uint8_t attempt = 0U; attempt < ESP32_SPI_REPORT_RETRY_ATTEMPTS; attempt++) {
         s_last_tx_accepted_ref_seq = 0U;
         s_last_tx_result_ref_seq = 0U;
         s_last_tx_result_code = ESP32_SPI_RESULT_PENDING;
@@ -1840,15 +2006,19 @@ static bool send_report_packet_wait(uint8_t msg_type,
                 if (msg_type == ESP32_MSG_REPORT_FULL_END) {
                     s_last_report_full_end_ref_seq = ref_seq;
                 }
+                spi_op_unlock();
                 return true;
             }
             if (!report_nack_is_retryable(ref_seq)) {
+                spi_op_unlock();
                 return false;
             }
-            if (attempt + 1U < 3U) {
+            report_retry_backoff(ref_seq);
+            if (attempt + 1U < ESP32_SPI_REPORT_RETRY_ATTEMPTS) {
                 log_report_accept_retry(label, frame_id, ref_seq, attempt);
                 continue;
             }
+            spi_op_unlock();
             return false;
         }
 
@@ -1858,6 +2028,7 @@ static bool send_report_packet_wait(uint8_t msg_type,
             if (msg_type == ESP32_MSG_REPORT_FULL_END) {
                 s_last_report_full_end_ref_seq = ref_seq;
             }
+            spi_op_unlock();
             return true;
         }
         printf("[ESP32SPI] full %s transaction retry frame=%lu attempt=%u\r\n",
@@ -1865,6 +2036,7 @@ static bool send_report_packet_wait(uint8_t msg_type,
                (unsigned long)frame_id,
                (unsigned int)(attempt + 1U));
     }
+    spi_op_unlock();
     return false;
 }
 
@@ -1879,7 +2051,11 @@ static bool send_report_built_packet_wait(uint8_t msg_type,
     uint32_t ref_seq;
     uint32_t recover_timeout = (timeout_ms < 150U) ? timeout_ms : 150U;
 
-    for (uint8_t attempt = 0U; attempt < 3U; attempt++) {
+    if (!spi_op_lock()) {
+        return false;
+    }
+
+    for (uint8_t attempt = 0U; attempt < ESP32_SPI_REPORT_RETRY_ATTEMPTS; attempt++) {
         s_last_tx_accepted_ref_seq = 0U;
         s_last_tx_result_ref_seq = 0U;
         s_last_tx_result_code = ESP32_SPI_RESULT_PENDING;
@@ -1891,21 +2067,26 @@ static bool send_report_built_packet_wait(uint8_t msg_type,
         if (transact_and_handle_built_payload(msg_type, payload_len, builder, builder_ctx, NULL)) {
             ref_seq = s_last_tx_seq;
             if (wait_report_packet_accepted(frame_id, ref_seq, timeout_ms, label)) {
+                spi_op_unlock();
                 return true;
             }
             if (!report_nack_is_retryable(ref_seq)) {
+                spi_op_unlock();
                 return false;
             }
-            if (attempt + 1U < 3U) {
+            report_retry_backoff(ref_seq);
+            if (attempt + 1U < ESP32_SPI_REPORT_RETRY_ATTEMPTS) {
                 log_report_accept_retry(label, frame_id, ref_seq, attempt);
                 continue;
             }
+            spi_op_unlock();
             return false;
         }
 
         ref_seq = s_last_tx_seq;
         if (ref_seq != 0U && recover_timeout != 0U &&
             wait_report_packet_accepted(frame_id, ref_seq, recover_timeout, label)) {
+            spi_op_unlock();
             return true;
         }
         printf("[ESP32SPI] full %s transaction retry frame=%lu attempt=%u\r\n",
@@ -1913,6 +2094,7 @@ static bool send_report_built_packet_wait(uint8_t msg_type,
                (unsigned long)frame_id,
                (unsigned int)(attempt + 1U));
     }
+    spi_op_unlock();
     return false;
 }
 

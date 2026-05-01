@@ -100,6 +100,7 @@ python -m PyInstaller --noconfirm --clean --onefile --windowed ^
   --hidden-import "flask_socketio" ^
   --hidden-import "flask_wtf" ^
   --hidden-import "flask_wtf.csrf" ^
+  --hidden-import "orjson" ^
   --hidden-import "webview" ^
   %ICON_ARG% ^
   run_desktop.py

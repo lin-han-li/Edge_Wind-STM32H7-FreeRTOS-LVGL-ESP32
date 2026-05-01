@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "esp_crc.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -17,9 +18,49 @@
 
 static const char *TAG = "report_codec";
 
-#define REPORT_HTTP_WRITE_FAST_RETRY_MAX 3U
-#define REPORT_HTTP_WRITE_FAST_RETRY_WINDOW_MS 100LL
-#define REPORT_HTTP_WRITE_RETRY_DELAY_MS 20U
+#define REPORT_HTTP_WRITE_RETRY_MAX 32U
+#define REPORT_HTTP_WRITE_RETRY_DELAY_MS 5U
+#define REPORT_HTTP_WRITE_CHUNK_AUTO 2048U
+#define REPORT_HTTP_WRITE_CHUNK_MIN 512U
+#define REPORT_HTTP_WRITE_CHUNK_MAX 4096U
+#define EW_FULL_V1_MAGIC UINT32_C(0x31465745)
+#define EW_FULL_V1_VERSION 1U
+
+typedef struct __attribute__((packed)) {
+    uint32_t magic;
+    uint16_t version;
+    uint16_t header_len;
+    uint32_t frame_id;
+    uint64_t timestamp_ms;
+    uint32_t flags;
+    char node_id[APP_MAX_NODE_ID_LEN];
+    char fault_code[8];
+    uint8_t report_mode;
+    uint8_t status_code;
+    uint8_t channel_count;
+    uint8_t reserved0;
+    uint32_t downsample_step;
+    uint32_t upload_points;
+    uint32_t heartbeat_ms;
+    uint32_t min_interval_ms;
+    uint32_t http_timeout_ms;
+    uint32_t chunk_kb;
+    uint32_t chunk_delay_ms;
+    uint32_t data_crc32;
+} ew_full_v1_header_t;
+
+typedef struct __attribute__((packed)) {
+    uint8_t channel_id;
+    uint8_t reserved0;
+    uint16_t waveform_count;
+    uint16_t fft_count;
+    uint16_t reserved1;
+    int32_t value_scaled;
+    int32_t current_value_scaled;
+} ew_full_v1_channel_meta_t;
+
+_Static_assert(sizeof(ew_full_v1_header_t) == 132U, "unexpected ew_full_v1_header_t size");
+_Static_assert(sizeof(ew_full_v1_channel_meta_t) == 16U, "unexpected ew_full_v1_channel_meta_t size");
 
 typedef enum {
     BUILDER_MODE_COUNT = 0,
@@ -109,6 +150,114 @@ static bool builder_deadline_expired(json_builder_t *builder)
     return true;
 }
 
+static bool stream_deadline_expired(int64_t deadline_us, size_t pending_len)
+{
+    if (deadline_us <= 0) {
+        return false;
+    }
+    if (esp_timer_get_time() < deadline_us) {
+        return false;
+    }
+    ESP_LOGW(TAG,
+             "stream binary budget expired pending=%u heap=%u min=%u largest=%u",
+             (unsigned int) pending_len,
+             (unsigned int) heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+             (unsigned int) heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+             (unsigned int) heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    return true;
+}
+
+static size_t http_write_chunk_limit(const app_config_snapshot_t *config)
+{
+    uint32_t chunk_kb = 0U;
+    size_t chunk_bytes;
+
+    if (config != NULL) {
+        chunk_kb = config->comm.chunk_kb;
+    }
+    if (chunk_kb == 0U) {
+        return REPORT_HTTP_WRITE_CHUNK_AUTO;
+    }
+
+    chunk_bytes = (size_t) chunk_kb * 1024U;
+    if (chunk_bytes < REPORT_HTTP_WRITE_CHUNK_MIN) {
+        chunk_bytes = REPORT_HTTP_WRITE_CHUNK_MIN;
+    }
+    if (chunk_bytes > REPORT_HTTP_WRITE_CHUNK_MAX) {
+        chunk_bytes = REPORT_HTTP_WRITE_CHUNK_MAX;
+    }
+    return chunk_bytes;
+}
+
+static uint32_t http_write_chunk_delay_ms(const app_config_snapshot_t *config)
+{
+    if (config == NULL) {
+        return 0U;
+    }
+    return config->comm.chunk_delay_ms;
+}
+
+static esp_err_t http_write_all(esp_http_client_handle_t client,
+                                const app_config_snapshot_t *config,
+                                const void *data,
+                                size_t data_len,
+                                int64_t deadline_us)
+{
+    const uint8_t *bytes = (const uint8_t *) data;
+    size_t offset = 0U;
+    const size_t write_chunk_limit = http_write_chunk_limit(config);
+    const uint32_t write_delay_ms = http_write_chunk_delay_ms(config);
+    uint32_t retry_count = 0U;
+
+    if (client == NULL || (data == NULL && data_len > 0U)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    while (offset < data_len) {
+        size_t write_len = data_len - offset;
+        if (write_len > write_chunk_limit) {
+            write_len = write_chunk_limit;
+        }
+        if (stream_deadline_expired(deadline_us, data_len - offset)) {
+            return ESP_ERR_TIMEOUT;
+        }
+
+        int64_t write_start_us = esp_timer_get_time();
+        int written = esp_http_client_write(client, (const char *) bytes + offset, (int) write_len);
+        int64_t write_ms = (esp_timer_get_time() - write_start_us) / 1000LL;
+        if (written <= 0) {
+            const int saved_errno = errno;
+            bool retry_allowed = retry_count < REPORT_HTTP_WRITE_RETRY_MAX;
+
+            ESP_LOGW(TAG,
+                     "http_write(binary) backpressure ret=%d errno=%d offset=%u len=%u write_ms=%lld retry=%u/%u heap=%u min=%u largest=%u",
+                     written,
+                     saved_errno,
+                     (unsigned int) offset,
+                     (unsigned int) data_len,
+                     (long long) write_ms,
+                     (unsigned int) retry_count,
+                     (unsigned int) REPORT_HTTP_WRITE_RETRY_MAX,
+                     (unsigned int) heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                     (unsigned int) heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                     (unsigned int) heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+            if (!retry_allowed) {
+                return ESP_FAIL;
+            }
+            ++retry_count;
+            vTaskDelay(pdMS_TO_TICKS(REPORT_HTTP_WRITE_RETRY_DELAY_MS));
+            continue;
+        }
+        offset += (size_t) written;
+        retry_count = 0U;
+        if (write_delay_ms > 0U && offset < data_len) {
+            vTaskDelay(pdMS_TO_TICKS(write_delay_ms));
+        }
+    }
+
+    return ESP_OK;
+}
+
 static bool builder_flush(json_builder_t *builder)
 {
     size_t offset = 0;
@@ -119,16 +268,20 @@ static bool builder_flush(json_builder_t *builder)
     }
 
     while (offset < builder->len) {
+        size_t write_len = builder->len - offset;
+
+        if (write_len > REPORT_HTTP_WRITE_CHUNK_AUTO) {
+            write_len = REPORT_HTTP_WRITE_CHUNK_AUTO;
+        }
         if (builder_deadline_expired(builder)) {
             return false;
         }
         int64_t write_start_us = esp_timer_get_time();
-        int written = esp_http_client_write(builder->client, builder->buf + offset, (int) (builder->len - offset));
+        int written = esp_http_client_write(builder->client, builder->buf + offset, (int) write_len);
         int64_t write_ms = (esp_timer_get_time() - write_start_us) / 1000LL;
         if (written <= 0) {
             const int saved_errno = errno;
-            bool fast_retry_allowed = (write_ms <= REPORT_HTTP_WRITE_FAST_RETRY_WINDOW_MS) &&
-                                      (retry_count < REPORT_HTTP_WRITE_FAST_RETRY_MAX);
+            bool retry_allowed = retry_count < REPORT_HTTP_WRITE_RETRY_MAX;
 
             ESP_LOGW(TAG,
                      "http_write backpressure ret=%d errno=%d offset=%u len=%u write_ms=%lld retry=%u/%u heap=%u min=%u largest=%u",
@@ -138,12 +291,12 @@ static bool builder_flush(json_builder_t *builder)
                      (unsigned int) builder->len,
                      (long long) write_ms,
                      (unsigned int) retry_count,
-                     (unsigned int) REPORT_HTTP_WRITE_FAST_RETRY_MAX,
+                     (unsigned int) REPORT_HTTP_WRITE_RETRY_MAX,
                      (unsigned int) heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
                      (unsigned int) heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
                      (unsigned int) heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
 
-            if (!fast_retry_allowed) {
+            if (!retry_allowed) {
                 ESP_LOGE(TAG,
                          "http_write failed ret=%d errno=%d offset=%u len=%u write_ms=%lld heap=%u min=%u largest=%u",
                          written,
@@ -461,6 +614,166 @@ esp_err_t report_codec_stream_heartbeat_json(const app_config_snapshot_t *config
 
     builder_init_stream(&builder, scratch, scratch_len, client, total_budget_ms);
     return emit_heartbeat_json(&builder, config, frame) ? ESP_OK : ESP_FAIL;
+}
+
+static bool report_frame_validate_full(const report_frame_t *frame)
+{
+    if (frame == NULL || frame->channel_count == 0U || frame->channel_count > REPORT_MAX_CHANNELS) {
+        return false;
+    }
+
+    for (size_t i = 0; i < frame->channel_count; ++i) {
+        const report_channel_data_t *channel = &frame->channels[i];
+        if (channel->waveform_count > UINT16_MAX || channel->fft_count > UINT16_MAX) {
+            return false;
+        }
+        if (channel->waveform_count > 0U && channel->waveform_scaled == NULL) {
+            return false;
+        }
+        if (channel->fft_count > 0U && channel->fft_tenths == NULL) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static void fill_full_channel_meta(ew_full_v1_channel_meta_t *meta,
+                                   const report_channel_data_t *channel)
+{
+    memset(meta, 0, sizeof(*meta));
+    meta->channel_id = channel->channel_id;
+    meta->waveform_count = (uint16_t) channel->waveform_count;
+    meta->fft_count = (uint16_t) channel->fft_count;
+    meta->value_scaled = channel->value_scaled;
+    meta->current_value_scaled = channel->current_value_scaled;
+}
+
+esp_err_t report_codec_measure_full_binary(const app_config_snapshot_t *config,
+                                           const report_frame_t *frame,
+                                           report_full_binary_info_t *out_info)
+{
+    size_t total_len;
+    uint32_t crc;
+
+    (void) config;
+
+    if (frame == NULL || out_info == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!report_frame_validate_full(frame)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    total_len = sizeof(ew_full_v1_header_t) + (frame->channel_count * sizeof(ew_full_v1_channel_meta_t));
+    crc = 0U;
+    for (size_t i = 0; i < frame->channel_count; ++i) {
+        const report_channel_data_t *channel = &frame->channels[i];
+        ew_full_v1_channel_meta_t meta;
+        fill_full_channel_meta(&meta, channel);
+        crc = esp_crc32_le(crc, (const uint8_t *) &meta, sizeof(meta));
+        total_len += channel->waveform_count * sizeof(int32_t);
+        total_len += channel->fft_count * sizeof(int16_t);
+    }
+    for (size_t i = 0; i < frame->channel_count; ++i) {
+        const report_channel_data_t *channel = &frame->channels[i];
+        if (channel->waveform_count > 0U) {
+            crc = esp_crc32_le(crc,
+                               (const uint8_t *) channel->waveform_scaled,
+                               channel->waveform_count * sizeof(int32_t));
+        }
+        if (channel->fft_count > 0U) {
+            crc = esp_crc32_le(crc,
+                               (const uint8_t *) channel->fft_tenths,
+                               channel->fft_count * sizeof(int16_t));
+        }
+    }
+
+    out_info->body_len = total_len;
+    out_info->data_crc32 = crc;
+    return ESP_OK;
+}
+
+esp_err_t report_codec_stream_full_binary(const app_config_snapshot_t *config,
+                                          const report_frame_t *frame,
+                                          uint32_t data_crc32,
+                                          esp_http_client_handle_t client,
+                                          uint32_t total_budget_ms)
+{
+    ew_full_v1_header_t header;
+    int64_t deadline_us = 0;
+    esp_err_t err;
+
+    if (config == NULL || frame == NULL || client == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!report_frame_validate_full(frame)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    memset(&header, 0, sizeof(header));
+    header.magic = EW_FULL_V1_MAGIC;
+    header.version = EW_FULL_V1_VERSION;
+    header.header_len = (uint16_t) sizeof(header);
+    header.frame_id = frame->frame_id;
+    header.timestamp_ms = frame->timestamp_ms;
+    header.flags = 0U;
+    snprintf(header.node_id, sizeof(header.node_id), "%s", config->device.node_id);
+    snprintf(header.fault_code, sizeof(header.fault_code), "%s", frame->fault_code[0] != '\0' ? frame->fault_code : "E00");
+    header.report_mode = (uint8_t) frame->mode;
+    header.status_code = (uint8_t) frame->status;
+    header.channel_count = (uint8_t) frame->channel_count;
+    header.downsample_step = frame->downsample_step;
+    header.upload_points = frame->upload_points;
+    header.heartbeat_ms = config->comm.heartbeat_ms;
+    header.min_interval_ms = config->comm.min_interval_ms;
+    header.http_timeout_ms = config->comm.http_timeout_ms;
+    header.chunk_kb = config->comm.chunk_kb;
+    header.chunk_delay_ms = config->comm.chunk_delay_ms;
+    header.data_crc32 = data_crc32;
+
+    if (total_budget_ms > 0U) {
+        deadline_us = esp_timer_get_time() + ((int64_t) total_budget_ms * 1000LL);
+    }
+
+    err = http_write_all(client, config, &header, sizeof(header), deadline_us);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    for (size_t i = 0; i < frame->channel_count; ++i) {
+        ew_full_v1_channel_meta_t meta;
+        fill_full_channel_meta(&meta, &frame->channels[i]);
+        err = http_write_all(client, config, &meta, sizeof(meta), deadline_us);
+        if (err != ESP_OK) {
+            return err;
+        }
+    }
+
+    for (size_t i = 0; i < frame->channel_count; ++i) {
+        const report_channel_data_t *channel = &frame->channels[i];
+        if (channel->waveform_count > 0U) {
+            err = http_write_all(client,
+                                 config,
+                                 channel->waveform_scaled,
+                                 channel->waveform_count * sizeof(int32_t),
+                                 deadline_us);
+            if (err != ESP_OK) {
+                return err;
+            }
+        }
+        if (channel->fft_count > 0U) {
+            err = http_write_all(client,
+                                 config,
+                                 channel->fft_tenths,
+                                 channel->fft_count * sizeof(int16_t),
+                                 deadline_us);
+            if (err != ESP_OK) {
+                return err;
+            }
+        }
+    }
+
+    return ESP_OK;
 }
 
 static cJSON *find_key_recursive(cJSON *node, const char *key)
