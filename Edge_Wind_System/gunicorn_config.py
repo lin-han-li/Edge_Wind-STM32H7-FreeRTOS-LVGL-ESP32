@@ -13,12 +13,16 @@ bind = f"{os.environ.get('HOST', '0.0.0.0')}:{os.environ.get('PORT', '5000')}"
 # 使用 eventlet worker（必须，因为 Flask-SocketIO 需要异步支持）
 worker_class = 'eventlet'
 
-# Worker 数量（建议：CPU核心数 * 2 + 1，但 Flask-SocketIO 通常使用较少 worker）
-# 对于 WebSocket 应用，通常使用 2-4 个 worker 即可
-workers = int(os.environ.get('GUNICORN_WORKERS', multiprocessing.cpu_count() * 2 + 1))
-# 限制最大 worker 数量，避免资源过度消耗
-if workers > 4:
-    workers = 4
+# 重要：
+# 本项目当前把 active_nodes / node_report_modes / pending command cache
+# 保存在进程内内存里，多 worker 会造成状态分裂：
+# - /api/node/full_frame_bin 可能落到 worker A
+# - /api/nodes/upload_points 可能落到 worker B
+# 两边内存不共享，最终表现为 UI/命令状态错乱、偶发 409、命令延迟。
+#
+# 这里默认强制单 worker，优先保证实时链路和命令闭环一致性。
+# 如果后续把运行态迁移到 Redis/DB，再考虑多 worker。
+workers = 1
 
 # 每个 worker 的线程数（eventlet worker 不使用此参数，但保留以兼容）
 threads = 1
@@ -72,4 +76,3 @@ limit_request_field_size = 8190
 # ==================== SSL/TLS（如需 HTTPS，取消注释）====================
 # keyfile = '/path/to/keyfile'
 # certfile = '/path/to/certfile'
-

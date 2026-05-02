@@ -23,7 +23,7 @@ typedef struct {
 static report_channel_tracking_t s_tracking[REPORT_MAX_CHANNELS];
 
 /*
- * Full frames are large (~85 KB for 4ch x 4096 waveform + 2048 FFT).
+ * Full frames are large (~53 KB for 4ch x 4096 waveform(int16) + 2048 FFT).
  * Repeated malloc/free every few seconds eventually fragments ESP32 heap and
  * was observed to make full uploads fail after long runs.  Keep one reusable
  * full-frame assembly buffer in static RAM.  STM32 sends the next full frame
@@ -32,7 +32,7 @@ static report_channel_tracking_t s_tracking[REPORT_MAX_CHANNELS];
  */
 static report_frame_t s_full_frame_storage;
 static bool s_full_frame_in_use;
-static int32_t s_full_waveform_storage[REPORT_MAX_CHANNELS][REPORT_FULL_MAX_WAVEFORM_COUNT];
+static int16_t s_full_waveform_storage[REPORT_MAX_CHANNELS][REPORT_FULL_MAX_WAVEFORM_COUNT];
 static int16_t s_full_fft_storage[REPORT_MAX_CHANNELS][REPORT_FULL_MAX_FFT_COUNT];
 static uint8_t s_full_waveform_received_storage[REPORT_MAX_CHANNELS][(REPORT_FULL_MAX_WAVEFORM_COUNT + 7U) / 8U];
 static uint8_t s_full_fft_received_storage[REPORT_MAX_CHANNELS][(REPORT_FULL_MAX_FFT_COUNT + 7U) / 8U];
@@ -230,7 +230,7 @@ esp_err_t report_buffer_begin_full(const protocol_report_full_begin_payload_t *p
                 ch->fft_count > REPORT_FULL_MAX_FFT_COUNT) {
                 return ESP_ERR_INVALID_SIZE;
             }
-            alloc_bytes += ((size_t) ch->waveform_count * sizeof(int32_t)) +
+            alloc_bytes += ((size_t) ch->waveform_count * sizeof(int16_t)) +
                            ((size_t) ch->fft_count * sizeof(int16_t)) +
                            bitset_size_for_count(ch->waveform_count) +
                            bitset_size_for_count(ch->fft_count);
@@ -244,7 +244,7 @@ esp_err_t report_buffer_begin_full(const protocol_report_full_begin_payload_t *p
         report_channel_data_t *ch = &frame->channels[i];
         if (ch->waveform_count > 0U) {
             ch->waveform_scaled = s_full_waveform_storage[i];
-            memset(ch->waveform_scaled, 0, ch->waveform_count * sizeof(int32_t));
+            memset(ch->waveform_scaled, 0, ch->waveform_count * sizeof(int16_t));
             tracking[i].waveform_received = s_full_waveform_received_storage[i];
             memset(tracking[i].waveform_received, 0, bitset_size_for_count(ch->waveform_count));
         }
@@ -299,7 +299,7 @@ esp_err_t report_buffer_ingest_chunk(protocol_msg_type_t msg_type,
         if (prefix->element_offset + prefix->element_count > ch->waveform_count) {
             return ESP_ERR_INVALID_SIZE;
         }
-        bytes_needed = (size_t) prefix->element_count * sizeof(int32_t);
+        bytes_needed = (size_t) prefix->element_count * sizeof(int16_t);
         if (data_len != bytes_needed) {
             return ESP_ERR_INVALID_SIZE;
         }

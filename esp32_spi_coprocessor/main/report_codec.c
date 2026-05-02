@@ -20,11 +20,11 @@ static const char *TAG = "report_codec";
 
 #define REPORT_HTTP_WRITE_RETRY_MAX 32U
 #define REPORT_HTTP_WRITE_RETRY_DELAY_MS 5U
-#define REPORT_HTTP_WRITE_CHUNK_AUTO 2048U
+#define REPORT_HTTP_WRITE_CHUNK_AUTO 512U
 #define REPORT_HTTP_WRITE_CHUNK_MIN 512U
-#define REPORT_HTTP_WRITE_CHUNK_MAX 4096U
+#define REPORT_HTTP_WRITE_CHUNK_MAX 1024U
 #define EW_FULL_V1_MAGIC UINT32_C(0x31465745)
-#define EW_FULL_V1_VERSION 1U
+#define EW_FULL_V2_VERSION 2U
 
 typedef struct __attribute__((packed)) {
     uint32_t magic;
@@ -410,11 +410,11 @@ static void builder_append_json_string(json_builder_t *builder, const char *text
     builder_append(builder, "\"");
 }
 
-static void builder_append_i32_array(json_builder_t *builder, const int32_t *values, size_t count)
+static void builder_append_i16_array(json_builder_t *builder, const int16_t *values, size_t count)
 {
     builder_append(builder, "[");
     for (size_t i = 0; i < count; ++i) {
-        builder_append(builder, (i == 0U) ? "%" PRId32 : ",%" PRId32, values[i]);
+        builder_append(builder, (i == 0U) ? "%" PRId16 : ",%" PRId16, values[i]);
     }
     builder_append(builder, "]");
 }
@@ -488,7 +488,7 @@ static bool emit_heartbeat_json(json_builder_t *builder,
 
         if (frame->mode == REPORT_MODE_FULL) {
             builder_append(builder, ",\"waveform\":");
-            builder_append_i32_array(builder,
+            builder_append_i16_array(builder,
                                      channel->waveform_scaled,
                                      channel->waveform_scaled != NULL ? channel->waveform_count : 0U);
             builder_append(builder, ",\"fft_spectrum\":");
@@ -537,6 +537,7 @@ esp_err_t report_codec_build_register_json(const app_config_snapshot_t *config, 
 esp_err_t report_codec_build_empty_heartbeat_json(const app_config_snapshot_t *config,
                                                   device_status_t status,
                                                   const char *fault_code,
+                                                  report_mode_t report_mode,
                                                   char **out_json,
                                                   size_t *out_len)
 {
@@ -558,7 +559,7 @@ esp_err_t report_codec_build_empty_heartbeat_json(const app_config_snapshot_t *c
         !cJSON_AddStringToObject(root, "node_id", config->device.node_id) ||
         !cJSON_AddStringToObject(root, "status", status_to_text(status)) ||
         !cJSON_AddStringToObject(root, "fault_code", fault) ||
-        !cJSON_AddStringToObject(root, "report_mode", "summary") ||
+        !cJSON_AddStringToObject(root, "report_mode", (report_mode == REPORT_MODE_FULL) ? "full" : "summary") ||
         !cJSON_AddNumberToObject(root, "downsample_step", config->comm.downsample_step) ||
         !cJSON_AddNumberToObject(root, "upload_points", config->comm.upload_points) ||
         !cJSON_AddNumberToObject(root, "heartbeat_ms", config->comm.heartbeat_ms) ||
@@ -671,7 +672,7 @@ esp_err_t report_codec_measure_full_binary(const app_config_snapshot_t *config,
         ew_full_v1_channel_meta_t meta;
         fill_full_channel_meta(&meta, channel);
         crc = esp_crc32_le(crc, (const uint8_t *) &meta, sizeof(meta));
-        total_len += channel->waveform_count * sizeof(int32_t);
+        total_len += channel->waveform_count * sizeof(int16_t);
         total_len += channel->fft_count * sizeof(int16_t);
     }
     for (size_t i = 0; i < frame->channel_count; ++i) {
@@ -679,7 +680,7 @@ esp_err_t report_codec_measure_full_binary(const app_config_snapshot_t *config,
         if (channel->waveform_count > 0U) {
             crc = esp_crc32_le(crc,
                                (const uint8_t *) channel->waveform_scaled,
-                               channel->waveform_count * sizeof(int32_t));
+                               channel->waveform_count * sizeof(int16_t));
         }
         if (channel->fft_count > 0U) {
             crc = esp_crc32_le(crc,
@@ -712,7 +713,7 @@ esp_err_t report_codec_stream_full_binary(const app_config_snapshot_t *config,
 
     memset(&header, 0, sizeof(header));
     header.magic = EW_FULL_V1_MAGIC;
-    header.version = EW_FULL_V1_VERSION;
+    header.version = EW_FULL_V2_VERSION;
     header.header_len = (uint16_t) sizeof(header);
     header.frame_id = frame->frame_id;
     header.timestamp_ms = frame->timestamp_ms;
@@ -755,7 +756,7 @@ esp_err_t report_codec_stream_full_binary(const app_config_snapshot_t *config,
             err = http_write_all(client,
                                  config,
                                  channel->waveform_scaled,
-                                 channel->waveform_count * sizeof(int32_t),
+                                 channel->waveform_count * sizeof(int16_t),
                                  deadline_us);
             if (err != ESP_OK) {
                 return err;

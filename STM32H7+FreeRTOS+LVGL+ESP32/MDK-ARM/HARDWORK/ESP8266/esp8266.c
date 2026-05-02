@@ -430,6 +430,7 @@ static bool ESP_UI_EnsureReportStarted(uint8_t mode, const char *reason_tag);
 static void ESP_UI_ScheduleAutoRecover(const char *reason, uint8_t want_report);
 static void ESP_UI_PollAutoRecover(void);
 #if (EW_USE_ESP32_SPI_UI && ESP32_SPI_ENABLE_FULL_UPLOAD)
+static uint8_t ESP_SPI_FullPacketTxBusy(void);
 static uint8_t ESP_SPI_FullControlBusy(void);
 static void ESP_SPI_QueueCommParamsSync(const ESP_CommParams_t *p);
 static void ESP_SPI_QueueReportModeSync(uint8_t full);
@@ -2118,6 +2119,11 @@ static uint8_t ESP_SPI_FullControlBusy(void)
     return (g_full_tx_sm.active != 0U || g_spi_full_waiting_result != 0U) ? 1U : 0U;
 }
 
+static uint8_t ESP_SPI_FullPacketTxBusy(void)
+{
+    return (g_full_tx_sm.active != 0U) ? 1U : 0U;
+}
+
 static void ESP_SPI_QueueCommParamsSync(const ESP_CommParams_t *p)
 {
     if (p == NULL) {
@@ -2144,7 +2150,7 @@ static void ESP_SPI_ServiceDeferredSync(void)
     uint8_t report_target = 0U;
     ESP_CommParams_t pending_comm;
 
-    if (!g_esp_ready || ESP_SPI_FullControlBusy()) {
+    if (!g_esp_ready || ESP_SPI_FullPacketTxBusy()) {
         return;
     }
 
@@ -2181,7 +2187,9 @@ static void ESP_SPI_ServiceDeferredSync(void)
     }
 
     if (do_report_sync != 0U && g_report_enabled != 0U) {
-        ESP_SPI_FullResetUploadRuntimeState();
+        if (g_spi_full_waiting_result == 0U) {
+            ESP_SPI_FullResetUploadRuntimeState();
+        }
         if (!ESP32_SPI_StartReport(report_target, 3000U)) {
             ESP_Log("[服务器命令] ESP32同步上报模式失败，延后重试\r\n");
             ESP_SPI_QueueReportModeSync(report_target);
@@ -2306,9 +2314,9 @@ static void ESP_SPI_ApplyCommParamsToCoprocessor(const ESP_CommParams_t *p)
         return;
     }
 #if (ESP32_SPI_ENABLE_FULL_UPLOAD)
-    if (ESP_SPI_FullControlBusy()) {
+    if (ESP_SPI_FullPacketTxBusy()) {
         ESP_SPI_QueueCommParamsSync(p);
-        ESP_Log("[服务器命令] ESP32通信参数同步延后：等待 full 链路空闲\r\n");
+        ESP_Log("[服务器命令] ESP32通信参数同步延后：等待当前SPI full分包结束\r\n");
         return;
     }
 #endif
@@ -2362,11 +2370,28 @@ void ESP_Console_Poll(void)
 
 #if (EW_USE_ESP32_SPI_UI)
     {
+        static uint32_t s_last_async_event_poll_tick = 0U;
         uint8_t reset = 0U, has_mode = 0U, full = 0U;
         uint8_t has_downsample = 0U, has_upload = 0U;
         uint8_t has_hb = 0U, has_min = 0U, has_http = 0U, has_chunk = 0U, has_chunk_delay = 0U;
         uint32_t downsample = 0U, upload_points = 0U;
         uint32_t hb_ms = 0U, min_ms = 0U, http_ms = 0U, chunk_kb = 0U, chunk_delay_ms = 0U;
+
+        /* Async cloud events are delivered only when STM32 clocks the SPI link.
+           In summary/idle periods there may be no full-frame result wait loop,
+           so server commands can otherwise sit inside the ESP32 event queue for
+           minutes.  Poll a lightweight NOOP regularly whenever the link is idle
+           enough, so report_mode/upload_points/downsample commands become
+           visible quickly in every operating mode. */
+        if (g_esp_ready != 0U &&
+#if (ESP32_SPI_ENABLE_FULL_UPLOAD)
+            !ESP_SPI_FullControlBusy() &&
+#endif
+            ((now - s_last_async_event_poll_tick) >= 100U)) {
+            s_last_async_event_poll_tick = now;
+            (void)ESP32_SPI_PollEvents(10U);
+        }
+
         if (ESP32_SPI_ConsumeServerCommand(&reset,
                                            &has_mode,
                                            &full,
@@ -2472,25 +2497,27 @@ void ESP_Console_Poll(void)
 #if (EW_USE_ESP32_SPI_UI)
         if (g_esp_ready && g_report_enabled) {
 #if (EW_USE_ESP32_SPI_UI && ESP32_SPI_ENABLE_FULL_UPLOAD)
-            if (ESP_SPI_FullControlBusy()) {
+            if (ESP_SPI_FullPacketTxBusy()) {
                 ESP_SPI_QueueReportModeSync(full);
-                ESP_Log("[server-cmd] defer ESP32 report mode sync until full idle\r\n");
+                ESP_Log("[服务器命令] ESP32上报模式同步延后：等待当前SPI full分包结束\r\n");
             } else {
-                ESP_SPI_FullResetUploadRuntimeState();
+                if (g_spi_full_waiting_result == 0U) {
+                    ESP_SPI_FullResetUploadRuntimeState();
+                }
                 if (ESP32_SPI_StartReport(full, 3000U)) {
-                    ESP_Log("[æå¡å¨å½ä»¤] ESP32åæ­¥æåï¼ä¸æ¥æ¨¡å¼=%s\r\n",
+                    ESP_Log("[服务器命令] ESP32同步成功：上报模式=%s\r\n",
                             mode_text);
                 } else {
-                    ESP_Log("[æå¡å¨å½ä»¤] ESP32åæ­¥å¤±è´¥ï¼ä¸æ¥æ¨¡å¼=%s\r\n",
+                    ESP_Log("[服务器命令] ESP32同步失败：上报模式=%s\r\n",
                             mode_text);
                 }
             }
 #else
             if (ESP32_SPI_StartReport(full, 3000U)) {
-                ESP_Log("[æå¡å¨å½ä»¤] ESP32åæ­¥æåï¼ä¸æ¥æ¨¡å¼=%s\r\n",
+                ESP_Log("[服务器命令] ESP32同步成功：上报模式=%s\r\n",
                         mode_text);
             } else {
-                ESP_Log("[æå¡å¨å½ä»¤] ESP32åæ­¥å¤±è´¥ï¼ä¸æ¥æ¨¡å¼=%s\r\n",
+                ESP_Log("[服务器命令] ESP32同步失败：上报模式=%s\r\n",
                         mode_text);
             }
 #endif
@@ -3221,6 +3248,18 @@ void ESP_Post_Data(void)
                     (long)http_status,
                     (long)result_code);
             ESP_SPI_FullClearWaitState();
+            /* The ESP32 cloud task can queue SERVER_COMMAND immediately after
+               REPORT_RESULT for the same HTTP response.  If we stop polling as
+               soon as TX_RESULT arrives, the command event can remain stuck in
+               the ESP32->STM32 queue until some unrelated status poll happens.
+               Drain a few follow-up events right here so cloud commands become
+               visible to the main loop in the next iteration instead of minutes
+               later. */
+            for (uint8_t drain = 0U; drain < 3U; ++drain) {
+                if (!ESP32_SPI_PollEvents(20U)) {
+                    break;
+                }
+            }
             if (result_code == ESP32_SPI_RESULT_OK && http_status >= 200 && http_status < 300) {
                 g_spi_full_holdoff_until_tick = 0U;
                 g_spi_full_timeout_count = 0U;

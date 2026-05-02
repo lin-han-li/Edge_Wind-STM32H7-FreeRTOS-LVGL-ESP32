@@ -85,7 +85,7 @@ typedef struct {
     int32_t value_scaled;
     int32_t current_value_scaled;
     size_t waveform_count;
-    int32_t *waveform_scaled;
+    int16_t *waveform_scaled;
     size_t fft_count;
     int16_t *fft_tenths;
 } report_channel_data_t;

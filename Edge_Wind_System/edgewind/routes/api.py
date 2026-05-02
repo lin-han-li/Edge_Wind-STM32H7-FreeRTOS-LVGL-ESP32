@@ -332,6 +332,14 @@ def init_api_blueprint(app, socketio, executor, nodes, commands, report_modes, d
 def _get_report_mode(node_id: str | None) -> str:
     if not node_id:
         return DEFAULT_REPORT_MODE
+    try:
+        node_data = ((active_nodes.get(node_id) or {}).get('data') or {})
+        mode = str(node_data.get('report_mode') or '').strip().lower()
+        if mode in ('summary', 'full'):
+            node_report_modes[node_id] = mode
+            return mode
+    except Exception:
+        pass
     mode = (node_report_modes.get(node_id) or '').strip().lower()
     if mode in ('summary', 'full'):
         return mode
@@ -1219,6 +1227,13 @@ def _process_node_report(data: dict,
     if len(node_id) > 100:
         return jsonify({'error': 'node_id too long (max 100)'}), 400
 
+    incoming_report_mode = str(data.get('report_mode') or '').strip().lower()
+    if incoming_report_mode not in ('summary', 'full'):
+        incoming_report_mode = ''
+    effective_report_mode = incoming_report_mode or _get_report_mode(node_id)
+    if effective_report_mode:
+        data['report_mode'] = effective_report_mode
+
     current_timestamp = time.time()
     last = _last_hb_log_ts.get(f'{request_tag}:{node_id}', 0)
     if current_timestamp - last >= 5:
@@ -1229,7 +1244,7 @@ def _process_node_report(data: dict,
         data_light = dict(data)
         if 'channels' in data_light:
             data_light['channels'] = _lighten_channels(data_light.get('channels'))
-        data_light['report_mode'] = _get_report_mode(node_id)
+        data_light['report_mode'] = effective_report_mode or _get_report_mode(node_id)
         active_nodes[node_id] = {
             'timestamp': current_timestamp,
             'status': data.get('status', 'offline'),
@@ -1237,7 +1252,7 @@ def _process_node_report(data: dict,
             'data': data_light,
         }
     else:
-        data['report_mode'] = _get_report_mode(node_id)
+        data['report_mode'] = effective_report_mode or _get_report_mode(node_id)
         active_nodes[node_id] = {
             'timestamp': current_timestamp,
             'status': data.get('status', 'offline'),
@@ -1251,6 +1266,12 @@ def _process_node_report(data: dict,
         if pending_step is not None:
             _sync_active_node_downsample_step(node_id, int(pending_step))
     _ack_config_commands_from_payload(node_id, data)
+    try:
+        if node_id in active_nodes:
+            active_nodes[node_id].setdefault('data', {})
+            active_nodes[node_id]['data']['report_mode'] = _get_report_mode(node_id)
+    except Exception:
+        pass
 
     processed_data = {
         'voltage': 0, 'voltage_neg': 0, 'current': 0, 'leakage': 0,
@@ -1671,7 +1692,7 @@ def node_full_frame_bin():
             return auth_resp
 
         proto = (request.headers.get('X-EdgeWind-Proto') or '').strip().lower()
-        if proto and proto != 'ewfull/1':
+        if proto and proto not in {'ewfull/1', 'ewfull/2'}:
             logger.warning('[/api/node/full_frame_bin][bad] reason=bad_proto proto=%s len=%s', proto, request.content_length)
             return jsonify({'error': f'Unsupported proto: {proto}'}), 400
 
@@ -1769,6 +1790,7 @@ def get_active_nodes():
     try:
         current_time = time.time()
         include_series = str(request.args.get('include_series', '')).strip().lower() in ('1', 'true', 'yes', 'on')
+        target_node_id = _normalize_node_id(request.args.get('node_id') or request.args.get('device_id'))
         rehydrated_nodes = _rehydrate_active_nodes_from_db(current_time)
         expired_nodes = []
 
@@ -1803,6 +1825,8 @@ def get_active_nodes():
         # 返回活动节点
         active_nodes_list = []
         for node_id, node_info in active_nodes.items():
+            if target_node_id and node_id != target_node_id:
+                continue
             node_data = node_info['data'].copy()
             node_data['node_id'] = node_id
             node_data['report_mode'] = _get_report_mode(node_id)
@@ -1924,12 +1948,6 @@ def set_node_downsample_step():
             return jsonify({'success': False, 'error': 'Invalid step (expected integer 1..64)'}), 400
 
         mode = _get_report_mode(node_id)
-        if mode != 'full':
-            return jsonify({
-                'success': False,
-                'error': 'Downsample can be changed only in full report mode',
-                'report_mode': mode,
-            }), 409
 
         cmd = _enqueue_node_command(node_id, 'downsample_step', int(step))
         if cmd is None:
@@ -1957,13 +1975,16 @@ def set_node_downsample_step():
         except Exception:
             pass
 
-        return jsonify({
+        resp = {
             'success': True,
             'node_id': node_id,
             'downsample_step': int(step),
             'report_mode': mode,
             'command_id': cmd.command_id,
-        }), 200
+        }
+        if mode != 'full':
+            resp['warning'] = 'command queued while current mode is not full; it will apply when full uploads are active'
+        return jsonify(resp), 200
 
     except Exception as e:
         logger.exception(f"[/api/nodes/downsample_step] 失败: {e}")
@@ -1993,12 +2014,6 @@ def set_node_upload_points():
             return jsonify({'success': False, 'error': 'Invalid points (expected 256..4096 and step=256)'}), 400
 
         mode = _get_report_mode(node_id)
-        if mode != 'full':
-            return jsonify({
-                'success': False,
-                'error': 'Upload points can be changed only in full report mode',
-                'report_mode': mode,
-            }), 409
 
         cmd = _enqueue_node_command(node_id, 'upload_points', int(points))
         if cmd is None:
@@ -2026,13 +2041,16 @@ def set_node_upload_points():
         except Exception:
             pass
 
-        return jsonify({
+        resp = {
             'success': True,
             'node_id': node_id,
             'upload_points': int(points),
             'report_mode': mode,
             'command_id': cmd.command_id,
-        }), 200
+        }
+        if mode != 'full':
+            resp['warning'] = 'command queued while current mode is not full; it will apply when full uploads are active'
+        return jsonify(resp), 200
 
     except Exception as e:
         logger.exception(f"[/api/nodes/upload_points] 失败: {e}")

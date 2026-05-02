@@ -17,6 +17,7 @@ esp_err_t report_codec_build_register_json(const app_config_snapshot_t *config, 
 esp_err_t report_codec_build_empty_heartbeat_json(const app_config_snapshot_t *config,
                                                   device_status_t status,
                                                   const char *fault_code,
+                                                  report_mode_t report_mode,
                                                   char **out_json,
                                                   size_t *out_len);
 esp_err_t report_codec_measure_heartbeat_json(const app_config_snapshot_t *config,

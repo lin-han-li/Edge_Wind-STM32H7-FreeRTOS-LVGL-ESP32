@@ -2117,7 +2117,7 @@ static bool build_wave_chunk_payload(uint8_t *payload, uint16_t payload_len, voi
     if (payload == NULL || chunk == NULL || chunk->values == NULL) {
         return false;
     }
-    expected_len = (uint32_t)sizeof(prefix) + ((uint32_t)chunk->element_count * sizeof(int32_t));
+    expected_len = (uint32_t)sizeof(prefix) + ((uint32_t)chunk->element_count * sizeof(int16_t));
     if (payload_len != (uint16_t)expected_len) {
         return false;
     }
@@ -2135,7 +2135,7 @@ static bool build_wave_chunk_payload(uint8_t *payload, uint16_t payload_len, voi
         if (chunk->source_count == 0U || src_index >= (uint32_t)chunk->source_count) {
             return false;
         }
-        int32_t scaled = scale_float_to_i32(chunk->values[src_index], 200.0f);
+        int16_t scaled = scale_float_to_i16(chunk->values[src_index], 200.0f);
         memcpy(payload + sizeof(prefix) + ((uint32_t)i * sizeof(scaled)), &scaled, sizeof(scaled));
     }
     return true;
@@ -2180,7 +2180,7 @@ static bool send_wave_chunks(uint32_t frame_id,
                              uint32_t timeout_ms)
 {
     const uint16_t max_elements =
-        (uint16_t)((ESP32_SPI_MAX_PAYLOAD - sizeof(esp32_report_chunk_prefix_t)) / sizeof(int32_t));
+        (uint16_t)((ESP32_SPI_MAX_PAYLOAD - sizeof(esp32_report_chunk_prefix_t)) / sizeof(int16_t));
     uint16_t offset = 0U;
 
     while (offset < waveform_count) {
@@ -2199,7 +2199,7 @@ static bool send_wave_chunks(uint32_t frame_id,
         chunk.source_count = waveform_count;
         chunk.values = waveform;
 
-        payload_len = (uint16_t)(sizeof(esp32_report_chunk_prefix_t) + ((uint32_t)count * sizeof(int32_t)));
+        payload_len = (uint16_t)(sizeof(esp32_report_chunk_prefix_t) + ((uint32_t)count * sizeof(int16_t)));
         if (!send_report_built_packet_wait(ESP32_MSG_REPORT_FULL_WAVE_CHUNK,
                                            payload_len,
                                            build_wave_chunk_payload,
@@ -2257,7 +2257,7 @@ static bool send_fft_chunks(uint32_t frame_id,
 
 uint16_t ESP32_SPI_FullWaveChunkMaxElements(void)
 {
-    return (uint16_t)((ESP32_SPI_MAX_PAYLOAD - sizeof(esp32_report_chunk_prefix_t)) / sizeof(int32_t));
+    return (uint16_t)((ESP32_SPI_MAX_PAYLOAD - sizeof(esp32_report_chunk_prefix_t)) / sizeof(int16_t));
 }
 
 uint16_t ESP32_SPI_FullFftChunkMaxElements(void)
@@ -2348,7 +2348,7 @@ bool ESP32_SPI_ReportFullWaveChunk(uint32_t frame_id,
     chunk.source_count = source_count;
     chunk.values = waveform;
     payload_len = (uint16_t)(sizeof(esp32_report_chunk_prefix_t) +
-                             ((uint32_t)element_count * sizeof(int32_t)));
+                             ((uint32_t)element_count * sizeof(int16_t)));
 
     return send_report_built_packet_wait(ESP32_MSG_REPORT_FULL_WAVE_CHUNK,
                                          payload_len,

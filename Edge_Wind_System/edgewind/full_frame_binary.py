@@ -5,8 +5,9 @@ import zlib
 from dataclasses import dataclass
 
 EWFULL_MAGIC = 0x31465745
-EWFULL_VERSION = 1
-EWFULL_PROTO = 'ewfull/1'
+EWFULL_VERSION_V1 = 1
+EWFULL_VERSION_V2 = 2
+EWFULL_PROTOS = {'ewfull/1', 'ewfull/2'}
 MAX_CHANNELS = 4
 MAX_WAVEFORM_COUNT = 4096
 MAX_FFT_COUNT = 2048
@@ -93,7 +94,7 @@ def decode_full_frame_binary(body: bytes,
 
     if magic != EWFULL_MAGIC:
         raise FullFrameBinaryError(f'bad magic: 0x{magic:08x}')
-    if version != EWFULL_VERSION:
+    if version not in {EWFULL_VERSION_V1, EWFULL_VERSION_V2}:
         raise FullFrameBinaryError(f'bad version: {version}')
     if header_len != _HEADER_STRUCT.size:
         raise FullFrameBinaryError(f'bad header_len: {header_len}')
@@ -140,7 +141,8 @@ def decode_full_frame_binary(body: bytes,
         if fft_count > MAX_FFT_COUNT:
             raise FullFrameBinaryError(f'bad fft_count: {fft_count}')
 
-        waveform_bytes = waveform_count * 4
+        waveform_item_size = 4 if version == EWFULL_VERSION_V1 else 2
+        waveform_bytes = waveform_count * waveform_item_size
         fft_bytes = fft_count * 2
         next_cursor = cursor + waveform_bytes + fft_bytes
         if next_cursor > len(raw):
@@ -148,10 +150,13 @@ def decode_full_frame_binary(body: bytes,
 
         if waveform_count > 0:
             try:
-                waveform_view = memoryview(raw[cursor:cursor + waveform_bytes]).cast('i')
+                waveform_view = memoryview(raw[cursor:cursor + waveform_bytes]).cast(
+                    'i' if version == EWFULL_VERSION_V1 else 'h'
+                )
                 waveform = _downsample_numeric_view(waveform_view, waveform_limit, 1.0)
             except Exception:
-                waveform = list(struct.unpack_from(f'<{waveform_count}i', raw, cursor))
+                fmt = f'<{waveform_count}i' if version == EWFULL_VERSION_V1 else f'<{waveform_count}h'
+                waveform = list(struct.unpack_from(fmt, raw, cursor))
                 waveform = _downsample_numeric_view(waveform, waveform_limit, 1.0)
         else:
             waveform = []
