@@ -1,7 +1,7 @@
 /*******************************************************************************
  * Size: 14 px
  * Bpp: 4
- * Opts: --no-compress --format lvgl --font C:\Users\pengjianzhong\Desktop\Edge_Wind_System+ESP8266\STM32H750XBH6_ESP8266_FreeRTOS_LVGL9.4.0\MDK-ARM\HARDWORK\EdgeWind_UI\fonts\SourceHanSerif.otf --bpp 4 --size 14 --symbols 实时监控
+ * Opts: --no-compress --format lvgl --font C:\Users\pengjianzhong\Desktop\Edge_Wind_System+EdgeComm\STM32H750XBH6_EdgeComm_FreeRTOS_LVGL9.4.0\MDK-ARM\HARDWORK\EdgeWind_UI\fonts\SourceHanSerif.otf --bpp 4 --size 14 --symbols 实时监控
 数据分析
 设备连接
 参数设置
@@ -39,7 +39,7 @@
 增益
 
 
- --range 0x20-0x7F --lv-font-name lv_font_SourceHanSerifSC_Regular_14 -o C:\Users\pengjianzhong\Desktop\Edge_Wind_System+ESP8266\STM32H750XBH6_ESP8266_FreeRTOS_LVGL9.4.0\MDK-ARM\HARDWORK\EdgeWind_UI\fonts\lv_font_SourceHanSerifSC_Regular_14.c
+ --range 0x20-0x7F --lv-font-name lv_font_SourceHanSerifSC_Regular_14 -o C:\Users\pengjianzhong\Desktop\Edge_Wind_System+EdgeComm\STM32H750XBH6_EdgeComm_FreeRTOS_LVGL9.4.0\MDK-ARM\HARDWORK\EdgeWind_UI\fonts\lv_font_SourceHanSerifSC_Regular_14.c
  ******************************************************************************/
 
 #ifdef LV_LVGL_H_INCLUDE_SIMPLE

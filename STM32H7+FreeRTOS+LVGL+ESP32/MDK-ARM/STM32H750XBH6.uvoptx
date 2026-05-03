@@ -5098,7 +5098,7 @@
   </Group>
 
   <Group>
-    <GroupName>ESP8266</GroupName>
+    <GroupName>EdgeComm</GroupName>
     <tvExp>0</tvExp>
     <tvExpOptDlg>0</tvExpOptDlg>
     <cbSel>0</cbSel>
@@ -5110,8 +5110,8 @@
       <tvExp>0</tvExp>
       <tvExpOptDlg>0</tvExpOptDlg>
       <bDave2>0</bDave2>
-      <PathWithFileName>.\HARDWORK\ESP8266\esp8266.c</PathWithFileName>
-      <FilenameWithoutPath>esp8266.c</FilenameWithoutPath>
+      <PathWithFileName>.\HARDWORK\EdgeComm\edge_comm.c</PathWithFileName>
+      <FilenameWithoutPath>edge_comm.c</FilenameWithoutPath>
       <RteFlg>0</RteFlg>
       <bShared>0</bShared>
     </File>
@@ -5122,8 +5122,8 @@
       <tvExp>0</tvExp>
       <tvExpOptDlg>0</tvExpOptDlg>
       <bDave2>0</bDave2>
-      <PathWithFileName>.\HARDWORK\ESP8266\esp8266.h</PathWithFileName>
-      <FilenameWithoutPath>esp8266.h</FilenameWithoutPath>
+      <PathWithFileName>.\HARDWORK\EdgeComm\edge_comm.h</PathWithFileName>
+      <FilenameWithoutPath>edge_comm.h</FilenameWithoutPath>
       <RteFlg>0</RteFlg>
       <bShared>0</bShared>
     </File>
@@ -5134,8 +5134,8 @@
       <tvExp>0</tvExp>
       <tvExpOptDlg>0</tvExpOptDlg>
       <bDave2>0</bDave2>
-      <PathWithFileName>.\HARDWORK\ESP8266\esp8266_config.h</PathWithFileName>
-      <FilenameWithoutPath>esp8266_config.h</FilenameWithoutPath>
+      <PathWithFileName>.\HARDWORK\EdgeComm\edge_comm_config.h</PathWithFileName>
+      <FilenameWithoutPath>edge_comm_config.h</FilenameWithoutPath>
       <RteFlg>0</RteFlg>
       <bShared>0</bShared>
     </File>

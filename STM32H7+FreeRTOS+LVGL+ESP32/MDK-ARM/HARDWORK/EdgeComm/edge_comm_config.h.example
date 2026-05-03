@@ -1,0 +1,21 @@
+/*
+ * Public EdgeComm configuration example.
+ *
+ * For local hardware builds, copy this file to edge_comm_config_private.h
+ * in the same directory and fill in your WiFi and server parameters.
+ * The private file is ignored by Git.
+ */
+
+#ifndef __EDGECOMM_CONFIG_PRIVATE_H
+#define __EDGECOMM_CONFIG_PRIVATE_H
+
+#define WIFI_SSID "YOUR_WIFI_SSID"
+#define WIFI_PASSWORD "YOUR_WIFI_PASSWORD"
+
+#define SERVER_IP "YOUR_SERVER_HOST_OR_IP"
+#define SERVER_PORT 8080
+
+#define NODE_ID "STM32_RTOS_Device"
+#define NODE_LOCATION "EdgeWind Lab"
+
+#endif /* __EDGECOMM_CONFIG_PRIVATE_H */

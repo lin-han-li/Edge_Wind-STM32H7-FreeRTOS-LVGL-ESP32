@@ -38,7 +38,7 @@
 #include "lv_port_indev.h"
 // Demo 已移除，使用自定义 EdgeWind UI
 #include "EdgeWind_UI/edgewind_ui.h"
-#include "esp8266.h"
+#include "edge_comm.h"
 #include "ESP32SPI/esp32_spi_debug.h"
 #include "qspi_w25q256.h"
 #include "GUI-Guider_Runtime/gui_assets_sync.h"
@@ -304,10 +304,10 @@ const osThreadAttr_t Main_attributes = {
   .stack_size = 8192 * 4,
   .priority = (osPriority_t) osPriorityLow,
 };
-/* Definitions for ESP8266 */
-osThreadId_t ESP8266Handle;
-const osThreadAttr_t ESP8266_attributes = {
-  .name = "ESP8266",
+/* Definitions for EdgeComm */
+osThreadId_t EdgeCommHandle;
+const osThreadAttr_t EdgeComm_attributes = {
+  .name = "EdgeComm",
   .stack_size = 5128 * 4,
   .priority = (osPriority_t) osPriorityAboveNormal,
 };
@@ -336,7 +336,7 @@ void ESP32_SPI_TestTask(void *argument);
 void LVGL_Task(void *argument);
 void LED_Task(void *argument);
 void Main_Task(void *argument);
-void ESP8266_Task(void *argument);
+void EdgeComm_Task(void *argument);
 void DSP_Algorithm_Task(void *argument);
 void Upload_Task(void *argument);
 
@@ -395,8 +395,8 @@ void MX_FREERTOS_Init(void) {
   /* creation of Main */
   MainHandle = osThreadNew(Main_Task, NULL, &Main_attributes);
 
-  /* creation of ESP8266 */
-  ESP8266Handle = osThreadNew(ESP8266_Task, NULL, &ESP8266_attributes);
+  /* creation of EdgeComm */
+  EdgeCommHandle = osThreadNew(EdgeComm_Task, NULL, &EdgeComm_attributes);
 
   /* creation of DSPAlgo */
   DSPAlgoHandle = osThreadNew(DSP_Algorithm_Task, NULL, &DSPAlgo_attributes);
@@ -515,8 +515,8 @@ void Main_Task(void *argument)
   /* USER CODE BEGIN Main_Task */
 
 #ifdef EW_SUSPEND_ESP_DURING_SYNC
-  if (ESP8266Handle) {
-    osThreadSuspend(ESP8266Handle);
+  if (EdgeCommHandle) {
+    osThreadSuspend(EdgeCommHandle);
     printf("[QSPI_FS] suspended ESP task during sync\r\n");
   }
 #endif
@@ -552,8 +552,8 @@ void Main_Task(void *argument)
   }
 
 #ifdef EW_SUSPEND_ESP_DURING_SYNC
-  if (ESP8266Handle) {
-    osThreadResume(ESP8266Handle);
+  if (EdgeCommHandle) {
+    osThreadResume(EdgeCommHandle);
     printf("[QSPI_FS] resumed ESP task\r\n");
   }
 #endif
@@ -566,16 +566,16 @@ void Main_Task(void *argument)
   /* USER CODE END Main_Task */
 }
 
-/* USER CODE BEGIN Header_ESP8266_Task */
+/* USER CODE BEGIN Header_EdgeComm_Task */
 /**
-* @brief Function implementing the ESP8266 thread.
+* @brief Function implementing the EdgeComm thread.
 * @param argument: Not used
 * @retval None
 */
-/* USER CODE END Header_ESP8266_Task */
-void ESP8266_Task(void *argument)
+/* USER CODE END Header_EdgeComm_Task */
+void EdgeComm_Task(void *argument)
 {
-  /* USER CODE BEGIN ESP8266_Task */
+  /* USER CODE BEGIN EdgeComm_Task */
   osThreadId_t self = osThreadGetId();
   if (self)
   {
@@ -628,15 +628,23 @@ void ESP8266_Task(void *argument)
         }
       }
     }
-    /* ESP8266 task now handles only UI/console/control.
+    /* EdgeComm task now handles only UI/console/control.
        DSP and upload run in independent producer/consumer tasks. */
     osDelay(5);
   }
-  /* USER CODE END ESP8266_Task */
+  /* USER CODE END EdgeComm_Task */
 }
 
+/* USER CODE BEGIN Header_DSP_Algorithm_Task */
+/**
+* @brief Function implementing the DSPAlgo thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_DSP_Algorithm_Task */
 void DSP_Algorithm_Task(void *argument)
 {
+  /* USER CODE BEGIN DSP_Algorithm_Task */
   (void)argument;
   /* High-priority local path: consume completed acquisition windows,
      compute FFT/fault features, and publish latest upload snapshots. */
@@ -645,10 +653,19 @@ void DSP_Algorithm_Task(void *argument)
     ESP_Update_Data_And_FFT();
     osDelay(1);
   }
+  /* USER CODE END DSP_Algorithm_Task */
 }
 
+/* USER CODE BEGIN Header_Upload_Task */
+/**
+* @brief Function implementing the Upload thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_Upload_Task */
 void Upload_Task(void *argument)
 {
+  /* USER CODE BEGIN Upload_Task */
   (void)argument;
   /* Low-priority consumer: upload only the latest processed snapshot.
      If ESP32/cloud is busy, DSP keeps running and old upload snapshots are dropped. */
@@ -667,6 +684,7 @@ void Upload_Task(void *argument)
     }
     osDelay(2);
   }
+  /* USER CODE END Upload_Task */
 }
 
 /* Private application code --------------------------------------------------*/

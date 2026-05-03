@@ -2,12 +2,13 @@
 ALiYunFuWuQi/
 EdgeWind_Desktop/.env
 Edge_Wind_System/edgewind.env
-STM32H7+FreeRTOS+LVGL+ESP32/MDK-ARM/HARDWORK/ESP8266/esp8266_config_private.h
+STM32H7+FreeRTOS+LVGL+ESP32/MDK-ARM/HARDWORK/EdgeComm/edge_comm_config_private.h
 esp32_spi_coprocessor/main/app_config_private.h
 
 # Temporary files produced during integration/debugging
 remote_api.py
 full_upload_final_summary_*.json
+NEXT_AI_HANDOFF_*.md
 *.tmp
 *.bak
 *.backup

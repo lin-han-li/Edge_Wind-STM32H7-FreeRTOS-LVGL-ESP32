@@ -1,8 +1,8 @@
 /**
  ******************************************************************************
- * @file    esp8266.c
+ * @file    edge_comm.c
  * @author  STM32H7 Optimization Expert
- * @brief   ESP8266 WiFi 模组驱动程序 (STM32H7 专用优化版)
+ * @brief   EdgeComm WiFi 模组驱动程序 (STM32H7 专用优化版)
  * @note    核心特性：
  * 1. AXI SRAM + D-Cache 一致性维护 (DMA 必备)
  * 2. 2Mbps 高波特率下的软件容错机制 (抗 ORE/FE 错误)
@@ -11,7 +11,7 @@
  ******************************************************************************
  */
 
-#include "esp8266.h"
+#include "edge_comm.h"
 #include "SPI_AD7606.h"
 #include "ad_acq_buffers.h"
 #include "ESP32SPI/esp32_spi_debug.h"
@@ -54,10 +54,6 @@
 
 #ifndef ESP32_SPI_STRESS_SPI_LABEL
 #define ESP32_SPI_STRESS_SPI_LABEL "10MHz"
-#endif
-
-#ifndef ESP_LEGACY_UART_LINK_WATCHDOG
-#define ESP_LEGACY_UART_LINK_WATCHDOG (!EW_USE_ESP32_SPI_UI)
 #endif
 
 #ifndef ESP32_SPI_RESULT_OK
@@ -131,7 +127,6 @@
 #endif
 
 /* 引用 usart.c 中定义的句柄 */
-extern UART_HandleTypeDef huart2;
 #define ESP_PRINT_WAVEFORM_POINTS 0
 #define ADS_BADFRAME_MONITOR 1
 #ifndef ADS_BADFRAME_MONITOR
@@ -201,210 +196,16 @@ static inline int ESP_Appendf(char **pp, const char *end, const char *fmt, ...)
     return 1;
 }
 
-// =================================================================================
-// 1. STM32H7 特有的内存管理与 Cache 维护
-// =================================================================================
-// [背景知识]
-// STM32H7 的架构非常复杂。普通的 DTCM RAM (0x20000000) 通常连接在 CPU 的紧耦合总线上，
-// DMA 控制器（尤其是 DMA1/DMA2）往往无法直接访问 DTCM，或者访问效率极低。
-// 必须将用于 DMA 传输的缓冲区（Buffer）放到 AXI SRAM (0x24000000) 或 D2 域的 SRAM1/2/3。
-// 此外，H7 默认开启 D-Cache（数据缓存）。CPU 写数据进 Cache 后，物理内存里可能还是旧数据；
-// 此时如果 DMA 从内存搬运数据，发出去的就是错的。
-// 所以：
-// - 发送前：必须 Clean Cache (将 Cache 数据刷入物理内存)。
-// - 接收后：必须 Invalidate Cache (废弃 Cache 数据，强迫 CPU 下次从物理内存重读)。
-
-// 定义通过链接器脚本定位的内存段，确保变量存放在 AXI SRAM 中
-#define AXI_SRAM_SECTION __attribute__((section(".axi_sram")))
-// 强制 32 字节对齐，这是 Cortex-M7 Cache Line 的大小。
-// 如果不对齐，Cache 操作可能会意外破坏相邻变量的数据（Cache 伪共享问题）。
-#define DMA_ALIGN32 __attribute__((aligned(32)))
-
-/* 辅助内联函数：用于计算对齐地址 */
-static inline uint32_t _align_down_32(uint32_t x) { return x & ~31u; }
-static inline uint32_t _align_up_32(uint32_t x) { return (x + 31u) & ~31u; }
-
-static inline void ESP_RtosYield(void)
-{
-    if ((osKernelGetState() == osKernelRunning) && (__get_IPSR() == 0U))
-    {
-        osDelay(1);
-    }
-}
-
-/**
- * @brief  Clean D-Cache (将 Cache 中的脏数据写回物理内存)
- * @note   用于 DMA 发送前：CPU 准备好数据 -> Clean -> 内存更新 -> DMA 搬运
- * @param  addr: 缓冲区首地址
- * @param  len:  长度
- */
-static void DCache_CleanByAddr_Any(void *addr, uint32_t len)
-{
-#if defined(SCB_CleanDCache_by_Addr)
-    uint32_t a = _align_down_32((uint32_t)addr);
-    uint32_t end = _align_up_32(((uint32_t)addr) + len);
-    // 调用 CMSIS 标准库函数执行汇编指令
-    SCB_CleanDCache_by_Addr((uint32_t *)a, (int32_t)(end - a));
-#else
-    (void)addr;
-    (void)len;
-#endif
-}
-
-/**
- * @brief  Invalidate D-Cache (使 Cache 失效，强制 CPU 下次从物理内存读取)
- * @note   用于 DMA 接收后：DMA 搬运数据到内存 -> Invalidate -> CPU 读内存新数据
- */
-static void DCache_InvalidateByAddr_Any(void *addr, uint32_t len)
-{
-#if defined(SCB_InvalidateDCache_by_Addr)
-    uint32_t a = _align_down_32((uint32_t)addr);
-    uint32_t end = _align_up_32(((uint32_t)addr) + len);
-    SCB_InvalidateDCache_by_Addr((uint32_t *)a, (int32_t)(end - a));
-#else
-    (void)addr;
-    (void)len;
-#endif
-}
-
-/* ================= 内存分配 ================= */
-
-/* 发送缓冲区：512KB 放 SDRAM（LVGL 池之后 0xC0600000），支持 4 通道全量上传（4096 波形 + 1024 FFT/通道，step=1），且不占 AXI 避免 UI 卡死。 */
-#define HTTP_PACKET_BUF_SIZE      (524288u)
-#define HTTP_PACKET_BUF_SDRAM_ADDR ((uint8_t *)0xC0600000)
-static uint8_t *http_packet_buf;
-
-static void ensure_http_packet_buf(void)
-{
-    if (http_packet_buf == NULL)
-        http_packet_buf = HTTP_PACKET_BUF_SDRAM_ADDR;
-}
-
-/* 简单的接收缓冲，用于 AT 指令阻塞接收 (AT模式下数据量小，且使用轮询，不需要DMA) */
-static uint8_t esp_rx_buf[512];
-
-static inline uint8_t ESP_RxBusyDetected(void)
-{
-    return (strstr((char *)esp_rx_buf, "busy p") != NULL) ||
-           (strstr((char *)esp_rx_buf, "busy s") != NULL) ||
-           (strstr((char *)esp_rx_buf, "BUSY") != NULL);
-}
-
-/* 4 个通道的传感器数据结构体实例，用于存储电压、电流、FFT结果等
- * 4096 点波形 + 2048 点 FFT 时该结构体较大，放 AXI SRAM 避免 DTCM 溢出导致卡死。 */
-Channel_Data_t node_channels[4] AXI_SRAM_SECTION;
-volatile uint8_t g_esp_ready = 0; // 全局标志：1 表示 WiFi/TCP 就绪，可以发送
-/* UI“开始/停止上报”开关：用于门控后台自动重连等行为 */
-static volatile uint8_t g_report_enabled = 0;
-static volatile uint8_t g_ui_wifi_ok;
-static volatile uint8_t g_ui_tcp_ok;
-static volatile uint8_t g_ui_reg_ok;
-static volatile uint8_t g_ui_auto_recover_want_report;
-
-static SystemConfig_t g_sys_cfg;
-static uint8_t g_sys_cfg_loaded = 0;
-
-static void ESP_LoadConfig(void)
-{
-    if (g_sys_cfg_loaded) {
-        return;
-    }
-    /* ⚠️ 启动阶段不要依赖 SD 卡：
-     * - SD 可能未插入/未就绪，FatFs f_mount/f_read 在某些异常场景会阻塞很久
-     * - 这里仅加载默认值；真正从 SD 读取/保存由“配置界面”触发
-     */
-    SD_Config_SetDefaults(&g_sys_cfg);
-    g_sys_cfg_loaded = 1;
-}
-
-const SystemConfig_t *ESP_Config_Get(void)
-{
-    if (!g_sys_cfg_loaded) {
-        ESP_LoadConfig();
-    }
-    return &g_sys_cfg;
-}
-
-void ESP_Config_Apply(const SystemConfig_t *cfg)
-{
-    if (!cfg) {
-        return;
-    }
-    g_sys_cfg = *cfg;
-    g_sys_cfg_loaded = 1;
-}
-
-/* DSP 相关变量：用于 FFT 计算 */
-static arm_rfft_fast_instance_f32 S;
-static uint8_t fft_initialized = 0;
-static uint8_t channels_metadata_initialized = 0;
-static float32_t fft_input_buf[WAVEFORM_POINTS] AXI_SRAM_SECTION;  // FFT 输入缓冲（避免破坏原波形）
-static float32_t fft_output_buf[WAVEFORM_POINTS] AXI_SRAM_SECTION; // FFT 输出复数数组
-static float32_t fft_mag_buf[WAVEFORM_POINTS] AXI_SRAM_SECTION;    // FFT 幅值数组
-
-/* UI 模式/非 ESP_Init 路径也必须初始化通道元数据，否则后端会把 4 个通道都当成 id=0 覆盖成“一个通道” */
-static void ESP_Init_Channels_And_DSP(void)
-{
-    /* FFT init */
-    if (!fft_initialized)
-    {
-        arm_rfft_fast_init_f32(&S, WAVEFORM_POINTS);
-        fft_initialized = 1;
-    }
-
-    if (channels_metadata_initialized)
-    {
-        return;
-    }
-
-    /* 通道元数据（与后端识别规则对应） */
-    memset(node_channels, 0, sizeof(node_channels));
-    node_channels[0].id = 0;
-    strncpy(node_channels[0].label, "直流母线(+)", 31);
-    strncpy(node_channels[0].unit, "V", 7);
-
-    node_channels[1].id = 1;
-    strncpy(node_channels[1].label, "直流母线(-)", 31);
-    strncpy(node_channels[1].unit, "V", 7);
-
-    node_channels[2].id = 2;
-    strncpy(node_channels[2].label, "负载电流", 31);
-    strncpy(node_channels[2].unit, "A", 7);
-
-    node_channels[3].id = 3;
-    strncpy(node_channels[3].label, "漏电流", 31);
-    strncpy(node_channels[3].unit, "mA", 7);
-    channels_metadata_initialized = 1;
-}
-
-/* 内部函数声明 */
+/* Debug console uses USART1 only; ESP32 transport is SPI. */
 static void ESP_Log(const char *format, ...);
-static uint8_t ESP_Send_Cmd(const char *cmd, const char *reply, uint32_t timeout);
-static uint8_t ESP_Send_Cmd_Any(const char *cmd, const char *reply1, const char *reply2, uint32_t timeout);
-static void ESP_Clear_Error_Flags(void);
-static int Helper_FloatArray_To_String(char **pp, const char *end, const float *data, int count, int step);
-static int Helper_FloatArray1dp_To_String(char **pp, const char *end, const float *data, int count, int step);
-static void ESP_Exit_Transparent_Mode(void);
-static uint8_t ESP_Exit_Transparent_Mode_Strict(uint32_t timeout_ms);
-static void ESP_Uart2_Drain(uint32_t ms);
-static uint8_t ESP_Wait_Keyword(const char *kw, uint32_t timeout_ms);
-static void ESP_SoftReconnect(void);
-static uint8_t ESP_TryReuseTransparent(void);
-static void ESP_HardReset(void);
-#if 0
-static void Process_Channel_Data(int ch_id, float base_dc, float ripple_amp, float noise_level);
-#endif
 static UART_HandleTypeDef *ESP_GetLogUart(void);
-static void ESP_Log_RxBuf(const char *tag);
 static void ESP_SetFaultCode(const char *code);
 static void ESP_Console_HandleLine(char *line);
 static void StrTrimInPlace(char *s);
-static void ESP_StreamRx_Start(void);
-static void ESP_StreamRx_Feed(const uint8_t *data, uint16_t len);
 void ESP_UI_Internal_OnLog(const char *line);
 static void ESP_SetServerReportMode(uint8_t full);
 static void ESP_SPI_ResetLocalReportState(const char *reason);
-#if (EW_USE_ESP32_SPI_UI && ESP32_SPI_ENABLE_FULL_UPLOAD)
+#if (ESP32_SPI_ENABLE_FULL_UPLOAD)
 static void ESP_SPI_FullClearWaitState(void);
 static void ESP_SPI_FullResetUploadRuntimeState(void);
 static void ESP_SPI_FullEnterHoldoff(const char *reason, uint32_t holdoff_ms);
@@ -429,7 +230,7 @@ static bool ESP_UI_DoRegister(void);
 static bool ESP_UI_EnsureReportStarted(uint8_t mode, const char *reason_tag);
 static void ESP_UI_ScheduleAutoRecover(const char *reason, uint8_t want_report);
 static void ESP_UI_PollAutoRecover(void);
-#if (EW_USE_ESP32_SPI_UI && ESP32_SPI_ENABLE_FULL_UPLOAD)
+#if (ESP32_SPI_ENABLE_FULL_UPLOAD)
 static uint8_t ESP_SPI_FullPacketTxBusy(void);
 static uint8_t ESP_SPI_FullControlBusy(void);
 static void ESP_SPI_QueueCommParamsSync(const ESP_CommParams_t *p);
@@ -437,12 +238,107 @@ static void ESP_SPI_QueueReportModeSync(uint8_t full);
 static void ESP_SPI_ServiceDeferredSync(void);
 #endif
 
-// “核武器”：强制停止 USART2 的 RX DMA/中断状态机，切换到 AT(阻塞收发)前必须调用
-static void ESP_ForceStop_DMA(void);
-static uint8_t ESP_BufContains(const uint8_t *buf, uint16_t len, const char *needle);
 
 // 当前上报的故障码（默认正常 E00），可通过串口控制台动态修改
 static char g_fault_code[4] = "E00";
+
+#ifndef AXI_SRAM_SECTION
+#define AXI_SRAM_SECTION __attribute__((section(".axi_sram")))
+#endif
+
+Channel_Data_t node_channels[4] AXI_SRAM_SECTION;
+volatile uint8_t g_esp_ready = 0U;
+static volatile uint8_t g_report_enabled = 0U;
+static volatile uint8_t g_ui_wifi_ok = 0U;
+static volatile uint8_t g_ui_tcp_ok = 0U;
+static volatile uint8_t g_ui_reg_ok = 0U;
+static volatile uint8_t g_ui_auto_recover_pending = 0U;
+static volatile uint8_t g_ui_auto_recover_want_report = 0U;
+static uint32_t g_ui_auto_recover_next_poll_tick = 0U;
+static uint32_t g_ui_auto_recover_next_attempt_tick = 0U;
+static uint32_t g_ui_last_session_epoch = 0U;
+static uint8_t g_ui_last_session_valid = 0U;
+
+static SystemConfig_t g_sys_cfg;
+static uint8_t g_sys_cfg_loaded = 0U;
+
+static arm_rfft_fast_instance_f32 S;
+static uint8_t fft_initialized = 0U;
+static uint8_t channels_metadata_initialized = 0U;
+static float32_t fft_input_buf[WAVEFORM_POINTS] AXI_SRAM_SECTION;
+static float32_t fft_output_buf[WAVEFORM_POINTS] AXI_SRAM_SECTION;
+static float32_t fft_mag_buf[WAVEFORM_POINTS] AXI_SRAM_SECTION;
+
+static inline void ESP_RtosYield(void)
+{
+    if ((osKernelGetState() == osKernelRunning) && (__get_IPSR() == 0U))
+    {
+        osDelay(1);
+    }
+}
+
+static void ESP_LoadConfig(void)
+{
+    if (g_sys_cfg_loaded)
+    {
+        return;
+    }
+
+    SD_Config_SetDefaults(&g_sys_cfg);
+    g_sys_cfg_loaded = 1U;
+}
+
+const SystemConfig_t *ESP_Config_Get(void)
+{
+    if (!g_sys_cfg_loaded)
+    {
+        ESP_LoadConfig();
+    }
+    return &g_sys_cfg;
+}
+
+void ESP_Config_Apply(const SystemConfig_t *cfg)
+{
+    if (cfg == NULL)
+    {
+        return;
+    }
+    g_sys_cfg = *cfg;
+    g_sys_cfg_loaded = 1U;
+}
+
+static void ESP_Init_Channels_And_DSP(void)
+{
+    if (!fft_initialized)
+    {
+        arm_rfft_fast_init_f32(&S, WAVEFORM_POINTS);
+        fft_initialized = 1U;
+    }
+
+    if (channels_metadata_initialized)
+    {
+        return;
+    }
+
+    memset(node_channels, 0, sizeof(node_channels));
+    node_channels[0].id = 0;
+    strncpy(node_channels[0].label, "直流母线(+)", sizeof(node_channels[0].label) - 1U);
+    strncpy(node_channels[0].unit, "V", sizeof(node_channels[0].unit) - 1U);
+
+    node_channels[1].id = 1;
+    strncpy(node_channels[1].label, "直流母线(-)", sizeof(node_channels[1].label) - 1U);
+    strncpy(node_channels[1].unit, "V", sizeof(node_channels[1].unit) - 1U);
+
+    node_channels[2].id = 2;
+    strncpy(node_channels[2].label, "负载电流", sizeof(node_channels[2].label) - 1U);
+    strncpy(node_channels[2].unit, "A", sizeof(node_channels[2].unit) - 1U);
+
+    node_channels[3].id = 3;
+    strncpy(node_channels[3].label, "漏电流", sizeof(node_channels[3].label) - 1U);
+    strncpy(node_channels[3].unit, "mA", sizeof(node_channels[3].unit) - 1U);
+
+    channels_metadata_initialized = 1U;
+}
 
 #if (ESP_UPLOAD_SNAPSHOT_SLOT_COUNT < 2)
 #error "ESP_UPLOAD_SNAPSHOT_SLOT_COUNT must be at least 2"
@@ -606,7 +502,7 @@ static void ESP_UploadSnapshot_Release(uint32_t seq)
     taskEXIT_CRITICAL();
 }
 
-#if (EW_USE_ESP32_SPI_UI && ESP32_SPI_ENABLE_FULL_UPLOAD)
+#if (ESP32_SPI_ENABLE_FULL_UPLOAD)
 typedef enum
 {
     ESP_FULL_TX_IDLE = 0,
@@ -656,12 +552,11 @@ static char g_console_line[32];
 static volatile uint8_t g_console_line_len = 0;
 
 // ---------- 服务器下发命令解析 ----------
-// 当从 USART2 收到的 HTTP 响应中提取到 "reset" 时置 1
 static volatile uint8_t g_server_reset_pending = 0;
 // 服务器请求的上报模式：0=summary, 1=full
 static volatile uint8_t g_server_report_full = (ESP32_SPI_STRESS_FULL_UPLOAD != 0) ? 1U : 0U;
 static volatile uint8_t g_server_report_full_dirty = 0;
-#if (EW_USE_ESP32_SPI_UI && ESP32_SPI_ENABLE_FULL_UPLOAD)
+#if (ESP32_SPI_ENABLE_FULL_UPLOAD)
 static volatile uint16_t g_spi_full_manual_frames = 0;
 static volatile uint8_t g_spi_full_continuous = (ESP32_SPI_FULL_CONTINUOUS_DEFAULT != 0) ? 1U : 0U;
 static volatile uint8_t g_spi_full_waiting_result = 0;
@@ -682,86 +577,45 @@ static volatile uint8_t g_server_downsample_dirty = 0;
 // 服务器请求的上传点数（降采样后）：256..4096，256步进
 static volatile uint32_t g_server_upload_points = (uint32_t)WAVEFORM_POINTS;
 static volatile uint8_t g_server_upload_points_dirty = 0;
-#if (EW_USE_ESP32_SPI_UI && ESP32_SPI_ENABLE_FULL_UPLOAD)
+#if (ESP32_SPI_ENABLE_FULL_UPLOAD)
 static volatile uint8_t g_spi_comm_params_sync_pending = 0U;
 static volatile uint8_t g_spi_report_mode_sync_pending = 0U;
 static volatile uint8_t g_spi_report_mode_sync_target = 0U;
 static ESP_CommParams_t g_spi_pending_comm_params;
 #endif
 // 当检测到链路异常关键字（CLOSED/ERROR）时置 1，主循环触发软重连
-static volatile uint8_t g_link_reconnect_pending = 0;
 
-/* RX DMA 缓冲：用于接收服务器回包 (HTTP响应 / reset命令)。
- * 位于 AXI SRAM，加大到 4096 以降低 IDLE 中断触发频率，减少高负载下的丢包风险。 */
-static uint8_t g_stream_rx_buf[4096] AXI_SRAM_SECTION DMA_ALIGN32;
+
 
 /* 滑动窗口：用于在流式数据中查找关键字。
  * 解决 DMA 分包导致关键字（如 "HTTP/1.1"）被切断的问题。 */
-static char g_stream_window[256];
-static uint16_t g_stream_window_len = 0;
 
 /* 调试与统计变量 */
-static volatile uint32_t g_usart2_rx_events = 0;  // 接收中断次数
-static volatile uint32_t g_usart2_rx_bytes = 0;   // 接收总字节数
-static volatile uint8_t g_usart2_rx_started = 0;  // DMA 接收开启标志
-static volatile uint32_t g_usart2_rx_restart = 0; // 重启次数
-static volatile uint32_t g_uart2_err = 0;         // 总错误数
-static volatile uint32_t g_uart2_err_ore = 0;     // 溢出错误 (Overrun) - 2Mbps下需重点关注
-static volatile uint32_t g_uart2_err_fe = 0;      // 帧错误
-static volatile uint32_t g_uart2_err_ne = 0;      // 噪声错误
-static volatile uint32_t g_uart2_err_pe = 0;      // 校验错误
 
 /* 链路健康监测 */
-static volatile uint32_t g_last_rx_tick = 0;     // 上次收到数据的时间
-static volatile uint8_t g_link_reconnecting = 0; // 是否正在重连中
-static uint8_t g_boot_hardreset_done = 0;        // 启动时是否已执行过硬复位
 
 /* HTTP 发送流控门控
  * 作用：发送 HTTP 请求后置为 1，收到回复或超时后置为 0。
  * 防止请求发送过快淹没服务器，导致 TCP 拥塞或解析错误。 */
-static volatile uint8_t g_waiting_http_response = 0;
-static volatile uint32_t g_waiting_http_tick = 0;
 
 /* 分段发送状态（仅用于 ESP_Post_Data 的大包上报） */
-typedef struct {
-    uint32_t total_len;
-    uint32_t offset;
-    uint32_t next_tick;
-    uint8_t  active;
-} esp_tx_chunk_t;
-static esp_tx_chunk_t g_tx_chunk = {0};
 
 /* 非分段 HTTP 发送链状态：header DMA -> body DMA */
-typedef enum {
-    ESP_HTTP_TX_IDLE = 0,
-    ESP_HTTP_TX_HEADER_INFLIGHT = 1,
-    ESP_HTTP_TX_BODY_INFLIGHT = 2,
-} esp_http_tx_phase_t;
-static volatile esp_http_tx_phase_t g_http_tx_phase = ESP_HTTP_TX_IDLE;
-static uint8_t *g_http_tx_body_ptr = NULL;
-static uint32_t g_http_tx_body_len = 0;
 
 /* ================= 通讯参数（运行时缓存） =================
  * 由 SD 文件 0:/config/ui_param.cfg 加载；若未加载则使用宏默认值。
- * 这些值会被 ESP_Post_Data/ESP_Post_Heartbeat/自恢复逻辑实时读取。
  */
 static volatile uint32_t g_comm_heartbeat_ms    = (uint32_t)ESP_HEARTBEAT_INTERVAL_MS;
 static volatile uint32_t g_comm_min_interval_ms = (uint32_t)ESP_MIN_SEND_INTERVAL_MS;
 static volatile uint32_t g_comm_http_timeout_ms = (uint32_t)ESP_HTTP_TIMEOUT_MS_DEFAULT;
-static volatile uint32_t g_comm_hardreset_sec   = (uint32_t)ESP_NO_SERVER_RX_HARDRESET_SEC;
+static volatile uint32_t g_comm_hardreset_sec   = (uint32_t)ESP_NO_SERVER_RESPONSE_RECOVER_SEC;
 static volatile uint32_t g_comm_wave_step       = (uint32_t)WAVEFORM_SEND_STEP;
 static volatile uint32_t g_comm_upload_points  = (uint32_t)WAVEFORM_POINTS;
 static volatile uint32_t g_comm_chunk_kb        = (uint32_t)ESP_CHUNK_KB_DEFAULT;
 static volatile uint32_t g_comm_chunk_delay_ms  = (uint32_t)ESP_CHUNK_DELAY_MS_DEFAULT;
 
-/* USART2 流式接收：DMA Circular + IDLE/TC/HT 回调中按“写指针”增量取数据，避免每次回调停/启 DMA 产生空窗导致 ORE。 */
-static volatile uint16_t g_stream_rx_last_pos = 0;
-static uint32_t g_last_heartbeat_tick = 0;
 
-/* 关键标志位：指示当前是否处于 AT 命令模式
- * 当处于 AT 模式（使用阻塞式 HAL_UART_Receive）时，必须禁止 DMA 中断回调逻辑介入。
- * 否则 HAL_UARTEx_RxEventCallback 会打断 HAL_UART_Receive，导致状态机错乱死锁。 */
-static volatile uint8_t g_uart2_at_mode = 0;
+
 
 /* ================= ESP 通讯参数 API（运行时可配置） ================= */
 uint32_t ESP_CommParams_HeartbeatMs(void)    { return (uint32_t)g_comm_heartbeat_ms; }
@@ -1142,7 +996,7 @@ static void ESP_UploadMode_ApplyLoaded(uint8_t full)
     full = full ? 1U : 0U;
     g_server_report_full = full;
     g_server_report_full_dirty = 0U;
-#if (EW_USE_ESP32_SPI_UI && ESP32_SPI_ENABLE_FULL_UPLOAD)
+#if (ESP32_SPI_ENABLE_FULL_UPLOAD)
     g_spi_full_continuous = full;
     if (!full) {
         g_spi_full_manual_frames = 0U;
@@ -1337,304 +1191,24 @@ bool ESP_Config_LoadRuntimeFromSD(void)
     return true;
 }
 
-// =================================================================================
-// 工具函数实现
-// =================================================================================
+/* Utility functions. */
 
-/**
- * @brief  在缓冲区中查找子字符串（朴素匹配算法）
- * @note   用于在 DMA 原始 buffer 中直接搜索关键字
- */
-static uint8_t ESP_BufContains(const uint8_t *buf, uint16_t len, const char *needle)
-{
-    if (!buf || len == 0 || !needle || !*needle)
-        return 0;
-    uint16_t nlen = (uint16_t)strlen(needle);
-    if (nlen == 0 || nlen > len)
-        return 0;
-    // 朴素扫描：len<=4096，needle 很短，效率足够高
-    for (uint16_t i = 0; i + nlen <= len; i++)
-    {
-        if (memcmp(buf + i, needle, nlen) == 0)
-            return 1;
-    }
-    return 0;
-}
-
-/**
- * @brief  【核武器级函数】强制停止 DMA 并复位串口状态机
- * @note   这是解决 STM32 HAL 库混合使用 阻塞模式(AT) 和 DMA模式(透传) 导致死锁的关键。
- * HAL 库如果检测到 DMA 正在运行或 RxState 为 BUSY_RX_DMA，
- * 调用阻塞式的 HAL_UART_Receive 会直接返回 HAL_BUSY。
- * 所以在发送 AT 指令前，必须先调用此函数“杀掉”所有后台 DMA 任务。
- */
-static void ESP_ForceStop_DMA(void)
-{
-    // 1) 关闭 IDLE 中断（ReceiveToIdle 依赖 IDLE，AT 阶段不应触发）
-    __HAL_UART_DISABLE_IT(&huart2, UART_IT_IDLE);
-
-    // 2) 停止 DMA（包括 DMAR/DMAT），并强制 Abort UART
-    // 这会将 HAL 内部状态重置为 READY
-    (void)HAL_UART_DMAStop(&huart2);
-    (void)HAL_UART_Abort(&huart2);
-
-    // 3) 暴力复位 HAL 句柄状态 (双重保险，防止 Abort 不彻底)
-    /* 注意：这是直接操作 HAL 结构体成员，为了应对极端卡死情况 */
-    // huart2.gState = HAL_UART_STATE_READY; // TX 状态
-    // huart2.RxState = HAL_UART_STATE_READY; // RX 状态
-
-    // 4) 清除可能残留的硬件错误标志 (ORE/FE等)，避免一开启中断就进 ErrorHandler
-    ESP_Clear_Error_Flags();
-
-    // 5) 更新软件状态标志
-    g_usart2_rx_started = 0;
-    g_waiting_http_response = 0;
-    g_stream_rx_last_pos = 0;
-    g_http_tx_phase = ESP_HTTP_TX_IDLE;
-    g_http_tx_body_ptr = NULL;
-    g_http_tx_body_len = 0;
-}
-
-/**
- * @brief  获取用于打印日志的串口句柄
- */
+/* Debug console uses USART1 only; ESP32 transport is SPI. */
 static UART_HandleTypeDef *ESP_GetLogUart(void)
 {
 #if (ESP_LOG_UART_PORT == 1)
     extern UART_HandleTypeDef huart1;
     return &huart1;
-#elif (ESP_LOG_UART_PORT == 2)
-    return &huart2; // ⚠️一般不建议：USART2 用于 ESP8266 通信，混用会干扰协议
 #else
-    extern UART_HandleTypeDef huart1;
-    return &huart1; // 默认回退 USART1
-#endif
-}
-
-static void ESP_Log_RxBuf(const char *tag)
-{
-#if (ESP_DEBUG)
-    if (tag == NULL)
-        tag = "RX";
-    ESP_Log("[ESP 回显 %s] << %s\r\n", tag, esp_rx_buf);
-#else
-    (void)tag;
+    return NULL;
 #endif
 }
 
 /* ================= 核心代码 ================= */
 
 /**
- * @brief  ESP8266 初始化主流程
- * @note   包含：硬复位 -> 复用探测 -> AT初始化 -> WiFi连接 -> TCP连接 -> 透传模式 -> 开启DMA监听
+ * @brief  EdgeComm 初始化主流程
  */
-void ESP_Init(void)
-{
-    char cmd_buf[128];
-    g_esp_ready = 0;
-    int retry_count = 0;
-
-    // 尝试从 SD 卡加载配置（如果失败则使用默认值）
-    /* 启动阶段仅使用默认配置，避免 SD 卡异常导致启动卡死 */
-    ESP_LoadConfig();
-    ESP_Log("[ESP] Using default config SSID=%s\r\n", g_sys_cfg.wifi_ssid);
-
-    // 步骤 1: 进 AT 模式前，必须清场，确保 UART 处于 READY 状态
-    // 否则 HAL_UART_Receive 会直接返回 BUSY，导致初始化失败
-    g_uart2_at_mode = 1;
-    ESP_ForceStop_DMA();
-
-    // 步骤 2: 启动时强制硬复位一次：保证 ESP 状态干净（用户配置）
-#if (ESP_BOOT_HARDRESET_ONCE)
-    if (!g_boot_hardreset_done)
-    {
-        g_boot_hardreset_done = 1;
-        ESP_Log("[ESP] 启动硬复位一次...\r\n");
-        ESP_HardReset();
-    }
-#endif
-
-    // 确保 ESP8266 不处于硬件复位状态（RST 低有效，必须拉高）
-#ifdef ESP8266_RST_Pin
-    HAL_GPIO_WritePin(ESP8266_RST_GPIO_Port, ESP8266_RST_Pin, GPIO_PIN_SET);
-#endif
-
-    // 初始化 DSP 库 (FFT)
-    if (!fft_initialized)
-    {
-        arm_rfft_fast_init_f32(&S, WAVEFORM_POINTS);
-        fft_initialized = 1;
-    }
-
-    ESP_Log("\r\n[ESP] 初始化（4通道模式）...\r\n");
-    ESP_Log("[ESP] WiFi 名称(SSID): %s\r\n", g_sys_cfg.wifi_ssid);
-    ESP_Log("[ESP] 服务器地址: %s:%d\r\n", g_sys_cfg.server_ip, g_sys_cfg.server_port);
-    ESP_Clear_Error_Flags();
-
-    // 步骤 3: 优先尝试复用“透传 + TCP”现有连接
-    // 场景：MCU 只是软复位，而 ESP8266 还在透传模式且连接正常，此时无需断电重连，直接发包即可
-    if (ESP_TryReuseTransparent())
-    {
-        g_esp_ready = 1;
-        g_uart2_at_mode = 0;
-        ESP_Log("[ESP] 复用透传连接成功（无需断电可重连）\r\n");
-        return;
-    }
-
-    // 步骤 4: 复用失败：必须先确保回到 AT 命令模式
-    // 注意：ESP_Send_Cmd 的超时本质不是“等待不够”，而是“没收到任何字节”。
-    // 需要先尝试发送 "+++" 退出透传，并确认能收到 "OK"。
-    ESP_Uart2_Drain(120);
-    uint8_t at_ok = 0;
-    for (int k = 0; k < 3; k++)
-    {
-        if (ESP_Send_Cmd("AT\r\n", "OK", 800))
-        {
-            at_ok = 1;
-            break;
-        }
-        (void)ESP_Exit_Transparent_Mode_Strict(2000); // 尝试发送 +++ 退出透传
-        ESP_Uart2_Drain(120);
-    }
-
-    // 如果还是进不去 AT 模式，执行硬复位 (硬件重启模组)
-    if (!at_ok)
-    {
-        ESP_Log("[ESP] AT无回显,执行硬复位ESP8266...\r\n");
-        ESP_HardReset();
-        // 硬复位后，HAL 库状态可能被中断打断，再次确保处于 AT(阻塞)可用状态
-        ESP_ForceStop_DMA();
-
-        // 复位后再探测一次 AT
-        if (!ESP_Send_Cmd("AT\r\n", "OK", 1500))
-        {
-					ESP_Log("[ESP] 致命:硬复位后仍无法进入 AT 模式\r\n");
-            return;
-        }
-    }
-
-    /* 复位流程 */
-    ESP_Log("[ESP 指令] >> AT+RST\r\n");
-    HAL_UART_Transmit(&huart2, (uint8_t *)"AT+RST\r\n", 8, 100);
-    HAL_Delay(3500); // 等待模组启动日志打印完成
-    ESP_Clear_Error_Flags();
-
-    // 关闭回显 (ATE0)，方便后续指令解析
-    while (!ESP_Send_Cmd("ATE0\r\n", "OK", 500))
-    {
-        ESP_Log("[ESP] 关闭回显失败,重试 ATE0...\r\n");
-        ESP_Clear_Error_Flags();
-        HAL_Delay(500);
-        retry_count++;
-        if (retry_count > 5)
-            break;
-    }
-
-    // 设置 Station 模式
-    ESP_Send_Cmd("AT+CWMODE=1\r\n", "OK", 1000);
-
-    // 连接 WiFi
-    sprintf(cmd_buf, "AT+CWJAP=\"%s\",\"%s\"\r\n", g_sys_cfg.wifi_ssid, g_sys_cfg.wifi_password);
-    if (!ESP_Send_Cmd(cmd_buf, "GOT IP", 20000)) // 给足 20s 超时
-    {
-        // 重试一次
-        if (!ESP_Send_Cmd(cmd_buf, "GOT IP", 20000))
-        {
-            ESP_Log("[ESP] WiFi 连接失败。\r\n");
-            ESP_Log_RxBuf("WIFI_FAIL");
-            return;
-        }
-    }
-    ESP_Log("[ESP] WiFi 连接成功（已获取 IP）。\r\n");
-    HAL_Delay(1200);
-    ESP_Uart2_Drain(200);
-    // 打印 STA IP 信息（便于确认是否进到目标网段）
-    for (int k = 0; k < 3; k++)
-    {
-        if (ESP_Send_Cmd("AT+CIFSR\r\n", "STAIP", 3000))
-        {
-            break;
-        }
-        ESP_Log("[ESP] CIFSR 无响应/忙,准备重试...\r\n");
-        HAL_Delay(600);
-    }
-    ESP_Log_RxBuf("CIFSR");
-
-    /* TCP 连接 */
-    // 先关闭可能存在的旧连接（无连接时可能返回 ERROR，视为成功）
-    (void)ESP_Send_Cmd_Any("AT+CIPCLOSE\r\n", "OK", "ERROR", 500);
-    sprintf(cmd_buf, "AT+CIPSTART=\"TCP\",\"%s\",%d\r\n", g_sys_cfg.server_ip, g_sys_cfg.server_port);
-    uint8_t tcp_ok = 0;
-    for (int k = 0; k < 3; k++)
-    {
-        if (ESP_Send_Cmd(cmd_buf, "CONNECT", 10000))
-        {
-            tcp_ok = 1;
-            break;
-        }
-        // 如果返回 ALREADY，说明连接还在，也算成功
-        if (strstr((char *)esp_rx_buf, "ALREADY") != NULL)
-        {
-            tcp_ok = 1;
-            break;
-        }
-        if (ESP_RxBusyDetected())
-        {
-            ESP_Log("[ESP] CIPSTART busy，等待后重试...\r\n");
-            HAL_Delay(800);
-            continue;
-        }
-        ESP_Log("[ESP] CIPSTART 失败,准备重试...\r\n");
-        HAL_Delay(800);
-    }
-    if (!tcp_ok)
-    {
-        ESP_Log("[ESP] TCP 连接失败。\r\n");
-        ESP_Log_RxBuf("TCP_FAIL");
-        return;
-    }
-    ESP_Log("[ESP] TCP 连接成功（CONNECT）。\r\n");
-    (void)ESP_Send_Cmd_Any("AT+CIPSTATUS\r\n", "STATUS:", "OK", 1000);
-    ESP_Log_RxBuf("CIPSTATUS");
-
-    // 开启透传模式 (UART <-> WiFi 透明传输)
-    ESP_Send_Cmd("AT+CIPMODE=1\r\n", "OK", 1000);
-    ESP_Send_Cmd("AT+CIPSEND\r\n", ">", 2000); // 等待出现 '>' 符号
-    HAL_Delay(500);
-
-    // 发送注册包 (告诉服务器我是谁)
-    ESP_Register();
-    g_esp_ready = 1;
-    ESP_Log("[ESP] 系统就绪（4通道）,开始上报数据。\r\n");
-
-    // 步骤 5: 启动 USART2 接收（DMA + IDLE）
-    // 用于接收 /api/node/heartbeat 的响应中的 command/reset
-    // 此时正式退出 AT 模式，进入数据监听模式
-    g_uart2_at_mode = 0;
-    ESP_StreamRx_Start();
-
-    /* === 初始化 4 个通道的元数据 (与 api.py 逻辑严格对应) === */
-    // Channel 0: 直流母线(+) -> api.py 识别 "直流" 且无 "负/-" -> voltage
-    node_channels[0].id = 0;
-    strncpy(node_channels[0].label, "直流母线(+)", 31);
-    strncpy(node_channels[0].unit, "V", 7);
-
-    // Channel 1: 直流母线(-) -> api.py 识别 "直流" 且有 "负/-" -> voltage_neg
-    node_channels[1].id = 1;
-    strncpy(node_channels[1].label, "直流母线(-)", 31);
-    strncpy(node_channels[1].unit, "V", 7);
-
-    // Channel 2: 负载电流 -> api.py 识别 "负载" 或 "电流" -> current
-    node_channels[2].id = 2;
-    strncpy(node_channels[2].label, "负载电流", 31);
-    strncpy(node_channels[2].unit, "A", 7);
-
-    // Channel 3: 漏电流 -> api.py 识别 "漏" -> leakage
-    node_channels[3].id = 3;
-    strncpy(node_channels[3].label, "漏电流", 31);
-    strncpy(node_channels[3].unit, "mA", 7);
-}
-
 #if 0
 /* 通用波形生成与FFT计算函数（已停用：改为 ADS131A04 真实采样） */
 static void Process_Channel_Data(int ch_id, float base_dc, float ripple_amp, float noise_level)
@@ -1822,7 +1396,7 @@ static void StrTrimInPlace(char *s)
 
 static void ESP_SPI_FullArmFrames(uint16_t frames)
 {
-#if (EW_USE_ESP32_SPI_UI && ESP32_SPI_ENABLE_FULL_UPLOAD)
+#if (ESP32_SPI_ENABLE_FULL_UPLOAD)
     uint32_t next;
 
     if (frames == 0U) {
@@ -1845,7 +1419,7 @@ static void ESP_SPI_FullArmFrames(uint16_t frames)
 
 static void ESP_SPI_FullSetContinuous(uint8_t enable)
 {
-#if (EW_USE_ESP32_SPI_UI && ESP32_SPI_ENABLE_FULL_UPLOAD)
+#if (ESP32_SPI_ENABLE_FULL_UPLOAD)
     g_spi_full_continuous = enable ? 1U : 0U;
     if (g_spi_full_continuous) {
         ESP_SetServerReportMode(1U);
@@ -1864,7 +1438,7 @@ static void ESP_SPI_FullSetContinuous(uint8_t enable)
 
 static void ESP_SPI_FullPrintStatus(void)
 {
-#if (EW_USE_ESP32_SPI_UI && ESP32_SPI_ENABLE_FULL_UPLOAD)
+#if (ESP32_SPI_ENABLE_FULL_UPLOAD)
     ESP_Log("[ESP32SPI] full status: requested=%u continuous=%u pending=%u reporting=%u ready=%u\r\n",
             (unsigned int)g_server_report_full,
             (unsigned int)g_spi_full_continuous,
@@ -1977,7 +1551,6 @@ static void ESP_Console_HandleLine(char *line)
         return;
     }
 
-    if (strcmp(line, "fullstat") == 0 || strcmp(line, "FULLSTAT") == 0)
     {
         ESP_SPI_FullPrintStatus();
         return;
@@ -2029,7 +1602,6 @@ static void ESP_SetServerReportMode(uint8_t full)
 
 static void ESP_SPI_ResetLocalReportState(const char *reason)
 {
-#if (EW_USE_ESP32_SPI_UI)
     uint8_t want_report = (g_report_enabled != 0U) ? 1U : 0U;
     g_esp_ready = 0U;
     g_ui_reg_ok = 0U;
@@ -2052,12 +1624,9 @@ static void ESP_SPI_ResetLocalReportState(const char *reason)
         ESP_Log("[ESP32SPI] local report state reset: %s\r\n",
                 (reason != NULL) ? reason : "unspecified");
     }
-#else
-    (void)reason;
-#endif
 }
 
-#if (EW_USE_ESP32_SPI_UI && ESP32_SPI_ENABLE_FULL_UPLOAD)
+#if (ESP32_SPI_ENABLE_FULL_UPLOAD)
 static void ESP_SPI_FullClearWaitState(void)
 {
     g_spi_full_waiting_result = 0U;
@@ -2313,7 +1882,6 @@ static bool ESP_TryParseUploadPoints(const char *s, uint32_t *out_points)
 
 static void ESP_SPI_ApplyCommParamsToCoprocessor(const ESP_CommParams_t *p)
 {
-#if (EW_USE_ESP32_SPI_UI)
     if (!p || !g_esp_ready) {
         return;
     }
@@ -2337,9 +1905,6 @@ static void ESP_SPI_ApplyCommParamsToCoprocessor(const ESP_CommParams_t *p)
     } else {
         ESP_Log("[服务器命令] ESP32同步通信参数成功\r\n");
     }
-#else
-    (void)p;
-#endif
 }
 
 void ESP_Console_Init(void)
@@ -2372,7 +1937,6 @@ void ESP_Console_Poll(void)
         g_console_line_len = 0;
     }
 
-#if (EW_USE_ESP32_SPI_UI)
     {
         static uint32_t s_last_async_event_poll_tick = 0U;
         uint8_t reset = 0U, has_mode = 0U, full = 0U;
@@ -2465,7 +2029,6 @@ void ESP_Console_Poll(void)
             }
         }
     }
-#endif
 
     // 2) 处理“服务器下发 reset”指令
     if (g_server_reset_pending)
@@ -2489,7 +2052,7 @@ void ESP_Console_Poll(void)
             return;
         }
         ESP_Log("[服务器命令] SD卡保存成功：上报模式=%s\r\n", mode_text);
-#if (EW_USE_ESP32_SPI_UI && ESP32_SPI_ENABLE_FULL_UPLOAD)
+#if (ESP32_SPI_ENABLE_FULL_UPLOAD)
         g_spi_full_continuous = full;
         if (!full) {
             g_spi_full_manual_frames = 0U;
@@ -2498,9 +2061,8 @@ void ESP_Console_Poll(void)
         /* The final clean status log is emitted below.  Avoid an extra
          * user-visible UI log here.
          */
-#if (EW_USE_ESP32_SPI_UI)
         if (g_esp_ready && g_report_enabled) {
-#if (EW_USE_ESP32_SPI_UI && ESP32_SPI_ENABLE_FULL_UPLOAD)
+#if (ESP32_SPI_ENABLE_FULL_UPLOAD)
             if (ESP_SPI_FullPacketTxBusy()) {
                 ESP_SPI_QueueReportModeSync(full);
                 ESP_Log("[服务器命令] ESP32上报模式同步延后：等待当前SPI full分包结束\r\n");
@@ -2526,7 +2088,6 @@ void ESP_Console_Poll(void)
             }
 #endif
         }
-#endif
         ESP_Log("[服务器命令] 运行态已应用：上报模式=%s\r\n", mode_text);
     }
 
@@ -2588,85 +2149,6 @@ void ESP_Console_Poll(void)
         }
     }
 
-#if (ESP_LEGACY_UART_LINK_WATCHDOG)
-    if (g_report_enabled && g_link_reconnect_pending && g_esp_ready && !g_link_reconnecting && !g_uart2_at_mode)
-    {
-        g_link_reconnect_pending = 0;
-        ESP_Log("[ESP] 侦测到链路异常关键字,触发软重连...\r\n");
-        ESP_SoftReconnect();
-    }
-#endif
-
-#if (ESP_DEBUG && ESP_DEBUG_STATS)
-    // 3) 调试：每 1 秒输出一次统计信息 (确认 RX 是否存活)
-    static uint32_t last_dbg = 0;
-    if ((now - last_dbg) >= 1000)
-    {
-        last_dbg = now;
-        ESP_Log("[调试] USART2 RX: started=%d, events=%lu, bytes=%lu, restart=%lu\r\n",
-                (int)g_usart2_rx_started,
-                (unsigned long)g_usart2_rx_events,
-                (unsigned long)g_usart2_rx_bytes,
-                (unsigned long)g_usart2_rx_restart);
-        ESP_Log("[调试] USART2 ERR: total=%lu, ORE=%lu, FE=%lu, NE=%lu, PE=%lu\r\n",
-                (unsigned long)g_uart2_err,
-                (unsigned long)g_uart2_err_ore,
-                (unsigned long)g_uart2_err_fe,
-                (unsigned long)g_uart2_err_ne,
-                (unsigned long)g_uart2_err_pe);
-    }
-#endif
-
-    // 4) 链路自恢复：如果长时间收不到服务器任何响应，先软重连（更快）
-    // 这是为了应对极端情况下 TCP 假死或模组死机
-#if (ESP_LEGACY_UART_LINK_WATCHDOG)
-    static uint32_t last_link_check = 0;
-    static uint8_t no_rx_miss = 0;
-    static uint32_t last_rx_bytes_snapshot = 0;
-    if ((now - last_link_check) >= 1000)
-    {
-        last_link_check = now;
-        // 只有当“已连接”、“非重连中”且“非AT模式”时才检查
-        if (g_report_enabled && g_esp_ready && !g_link_reconnecting && !g_uart2_at_mode)
-        {
-            // 正常情况下服务器会对每次心跳返回 HTTP 响应
-            uint32_t no_rx_ms = (uint32_t)ESP_CommParams_HardResetSec() * 1000u;
-            if (no_rx_ms < 5000u)
-                no_rx_ms = 5000u; // 最小阈值 5s（避免过短导致抖动）
-
-            // 如果 RX 字节数在增长，说明链路正常
-            if (g_usart2_rx_bytes != last_rx_bytes_snapshot)
-            {
-                last_rx_bytes_snapshot = g_usart2_rx_bytes;
-                g_last_rx_tick = now;
-                no_rx_miss = 0;
-            }
-            // 否则检查是否超时
-            else if (g_last_rx_tick != 0 && (now - g_last_rx_tick) > no_rx_ms)
-            {
-                no_rx_miss++;
-                // 连续 3 次检测都超时，才判定为断线
-                if (no_rx_miss >= 3)
-                {
-                    ESP_Log("[ESP] 警告：%lus 无服务器响应(Δt=%lums, miss=%u) -> 软重连\r\n",
-                            (unsigned long)(no_rx_ms / 1000u),
-                            (unsigned long)(now - g_last_rx_tick),
-                            (unsigned)no_rx_miss);
-                    no_rx_miss = 0;
-                    ESP_SoftReconnect();
-                }
-            }
-        }
-        else
-        {
-            /* 停止上报后：禁止后台自动重连/硬复位重连，仅清空计数避免下次误触发 */
-            no_rx_miss = 0;
-        }
-    }
-#endif
-#else
-    (void)0;
-#endif
 
 #if (ADS_BADFRAME_MONITOR)
     /* 每 1s 输出一次采样统计（在任务上下文输出，避免在TIM2 ISR里printf影响时序） */
@@ -2689,9 +2171,10 @@ void ESP_Console_Poll(void)
         }
     }
 #endif
+#endif
 }
 
-#if (EW_USE_ESP32_SPI_UI && ESP32_SPI_ENABLE_FULL_UPLOAD)
+#if (ESP32_SPI_ENABLE_FULL_UPLOAD)
 static uint16_t ESP_FullTx_EffectiveWaveCount(uint32_t wave_step,
                                               uint32_t upload_points,
                                               uint16_t source_count)
@@ -2947,7 +2430,7 @@ void ESP_Post_Summary(void)
     if (g_esp_ready == 0)
         return;
 
-#if (EW_USE_ESP32_SPI_UI && ESP32_SPI_ENABLE_FULL_UPLOAD)
+#if (ESP32_SPI_ENABLE_FULL_UPLOAD)
     ESP_SPI_ServiceDeferredSync();
     /* Full-upload stress mode must not be mixed with summary packets.
        This keeps the 10-minute test as continuous full frames only. */
@@ -2956,7 +2439,6 @@ void ESP_Post_Summary(void)
     }
 #endif
 
-#if (EW_USE_ESP32_SPI_UI)
     {
     static uint32_t last_spi_send_time = 0;
     static uint32_t tx_try = 0, tx_ok = 0, tx_err = 0;
@@ -3019,204 +2501,19 @@ void ESP_Post_Summary(void)
     }
     return;
     }
-#endif
 
-    /* 发送节流统计 */
-    static uint32_t last_send_time = 0;
-    static uint32_t tx_try = 0, tx_ok = 0, tx_busy = 0, tx_err = 0;
-    static uint32_t last_tx_log = 0;
-
-    uint32_t now_tick = HAL_GetTick();
-
-    /* 如果正在分段发送，优先推进下一段 */
-    if (g_tx_chunk.active) {
-        if (now_tick < g_tx_chunk.next_tick) {
-            return;
-        }
-        HAL_UART_StateTypeDef st_uart = HAL_UART_GetState(&huart2);
-        if (st_uart == HAL_UART_STATE_BUSY_TX || st_uart == HAL_UART_STATE_BUSY_TX_RX) {
-            return;
-        }
-        goto send_next_chunk;
-    }
-
-    /* 非分段 DMA 链发送期间，禁止再次进入发送流程 */
-    if (g_http_tx_phase != ESP_HTTP_TX_IDLE) {
-        return;
-    }
-
-    /* HTTP 门控：发送后等待回包，避免连续请求淹没服务器；超时后自动放行。 */
-    if (g_waiting_http_response)
-    {
-        uint32_t now_gate = HAL_GetTick();
-        uint32_t to_ms = ESP_CommParams_HttpTimeoutMs();
-        if ((now_gate - g_waiting_http_tick) < to_ms)
-            return;
-        g_waiting_http_response = 0;
-    }
-
-    // 发送频率限制
-    uint32_t min_itv = ESP_CommParams_MinIntervalMs();
-    if (min_itv && (now_tick - last_send_time < min_itv))
-        return;
-
-    ensure_http_packet_buf();
-    const uint32_t header_reserve_len = 256;
-    char *body = (char *)http_packet_buf + header_reserve_len;
-    char *p = body;
-    const char *end = (const char *)http_packet_buf + HTTP_PACKET_BUF_SIZE;
-    uint32_t body_len = 0;
-    int header_len = 0;
-    uint32_t total_len = 0;
-    static uint32_t s_seq = 0;
-    uint32_t seq = ++s_seq;
-
-    // JSON Header
-    if (!ESP_Appendf(&p, end, "{\"node_id\":\"%s\",\"status\":\"online\",\"fault_code\":\"%s\",\"seq\":%lu,\"downsample_step\":%lu,\"upload_points\":%lu,\"report_mode\":\"%s\",\"heartbeat_ms\":%lu,\"min_interval_ms\":%lu,\"http_timeout_ms\":%lu,\"chunk_kb\":%lu,\"chunk_delay_ms\":%lu,\"channels\":[",
-                     g_sys_cfg.node_id, g_fault_code, (unsigned long)seq,
-                     (unsigned long)ESP_CommParams_WaveStep(),
-                     (unsigned long)ESP_CommParams_UploadPoints(),
-                     g_server_report_full ? "full" : "summary",
-                     (unsigned long)ESP_CommParams_HeartbeatMs(),
-                     (unsigned long)ESP_CommParams_MinIntervalMs(),
-                     (unsigned long)ESP_CommParams_HttpTimeoutMs(),
-                     (unsigned long)ESP_CommParams_ChunkKb(),
-                     (unsigned long)ESP_CommParams_ChunkDelayMs()))
-        return;
-
-    for (int i = 0; i < 4; i++)
-    {
-        int32_t cv_i = ESP_FloatToI32Scaled(node_channels[i].current_value);
-        if (!ESP_Appendf(&p, end,
-                         "{"
-                         "\"id\":%d,\"channel_id\":%d,"
-                         "\"label\":\"%s\",\"name\":\"%s\","
-                         "\"value\":%ld,\"current_value\":%ld,"
-                         "\"unit\":\"%s\"}"
-                         ,
-                         node_channels[i].id, node_channels[i].id,
-                         node_channels[i].label, node_channels[i].label,
-                         (long)cv_i, (long)cv_i,
-                         node_channels[i].unit))
-            return;
-        if (i < 3)
-        {
-            if (!ESP_Appendf(&p, end, ","))
-                return;
-        }
-    }
-
-    if (!ESP_Appendf(&p, end, "]}"))
-        return;
-
-    body_len = (uint32_t)(p - body);
-    if (body_len == 0 || body_len > (HTTP_PACKET_BUF_SIZE - header_reserve_len - 64u))
-        return;
-
-    header_len = snprintf((char *)http_packet_buf, header_reserve_len,
-                          "POST /api/node/heartbeat HTTP/1.1\r\n"
-                          "Host: %s:%d\r\n"
-                          "Content-Type: application/json\r\n"
-                          "Content-Length: %lu\r\n"
-                          "\r\n",
-                          g_sys_cfg.server_ip, g_sys_cfg.server_port, (unsigned long)body_len);
-    if (header_len <= 0 || (uint32_t)header_len >= header_reserve_len)
-        return;
-
-    uint32_t total_len_check = (uint32_t)header_len + body_len;
-    if (ESP_CommParams_ChunkKb() == 0u && total_len_check <= 65535u)
-    {
-        DCache_CleanByAddr_Any(http_packet_buf, (uint32_t)header_len);
-        DCache_CleanByAddr_Any(body, body_len);
-        HAL_StatusTypeDef st = HAL_UART_Transmit_DMA(&huart2, (uint8_t *)http_packet_buf, (uint16_t)header_len);
-        tx_try++;
-        if (st == HAL_OK) {
-            tx_ok++;
-            g_http_tx_body_ptr = (uint8_t *)body;
-            g_http_tx_body_len = body_len;
-            g_http_tx_phase = ESP_HTTP_TX_HEADER_INFLIGHT;
-            last_send_time = now_tick;
-        } else if (st == HAL_BUSY) {
-            tx_busy++;
-        } else {
-            tx_err++;
-        }
-        return;
-    }
-
-    memmove(http_packet_buf + header_len, body, body_len);
-    total_len = (uint32_t)header_len + body_len;
-    if (total_len > HTTP_PACKET_BUF_SIZE)
-        return;
-    DCache_CleanByAddr_Any(http_packet_buf, total_len);
-
-    g_tx_chunk.total_len = total_len;
-    g_tx_chunk.offset = 0;
-    g_tx_chunk.next_tick = 0;
-    g_tx_chunk.active = 1;
-    now_tick = HAL_GetTick();
-
-send_next_chunk:
-    if (!g_tx_chunk.active) {
-        return;
-    }
-    uint32_t chunk_bytes = ESP_CommParams_ChunkKb() * 1024u;
-    if (chunk_bytes == 0u) chunk_bytes = 65535u;
-    uint32_t remain = g_tx_chunk.total_len - g_tx_chunk.offset;
-    if (remain == 0u) {
-        g_tx_chunk.active = 0;
-        return;
-    }
-    if (chunk_bytes > remain) chunk_bytes = remain;
-    if (chunk_bytes > 65535u) chunk_bytes = 65535u;
-
-    HAL_StatusTypeDef st = HAL_UART_Transmit_DMA(&huart2,
-                                                 (uint8_t *)http_packet_buf + g_tx_chunk.offset,
-                                                 (uint16_t)chunk_bytes);
-    tx_try++;
-    if (st == HAL_OK) {
-        tx_ok++;
-        g_tx_chunk.offset += chunk_bytes;
-        g_tx_chunk.next_tick = now_tick + ESP_CommParams_ChunkDelayMs();
-        if (g_tx_chunk.offset >= g_tx_chunk.total_len) {
-            g_tx_chunk.active = 0;
-            last_send_time = now_tick;
-            g_last_heartbeat_tick = now_tick;
-            g_waiting_http_response = 1;
-            g_waiting_http_tick = now_tick;
-        }
-    } else if (st == HAL_BUSY) {
-        tx_busy++;
-    } else {
-        tx_err++;
-    }
-
-#if (ESP_DEBUG)
-    uint32_t now = HAL_GetTick();
-    if ((now - last_tx_log) >= 1000)
-    {
-        last_tx_log = now;
-        ESP_Log("[调试] Summary TX: try=%lu ok=%lu busy=%lu err=%lu total=%lu off=%lu chunk=%lu gState=%d rxStarted=%d\r\n",
-                (unsigned long)tx_try, (unsigned long)tx_ok, (unsigned long)tx_busy, (unsigned long)tx_err,
-                (unsigned long)g_tx_chunk.total_len,
-                (unsigned long)g_tx_chunk.offset,
-                (unsigned long)chunk_bytes,
-                (int)huart2.gState,
-                (int)g_usart2_rx_started);
-    }
-#endif
 }
 
+
 /**
- * @brief  数据发送主函数
- * @note   负责打包 JSON，通过 DMA 发送
+ * @brief  Data upload entry point.
+ * @note   Summary and full-frame uploads are sent through the ESP32 SPI protocol.
  */
 void ESP_Post_Data(void)
 {
     if (g_esp_ready == 0)
         return;
 
-#if (EW_USE_ESP32_SPI_UI)
 #if (ESP32_SPI_ENABLE_FULL_UPLOAD)
     ESP_SPI_ServiceDeferredSync();
     {
@@ -3493,327 +2790,10 @@ void ESP_Post_Data(void)
     }
     return;
 #endif
-#endif
-
-    /* 发送节流统计 */
-    static uint32_t last_send_time = 0;
-    static uint32_t tx_try = 0, tx_ok = 0, tx_busy = 0, tx_err = 0;
-    static uint32_t last_tx_log = 0;
-
-    uint32_t now_tick = HAL_GetTick();
-
-    /* 如果正在分段发送，优先推进下一段 */
-    if (g_tx_chunk.active) {
-        if (now_tick < g_tx_chunk.next_tick) {
-            return;
-        }
-        HAL_UART_StateTypeDef st_uart = HAL_UART_GetState(&huart2);
-        if (st_uart == HAL_UART_STATE_BUSY_TX || st_uart == HAL_UART_STATE_BUSY_TX_RX) {
-            return;
-        }
-        goto send_next_chunk;
-    }
-
-    /* 非分段 DMA 链发送期间，禁止再次进入发送流程 */
-    if (g_http_tx_phase != ESP_HTTP_TX_IDLE) {
-        return;
-    }
-
-    /* HTTP 门控：发送后等待回包，避免连续请求淹没服务器；超时后自动放行。 */
-    if (g_waiting_http_response)
-    {
-        uint32_t now_gate = HAL_GetTick();
-        uint32_t to_ms = ESP_CommParams_HttpTimeoutMs();
-        if ((now_gate - g_waiting_http_tick) < to_ms)
-            return;
-        g_waiting_http_response = 0;
-    }
-
-    // 发送频率限制
-    uint32_t min_itv = ESP_CommParams_MinIntervalMs();
-    if (min_itv && (now_tick - last_send_time < min_itv))
-        return;
-
-    ensure_http_packet_buf();
-    /* 开始构建 JSON：把 body 放到偏移处，避免对大 body 做 memmove */
-    const uint32_t header_reserve_len = 256;
-    char *body = (char *)http_packet_buf + header_reserve_len;
-    char *p = body;
-    const char *end = (const char *)http_packet_buf + HTTP_PACKET_BUF_SIZE;
-    uint32_t body_len = 0;
-    int header_len = 0;
-    uint32_t total_len = 0;
-    static uint32_t s_seq = 0;
-    uint32_t seq = ++s_seq;
-
-    /* 限点上传：只上传“降采样后的前 N 点” */
-    uint32_t step_u = ESP_CommParams_WaveStep();
-    uint32_t limit_u = ESP_CommParams_UploadPoints();
-    uint32_t raw_count = (uint32_t)WAVEFORM_POINTS;
-    if (raw_count > 0u && step_u > 0u && limit_u > 0u) {
-        uint64_t need = ((uint64_t)(limit_u - 1u) * (uint64_t)step_u) + 1u;
-        if (need < (uint64_t)raw_count) {
-            raw_count = (uint32_t)need;
-        }
-    }
-
-    // JSON Header
-    if (!ESP_Appendf(&p, end, "{\"node_id\":\"%s\",\"status\":\"online\",\"fault_code\":\"%s\",\"seq\":%lu,\"downsample_step\":%lu,\"upload_points\":%lu,\"report_mode\":\"%s\",\"heartbeat_ms\":%lu,\"min_interval_ms\":%lu,\"http_timeout_ms\":%lu,\"chunk_kb\":%lu,\"chunk_delay_ms\":%lu,\"channels\":[",
-                    g_sys_cfg.node_id, g_fault_code, (unsigned long)seq,
-                    (unsigned long)step_u,
-                    (unsigned long)limit_u,
-                    g_server_report_full ? "full" : "summary",
-                    (unsigned long)ESP_CommParams_HeartbeatMs(),
-                    (unsigned long)ESP_CommParams_MinIntervalMs(),
-                    (unsigned long)ESP_CommParams_HttpTimeoutMs(),
-                    (unsigned long)ESP_CommParams_ChunkKb(),
-                    (unsigned long)ESP_CommParams_ChunkDelayMs()))
-        return;
-
-    // 循环写入 4 个通道的数据
-    for (int i = 0; i < 4; i++)
-    {
-        int32_t cv_i = ESP_FloatToI32Scaled(node_channels[i].current_value);
-        if (!ESP_Appendf(&p, end,
-                         "{"
-                         "\"id\":%d,\"channel_id\":%d,"
-                         "\"label\":\"%s\",\"name\":\"%s\","
-                         "\"value\":%ld,\"current_value\":%ld,"
-                         "\"unit\":\"%s\","
-                         "\"waveform\":[",
-                         node_channels[i].id, node_channels[i].id,
-                         node_channels[i].label, node_channels[i].label, // name冗余label
-                         (long)cv_i, (long)cv_i,
-                         node_channels[i].unit))
-            return;
-
-        // 波形数据（运行时降采样：step=1全量，step=4每4点取1点）
-        if (!Helper_FloatArray_To_String(&p, end, node_channels[i].waveform, (int)raw_count, (int)step_u))
-            return;
-
-        // 频谱数据
-        if (!ESP_Appendf(&p, end, "],\"fft_spectrum\":["))
-            return;
-        /* FFT 不乘 200：保持原始数值（1 位小数） */
-        if (!Helper_FloatArray1dp_To_String(&p, end, node_channels[i].fft_data, FFT_POINTS, 1))
-            return;
-
-        // 结束当前 channel
-        if (!ESP_Appendf(&p, end, "]}"))
-            return;
-        if (i < 3)
-        {
-            if (!ESP_Appendf(&p, end, ",")) // 逗号分隔
-                return;
-        }
-    }
-
-    if (!ESP_Appendf(&p, end, "]}")) // JSON End
-        return;
-
-    body_len = (uint32_t)(p - body);
-    if (body_len == 0 || body_len > (HTTP_PACKET_BUF_SIZE - header_reserve_len - 64u))
-    {
-        // 保护：长度异常直接丢弃，避免 memmove 越界导致后续随机坏帧
-        return;
-    }
-
-    /* 生成 header 到预留区 */
-    header_len = snprintf((char *)http_packet_buf, header_reserve_len,
-                          "POST /api/node/heartbeat HTTP/1.1\r\n"
-                          "Host: %s:%d\r\n"
-                          "Content-Type: application/json\r\n"
-                          "Content-Length: %lu\r\n"
-                          "\r\n",
-                          g_sys_cfg.server_ip, g_sys_cfg.server_port, (unsigned long)body_len);
-    if (header_len <= 0 || (uint32_t)header_len >= header_reserve_len)
-        return;
-
-    /* 非分段仅当整包 ≤ 64KB 时可用：HAL_UART_Transmit_DMA 长度为 uint16_t，超过 65535 会截断导致服务器收不全。 */
-    uint32_t total_len_check = (uint32_t)header_len + body_len;
-    if (ESP_CommParams_ChunkKb() == 0u && total_len_check <= 65535u)
-    {
-        DCache_CleanByAddr_Any(http_packet_buf, (uint32_t)header_len);
-        DCache_CleanByAddr_Any(body, body_len);
-        HAL_StatusTypeDef st = HAL_UART_Transmit_DMA(&huart2, (uint8_t *)http_packet_buf, (uint16_t)header_len);
-        tx_try++;
-        if (st == HAL_OK) {
-            tx_ok++;
-            g_http_tx_body_ptr = (uint8_t *)body;
-            g_http_tx_body_len = body_len;
-            g_http_tx_phase = ESP_HTTP_TX_HEADER_INFLIGHT;
-            last_send_time = now_tick;
-        } else if (st == HAL_BUSY) {
-            tx_busy++;
-        } else {
-            tx_err++;
-        }
-        return;
-    }
-
-    /* 分段发送：需要把 header+body 变成连续缓冲（仍会 memmove 一次大包） */
-    memmove(http_packet_buf + header_len, body, body_len);
-    total_len = (uint32_t)header_len + body_len;
-    if (total_len > HTTP_PACKET_BUF_SIZE)
-        return;
-    DCache_CleanByAddr_Any(http_packet_buf, total_len);
-
-    /* 初始化分段发送上下文 */
-    g_tx_chunk.total_len = total_len;
-    g_tx_chunk.offset = 0;
-    g_tx_chunk.next_tick = 0;
-    g_tx_chunk.active = 1;
-    now_tick = HAL_GetTick();
-
-send_next_chunk:
-    if (!g_tx_chunk.active) {
-        return;
-    }
-    /* 每段 ≤ 65535（DMA 长度 uint16_t）；chunk_kb=0 时仅在全量包>64KB 会走分段，用 64KB 作为默认段大小 */
-    uint32_t chunk_bytes = ESP_CommParams_ChunkKb() * 1024u;
-    if (chunk_bytes == 0u) chunk_bytes = 65535u;
-    uint32_t remain = g_tx_chunk.total_len - g_tx_chunk.offset;
-    if (remain == 0u) {
-        g_tx_chunk.active = 0;
-        return;
-    }
-    if (chunk_bytes > remain) chunk_bytes = remain;
-    if (chunk_bytes > 65535u) chunk_bytes = 65535u;
-
-    HAL_StatusTypeDef st = HAL_UART_Transmit_DMA(&huart2,
-                                                 (uint8_t *)http_packet_buf + g_tx_chunk.offset,
-                                                 (uint16_t)chunk_bytes);
-    tx_try++;
-    if (st == HAL_OK) {
-        tx_ok++;
-        g_tx_chunk.offset += chunk_bytes;
-        g_tx_chunk.next_tick = now_tick + ESP_CommParams_ChunkDelayMs();
-        if (g_tx_chunk.offset >= g_tx_chunk.total_len) {
-            g_tx_chunk.active = 0;
-            last_send_time = now_tick;
-            g_last_heartbeat_tick = now_tick;
-            g_waiting_http_response = 1;
-            g_waiting_http_tick = now_tick;
-        }
-    } else if (st == HAL_BUSY) {
-        tx_busy++;
-    } else {
-        tx_err++;
-    }
-
-#if (ESP_DEBUG)
-    // 调试日志
-    uint32_t now = HAL_GetTick();
-    if ((now - last_tx_log) >= 1000)
-    {
-        last_tx_log = now;
-        ESP_Log("[调试] TX: try=%lu ok=%lu busy=%lu err=%lu total=%lu off=%lu chunk=%lu gState=%d rxStarted=%d\r\n",
-                (unsigned long)tx_try, (unsigned long)tx_ok, (unsigned long)tx_busy, (unsigned long)tx_err,
-                (unsigned long)g_tx_chunk.total_len,
-                (unsigned long)g_tx_chunk.offset,
-                (unsigned long)chunk_bytes,
-                (int)huart2.gState,
-                (int)g_usart2_rx_started);
-    }
-#endif
 }
 
-void ESP_Post_Heartbeat(void)
-{
-    if (g_esp_ready == 0)
-        return;
 
-    uint32_t now = HAL_GetTick();
-    if (g_waiting_http_response)
-    {
-        /* 等待回包期间禁止继续发心跳；但超时后自动放行 */
-        uint32_t to_ms = ESP_CommParams_HttpTimeoutMs();
-        if ((now - g_waiting_http_tick) < to_ms)
-            return;
-        g_waiting_http_response = 0;
-    }
-
-    if (now - g_last_heartbeat_tick < ESP_CommParams_HeartbeatMs())
-        return;
-
-    HAL_UART_StateTypeDef st = HAL_UART_GetState(&huart2);
-    if (st == HAL_UART_STATE_BUSY_TX || st == HAL_UART_STATE_BUSY_TX_RX)
-        return;
-
-    char body[128];
-    char req[256];
-    int body_len = snprintf(body, sizeof(body),
-                            "{\"node_id\":\"%s\",\"status\":\"online\",\"fault_code\":\"%s\",\"channels\":[]}",
-                            g_sys_cfg.node_id, g_fault_code);
-    if (body_len <= 0 || body_len >= (int)sizeof(body))
-        return;
-    int req_len = snprintf(req, sizeof(req),
-                           "POST /api/node/heartbeat HTTP/1.1\r\n"
-                           "Host: %s:%d\r\n"
-                           "Content-Type: application/json\r\n"
-                           "Content-Length: %d\r\n"
-                           "\r\n"
-                           "%s",
-                           g_sys_cfg.server_ip, g_sys_cfg.server_port, body_len, body);
-    if (req_len <= 0 || req_len >= (int)sizeof(req))
-        return;
-
-    if (HAL_UART_Transmit(&huart2, (uint8_t *)req, (uint16_t)req_len, 200) == HAL_OK)
-    {
-        g_waiting_http_response = 1;
-        g_waiting_http_tick = now;
-        g_last_heartbeat_tick = now;
-#if (ESP_DEBUG)
-        ESP_Log("[调试] Heartbeat sent len=%d\r\n", req_len);
-#endif
-    }
-}
-
-// ---------------- USART2 TX DMA 完成回调：Header -> Body 链式发送 ----------------
-void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
-{
-    if (!huart || huart->Instance != USART2)
-        return;
-
-    if (g_http_tx_phase == ESP_HTTP_TX_HEADER_INFLIGHT)
-    {
-        if (!g_http_tx_body_ptr || g_http_tx_body_len == 0)
-        {
-            g_http_tx_phase = ESP_HTTP_TX_IDLE;
-            g_http_tx_body_ptr = NULL;
-            g_http_tx_body_len = 0;
-            return;
-        }
-        HAL_StatusTypeDef st = HAL_UART_Transmit_DMA(&huart2,
-                                                     g_http_tx_body_ptr,
-                                                     (uint16_t)g_http_tx_body_len);
-        if (st == HAL_OK)
-        {
-            g_http_tx_phase = ESP_HTTP_TX_BODY_INFLIGHT;
-            uint32_t now = HAL_GetTick();
-            g_last_heartbeat_tick = now;
-            g_waiting_http_response = 1;
-            g_waiting_http_tick = now;
-        }
-        else
-        {
-            g_http_tx_phase = ESP_HTTP_TX_IDLE;
-            g_http_tx_body_ptr = NULL;
-            g_http_tx_body_len = 0;
-        }
-        return;
-    }
-
-    if (g_http_tx_phase == ESP_HTTP_TX_BODY_INFLIGHT)
-    {
-        g_http_tx_phase = ESP_HTTP_TX_IDLE;
-        g_http_tx_body_ptr = NULL;
-        g_http_tx_body_len = 0;
-        return;
-    }
-}
-
-// ---------------- 串口 RX 回调：调试串口输入 E01/E00 注入/清除故障 ----------------
+// ---------------- Debug console input callback (USART1 only) ----------------
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
 #if (ESP_CONSOLE_ENABLE)
@@ -3851,796 +2831,6 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
     }
 #endif
     (void)huart;
-}
-
-// ---------------- USART2 流式接收：解析后端 /api/node/heartbeat 响应里的 command=reset ----------------
-static void ESP_StreamRx_Start(void)
-{
-    memset(g_stream_rx_buf, 0, sizeof(g_stream_rx_buf));
-    memset(g_stream_window, 0, sizeof(g_stream_window));
-    g_stream_window_len = 0;
-    g_stream_rx_last_pos = 0;
-
-    // 确保 RX 状态干净（避免因为之前的阻塞接收/异常导致启动失败）
-    (void)HAL_UART_AbortReceive(&huart2);
-
-    // 启动 IDLE DMA 接收
-    HAL_StatusTypeDef st = HAL_UARTEx_ReceiveToIdle_DMA(&huart2, g_stream_rx_buf, sizeof(g_stream_rx_buf));
-    if (st == HAL_OK)
-    {
-        g_usart2_rx_started = 1;
-        g_usart2_rx_restart++;
-        g_last_rx_tick = HAL_GetTick();
-        // 关闭半传输中断 (HT)，减少一半的中断频率，这对 2Mbps 通信至关重要
-        if (huart2.hdmarx)
-        {
-            __HAL_DMA_DISABLE_IT(huart2.hdmarx, DMA_IT_HT);
-        }
-        ESP_Log("[ESP] 已开启 USART2 RX(DMA+IDLE):用于接收服务器下发命令\r\n");
-    }
-    else
-    {
-        g_usart2_rx_started = 0;
-        ESP_Log("[ESP] 开启 USART2 RX(DMA+IDLE) 失败,status=%d（将无法接收 reset 命令）\r\n", (int)st);
-    }
-}
-
-static void ESP_StreamRx_Feed(const uint8_t *data, uint16_t len)
-{
-    if (!data || len == 0)
-        return;
-    g_usart2_rx_bytes += len;
-
-    // ---------------- 关键修复：先扫描“原始数据块” ----------------
-    // 避免因为滑动窗口截断（例如 "HTTP" 和 "/1.1" 在两包里）导致漏判
-
-    // 1) HTTP 响应检测：兼容 HTTP/1.0/1.1，出现 "HTTP/" 即认为收到响应头（辅助调试）
-    if (g_waiting_http_response && ESP_BufContains(data, len, "HTTP/"))
-    {
-        g_waiting_http_response = 0;
-        g_last_rx_tick = HAL_GetTick();
-    }
-    // 2) 服务器命令检测：优先在原始数据里扫一遍
-    if (ESP_BufContains(data, len, "\"command\"") && ESP_BufContains(data, len, "reset"))
-    {
-        g_server_reset_pending = 1;
-    }
-    if (ESP_BufContains(data, len, "\"report_mode\"") && ESP_BufContains(data, len, "full"))
-    {
-        ESP_SetServerReportMode(1);
-    }
-    if (ESP_BufContains(data, len, "\"report_mode\"") && ESP_BufContains(data, len, "summary"))
-    {
-        ESP_SetServerReportMode(0);
-    }
-    // 3) 链路异常检测：尽早触发软重连，避免长时间“卡住”
-    if (g_report_enabled && !g_link_reconnecting &&
-        (ESP_BufContains(data, len, "CLOSED") ||
-         ESP_BufContains(data, len, "CONNECT FAIL") ||
-         ESP_BufContains(data, len, "ERROR") ||
-         ESP_BufContains(data, len, "link is not valid")))
-    {
-        g_link_reconnect_pending = 1;
-    }
-
-    // ---------------- 滑动窗口逻辑 ----------------
-    // 将新数据追加到窗口，移除旧数据，保持窗口大小恒定。
-    // 用于解决关键字跨包的问题。
-    const uint16_t cap = (uint16_t)(sizeof(g_stream_window) - 1);
-    if (len >= cap)
-    {
-        // 如果新数据比窗口大，直接保留新数据的最后 cap 字节
-        memcpy(g_stream_window, data + (len - cap), cap);
-        g_stream_window[cap] = 0;
-        g_stream_window_len = cap;
-    }
-    else
-    {
-        uint16_t new_len = (uint16_t)(g_stream_window_len + len);
-        if (new_len > cap)
-        {
-            uint16_t drop = (uint16_t)(new_len - cap);
-            if (drop >= g_stream_window_len)
-            {
-                g_stream_window_len = 0;
-            }
-            else
-            {
-                // 移动旧数据
-                memmove(g_stream_window, g_stream_window + drop, g_stream_window_len - drop);
-                g_stream_window_len = (uint16_t)(g_stream_window_len - drop);
-            }
-        }
-        // 追加新数据
-        memcpy(g_stream_window + g_stream_window_len, data, len);
-        g_stream_window_len = (uint16_t)(g_stream_window_len + len);
-        g_stream_window[g_stream_window_len] = 0;
-    }
-
-    // 识别 JSON：{"command":"reset"}（也允许出现 reset 关键字）
-    if (strstr(g_stream_window, "\"command\"") && strstr(g_stream_window, "reset"))
-    {
-        g_server_reset_pending = 1;
-    }
-    if (strstr(g_stream_window, "\"report_mode\"") && strstr(g_stream_window, "full"))
-    {
-        ESP_SetServerReportMode(1);
-    }
-    if (strstr(g_stream_window, "\"report_mode\"") && strstr(g_stream_window, "summary"))
-    {
-        ESP_SetServerReportMode(0);
-    }
-    // 滑动窗口中检测链路异常关键字
-    uint32_t server_downsample_step = 0;
-    if (ESP_TryParseDownsampleStep(g_stream_window, &server_downsample_step))
-    {
-        ESP_SetServerDownsampleStep(server_downsample_step);
-    }
-    uint32_t server_upload_points = 0;
-    if (ESP_TryParseUploadPoints(g_stream_window, &server_upload_points))
-    {
-        ESP_SetServerUploadPoints(server_upload_points);
-    }
-
-    if (!g_link_reconnecting &&
-        (strstr(g_stream_window, "CLOSED") ||
-         strstr(g_stream_window, "CONNECT FAIL") ||
-         strstr(g_stream_window, "ERROR") ||
-         strstr(g_stream_window, "link is not valid")))
-    {
-        g_link_reconnect_pending = 1;
-    }
-
-    // 识别 HTTP 响应头（辅助调试，兼容 HTTP/1.0/1.1）
-    if (g_waiting_http_response && strstr(g_stream_window, "HTTP/"))
-    {
-        g_waiting_http_response = 0;
-        g_last_rx_tick = HAL_GetTick();
-    }
-}
-
-/**
- * @brief  UART 接收事件回调 (DMA 满 或 IDLE 空闲时触发)
- * @note   HAL_UARTEx_ReceiveToIdle_DMA 的回调
- */
-void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
-{
-    if (huart == &huart2)
-    {
-        // AT 阶段禁止 DMA+IDLE 回调介入（会与阻塞式 HAL_UART_Receive 冲突）
-        if (g_uart2_at_mode)
-        {
-            return;
-        }
-        g_usart2_rx_events++;
-        (void)Size;
-
-        /* DMA Circular 场景：不要在回调里反复 Stop/Start DMA，否则 2Mbps 下极易产生空窗 ORE。
-         * 这里按 DMA 写指针(pos)做增量解析，回调触发频率由 IDLE/TC/HT 决定。 */
-        if (huart2.hdmarx != NULL)
-        {
-            const uint16_t buf_sz = (uint16_t)sizeof(g_stream_rx_buf);
-            uint16_t pos = (uint16_t)(buf_sz - (uint16_t)__HAL_DMA_GET_COUNTER(huart2.hdmarx));
-
-            if (pos != g_stream_rx_last_pos && pos <= buf_sz)
-            {
-                uint32_t now = HAL_GetTick();
-                g_last_rx_tick = now;
-
-                /* 有新数据到达：直接解除门控。
-                 * 说明服务器/链路至少有回包字节到达，继续卡门控只会造成“超时放行刷屏”并降低吞吐。
-                 * 更严格的 HTTP 头检测仍由 ESP_StreamRx_Feed 负责（用于调试/统计）。 */
-                if (g_waiting_http_response)
-                {
-                    g_waiting_http_response = 0;
-                }
-
-                if (pos > g_stream_rx_last_pos)
-                {
-                    uint16_t len = (uint16_t)(pos - g_stream_rx_last_pos);
-                    DCache_InvalidateByAddr_Any(&g_stream_rx_buf[g_stream_rx_last_pos], len);
-                    ESP_StreamRx_Feed(&g_stream_rx_buf[g_stream_rx_last_pos], len);
-                }
-                else
-                {
-                    /* wrap-around */
-                    uint16_t len1 = (uint16_t)(buf_sz - g_stream_rx_last_pos);
-                    if (len1 > 0)
-                    {
-                        DCache_InvalidateByAddr_Any(&g_stream_rx_buf[g_stream_rx_last_pos], len1);
-                        ESP_StreamRx_Feed(&g_stream_rx_buf[g_stream_rx_last_pos], len1);
-                    }
-                    if (pos > 0)
-                    {
-                        DCache_InvalidateByAddr_Any(&g_stream_rx_buf[0], pos);
-                        ESP_StreamRx_Feed(&g_stream_rx_buf[0], pos);
-                    }
-                }
-                g_stream_rx_last_pos = pos;
-            }
-
-            g_usart2_rx_started = 1;
-            return;
-        }
-
-        /* 兜底：无 DMA 句柄时维持旧逻辑（不建议 2Mbps 下走这里） */
-        if (Size > 0 && Size <= sizeof(g_stream_rx_buf))
-        {
-            uint32_t now = HAL_GetTick();
-            g_last_rx_tick = now;
-            DCache_InvalidateByAddr_Any(g_stream_rx_buf, Size);
-            ESP_StreamRx_Feed(g_stream_rx_buf, Size);
-        }
-        return;
-    }
-}
-
-/**
- * @brief  UART 错误回调
- * @note   典型是 ORE（接收溢出）导致后续不再进 RxEventCallback。
- * 这是 2Mbps 无流控通信中最关键的容错逻辑。
- */
-void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
-{
-    if (huart == &huart2)
-    {
-        g_uart2_err++;
-        uint32_t ec = huart->ErrorCode;
-        if (ec & HAL_UART_ERROR_ORE)
-            g_uart2_err_ore++;
-        if (ec & HAL_UART_ERROR_FE)
-            g_uart2_err_fe++;
-        if (ec & HAL_UART_ERROR_NE)
-            g_uart2_err_ne++;
-        if (ec & HAL_UART_ERROR_PE)
-            g_uart2_err_pe++;
-
-        // 发生错误时，当前这次 HTTP 回包很可能已经丢了；不要继续门控傻等
-        if (g_waiting_http_response)
-        {
-            g_waiting_http_response = 0;
-        }
-
-        // 场景 A: AT(阻塞)阶段
-        // 如果此时去重启 ReceiveToIdle_DMA，会把 HAL 的 RxState 锁死为 BUSY_RX，
-        // 导致后续 HAL_UART_Receive 直接 HAL_BUSY，从而出现“无限超时/假死”。
-        if (g_uart2_at_mode)
-        {
-            ESP_Clear_Error_Flags();
-            (void)HAL_UART_Abort(&huart2);
-            g_usart2_rx_started = 0;
-            return;
-        }
-
-        // 场景 B: 透传阶段
-        // 清除错误并重启 DMA 接收，确保能继续收数据
-        ESP_Clear_Error_Flags();
-        (void)HAL_UART_AbortReceive(&huart2);
-        g_stream_rx_last_pos = 0;
-
-        HAL_StatusTypeDef st = HAL_UARTEx_ReceiveToIdle_DMA(&huart2, g_stream_rx_buf, sizeof(g_stream_rx_buf));
-        g_usart2_rx_started = (st == HAL_OK) ? 1 : 0;
-
-        if (st == HAL_OK && huart2.hdmarx)
-        {
-            __HAL_DMA_DISABLE_IT(huart2.hdmarx, DMA_IT_HT);
-        }
-        return;
-    }
-}
-
-void ESP_Register(void)
-{
-    ensure_http_packet_buf();
-    char *body_start = (char *)http_packet_buf + 256;
-    ESP_Log("[ESP] 正在注册设备...\r\n");
-    sprintf(body_start, "{\"device_id\":\"%s\",\"location\":\"%s\",\"hw_version\":\"v1.0_4CH\"}", g_sys_cfg.node_id, g_sys_cfg.node_location);
-    uint32_t body_len = strlen(body_start);
-    int h_len = sprintf((char *)http_packet_buf,
-                        "POST /api/register HTTP/1.1\r\nHost: %s:%d\r\nContent-Type: application/json\r\nContent-Length: %u\r\n\r\n",
-                        g_sys_cfg.server_ip, g_sys_cfg.server_port, body_len);
-    memmove(http_packet_buf + h_len, body_start, body_len);
-    HAL_UART_Transmit(&huart2, http_packet_buf, h_len + body_len, 1000);
-
-    // 关键：读一下服务器 HTTP 响应，确认注册是否真的到达后端
-    memset(esp_rx_buf, 0, sizeof(esp_rx_buf));
-    uint32_t start = HAL_GetTick();
-    uint16_t idx = 0;
-    while ((HAL_GetTick() - start) < 3000)
-    {
-        uint8_t ch;
-        if (HAL_UART_Receive(&huart2, &ch, 1, 5) == HAL_OK)
-        {
-            if (idx < sizeof(esp_rx_buf) - 1)
-            {
-                esp_rx_buf[idx++] = ch;
-                esp_rx_buf[idx] = 0;
-            }
-            if (strstr((char *)esp_rx_buf, "HTTP/1.1"))
-            {
-                ESP_Log("[ESP] 注册响应已收到\r\n");
-                break;
-            }
-        }
-        else
-        {
-            ESP_RtosYield();
-        }
-    }
-    if (idx == 0)
-    {
-        ESP_Log("[ESP] 注册无响应（未收到HTTP头）\r\n");
-    }
-    HAL_Delay(200);
-}
-
-/* 辅助函数 */
-
-// 丢弃 UART2 残留输出（避免污染关键字匹配）
-static void ESP_Uart2_Drain(uint32_t ms)
-{
-    uint32_t start = HAL_GetTick();
-    uint8_t ch;
-    while ((HAL_GetTick() - start) < ms)
-    {
-        if (HAL_UART_Receive(&huart2, &ch, 1, 0) == HAL_OK)
-        {
-            // eat
-        }
-        else
-        {
-            HAL_Delay(1);
-        }
-    }
-}
-
-// 阻塞等待关键字（用于透传复用探测 / +++ 等待 OK）
-static uint8_t ESP_Wait_Keyword(const char *kw, uint32_t timeout_ms)
-{
-    if (!kw || !*kw)
-        return 0;
-    uint32_t start = HAL_GetTick();
-    uint16_t idx = 0;
-    memset(esp_rx_buf, 0, sizeof(esp_rx_buf));
-    while ((HAL_GetTick() - start) < timeout_ms)
-    {
-        uint8_t ch;
-        if (HAL_UART_Receive(&huart2, &ch, 1, 5) == HAL_OK)
-        {
-            if (idx < sizeof(esp_rx_buf) - 1)
-            {
-                esp_rx_buf[idx++] = ch;
-                esp_rx_buf[idx] = 0;
-            }
-            if (strstr((char *)esp_rx_buf, kw))
-                return 1;
-        }
-        else
-        {
-            ESP_RtosYield();
-        }
-    }
-    return 0;
-}
-
-// 严格退出透传：满足 guard time，发送 +++，并等待 OK
-static uint8_t ESP_Exit_Transparent_Mode_Strict(uint32_t timeout_ms)
-{
-    // 停 RX DMA，避免与阻塞式接收冲突
-    (void)HAL_UART_AbortReceive(&huart2);
-    ESP_Clear_Error_Flags();
-
-    // guard time (before)：期间不要向模块发送任何字节 (通常需 > 1s)
-    HAL_Delay(1200);
-    HAL_UART_Transmit(&huart2, (uint8_t *)"+++", 3, 100);
-    // guard time (after)
-    HAL_Delay(1200);
-
-    // 等待 OK（有些固件会返回 "OK\r\n"）
-    return ESP_Wait_Keyword("OK", timeout_ms);
-}
-
-// MCU 复位后：优先复用“现有透传+TCP”连接（无需断电 ESP）
-static uint8_t ESP_TryReuseTransparent(void)
-{
-    // 如果当前就在命令模式，AT 会立刻 OK；这种情况不需要复用，走常规初始化更稳
-    if (ESP_Send_Cmd("AT\r\n", "OK", 200))
-        return 0;
-
-    // 在透传里：直接发一包最小 heartbeat 探测，看是否收到 HTTP/1.1
-    (void)HAL_UART_AbortReceive(&huart2);
-    ESP_Uart2_Drain(100);
-
-    ensure_http_packet_buf();
-    char *body = (char *)http_packet_buf + 256;
-    sprintf(body, "{\"node_id\":\"%s\",\"status\":\"online\",\"fault_code\":\"%s\"}", g_sys_cfg.node_id, g_fault_code);
-    uint32_t body_len = (uint32_t)strlen(body);
-    int h_len = sprintf((char *)http_packet_buf,
-                        "POST /api/node/heartbeat HTTP/1.1\r\n"
-                        "Host: %s:%d\r\n"
-                        "Content-Type: application/json\r\n"
-                        "Content-Length: %lu\r\n"
-                        "\r\n",
-                        g_sys_cfg.server_ip, g_sys_cfg.server_port, (unsigned long)body_len);
-    memmove(http_packet_buf + h_len, body, body_len);
-
-    // 探测包小，阻塞发送即可
-    HAL_UART_Transmit(&huart2, http_packet_buf, (uint16_t)(h_len + body_len), 500);
-    if (ESP_Wait_Keyword("HTTP/1.1", 800))
-    {
-        // 复用成功：重启 RX DMA，用于接收 reset 指令 & 更新时间戳
-        ESP_StreamRx_Start();
-        g_last_rx_tick = HAL_GetTick();
-        return 1;
-    }
-    return 0;
-}
-
-// 软重连：不断电、不重置 WiFi，只重建 TCP + 透传
-static void ESP_SoftReconnect(void)
-{
-#if (EW_USE_ESP32_SPI_UI)
-    ESP_Log("[ESP32SPI] skip legacy UART soft reconnect in SPI mode.\r\n");
-    return;
-#endif
-    if (g_link_reconnecting)
-        return;
-    g_link_reconnecting = 1;
-
-    // 暂停一段时间，满足 guard time 才能退出透传
-    g_esp_ready = 0;
-    g_uart2_at_mode = 1;
-    ESP_ForceStop_DMA();
-    (void)HAL_UART_AbortReceive(&huart2);
-
-    if (!ESP_Exit_Transparent_Mode_Strict(2000))
-    {
-			ESP_Log("[ESP] 软重连失败:无法退出透传 -> 硬复位ESP8266\r\n");
-        g_link_reconnecting = 0;
-        ESP_HardReset();
-        // 复位后走完整初始化（会重建 WiFi/TCP/透传）
-        ESP_Init();
-        return;
-    }
-
-    // 重建 TCP 并重新进入透传
-    ESP_Send_Cmd("AT+CIPCLOSE\r\n", "OK", 1500);
-    char cmd_buf[128];
-    sprintf(cmd_buf, "AT+CIPSTART=\"TCP\",\"%s\",%d\r\n", g_sys_cfg.server_ip, g_sys_cfg.server_port);
-    if (!ESP_Send_Cmd(cmd_buf, "CONNECT", 10000))
-    {
-			ESP_Log("[ESP] 软重连失败:CIPSTART -> 硬复位ESP8266\r\n");
-        g_link_reconnecting = 0;
-        ESP_HardReset();
-        ESP_Init();
-        return;
-    }
-    ESP_Send_Cmd("AT+CIPMODE=1\r\n", "OK", 1000);
-    ESP_Send_Cmd("AT+CIPSEND\r\n", ">", 2000);
-    HAL_Delay(200);
-
-    ESP_StreamRx_Start();
-    g_last_rx_tick = HAL_GetTick();
-    g_esp_ready = 1;
-    g_uart2_at_mode = 0;
-    g_link_reconnecting = 0;
-    ESP_Log("[ESP] 软重连完成\r\n");
-}
-
-static void ESP_Clear_Error_Flags(void)
-{
-    volatile uint32_t isr = huart2.Instance->ISR;
-    volatile uint32_t rdr = huart2.Instance->RDR;
-    (void)isr;
-    (void)rdr;
-    // 仅清除错误标志，不操作数据
-    __HAL_UART_CLEAR_OREFLAG(&huart2);
-    __HAL_UART_CLEAR_NEFLAG(&huart2);
-    __HAL_UART_CLEAR_FEFLAG(&huart2);
-}
-
-// 硬件复位 ESP8266：拉低 RST 一段时间再拉高（不需要断电）
-static void ESP_HardReset(void)
-{
-#ifdef ESP8266_RST_Pin
-    // 硬复位前先停掉 UART2 DMA/中断，避免复位过程中输出乱码引发中断风暴
-    g_uart2_at_mode = 1;
-    ESP_ForceStop_DMA();
-
-    // RST 低有效：低 120ms -> 高，等待启动完成
-    HAL_GPIO_WritePin(ESP8266_RST_GPIO_Port, ESP8266_RST_Pin, GPIO_PIN_RESET);
-    HAL_Delay(120);
-    HAL_GPIO_WritePin(ESP8266_RST_GPIO_Port, ESP8266_RST_Pin, GPIO_PIN_SET);
-    /* 某些固件在高波特率下上电/复位后需要更久才会响应 AT */
-    HAL_Delay(2500);
-    ESP_Clear_Error_Flags();
-    ESP_Uart2_Drain(400);
-#else
-    // 若硬件未接 RST 引脚，只能提示用户断电
-    ESP_Log("[ESP] 未定义 ESP8266_RST_Pin，无法硬复位（请接 RST/EN 到GPIO）\r\n");
-#endif
-}
-
-static uint8_t ESP_Send_Cmd(const char *cmd, const char *reply, uint32_t timeout)
-{
-    uint32_t start;
-    uint16_t idx = 0;
-    uint8_t busy_hits = 0;
-    ESP_Clear_Error_Flags();
-    memset(esp_rx_buf, 0, sizeof(esp_rx_buf));
-
-#if (ESP_DEBUG)
-    // 打印命令（敏感信息脱敏）
-    if (cmd && (strncmp(cmd, "AT+CWJAP=", 9) == 0))
-    {
-        ESP_Log("[ESP 指令] >> AT+CWJAP=\"%s\",\"******\"\r\n", g_sys_cfg.wifi_ssid);
-    }
-    else if (cmd)
-    {
-        ESP_Log("[ESP 指令] >> %s", cmd);
-    }
-#endif
-
-    /* 发送：若 HAL 状态机异常（BUSY），尝试 Abort 后重发一次 */
-    if (HAL_UART_Transmit(&huart2, (uint8_t *)cmd, strlen(cmd), 100) != HAL_OK)
-    {
-        (void)HAL_UART_Abort(&huart2);
-        ESP_Clear_Error_Flags();
-        (void)HAL_UART_Transmit(&huart2, (uint8_t *)cmd, strlen(cmd), 200);
-    }
-    start = HAL_GetTick();
-    while ((HAL_GetTick() - start) < timeout)
-    {
-        uint8_t ch;
-        // 轮询方式接收一个字节（超时从5ms增加到10ms，减少轮询频率）
-        if (HAL_UART_Receive(&huart2, &ch, 1, 10) == HAL_OK)
-        {
-            if (idx < sizeof(esp_rx_buf) - 1)
-            {
-                esp_rx_buf[idx++] = ch;
-                esp_rx_buf[idx] = 0;
-                if (strstr((char *)esp_rx_buf, reply) != NULL)
-                {
-#if (ESP_DEBUG)
-                    ESP_Log("[ESP 期望] << %s\r\n", reply);
-#endif
-                    return 1;
-                }
-                /* 早退：出现 ERROR/FAIL 时无需继续等（减少“超时假象”） */
-                if (strstr((char *)esp_rx_buf, "ERROR") || strstr((char *)esp_rx_buf, "FAIL"))
-                {
-#if (ESP_DEBUG)
-									ESP_Log("[ESP] 早退:检测到 ERROR/FAIL\r\n");
-                    ESP_Log_RxBuf("ERR");
-#endif
-                    return 0;
-                }
-                if (ESP_RxBusyDetected())
-                {
-                    busy_hits++;
-#if (ESP_DEBUG)
-                    ESP_Log("[ESP] 模组忙(busy)，等待中...\r\n");
-#endif
-                    memset(esp_rx_buf, 0, sizeof(esp_rx_buf));
-                    idx = 0;
-                    HAL_Delay(200);
-                    if (busy_hits <= 3)
-                    {
-                        start = HAL_GetTick();
-                    }
-                }
-            }
-        }
-        else
-        {
-            HAL_Delay(1);  /* 用HAL_Delay替代ESP_RtosYield，减少任务切换开销 */
-        }
-    }
-#if (ESP_DEBUG)
-    ESP_Log("[ESP 超时] 等待关键字: %s\r\n", reply);
-    ESP_Log_RxBuf("TIMEOUT");
-#endif
-    return 0;
-}
-
-static uint8_t ESP_Send_Cmd_Any(const char *cmd, const char *reply1, const char *reply2, uint32_t timeout)
-{
-    uint32_t start;
-    uint16_t idx = 0;
-    uint8_t busy_hits = 0;
-    ESP_Clear_Error_Flags();
-    memset(esp_rx_buf, 0, sizeof(esp_rx_buf));
-
-#if (ESP_DEBUG)
-    if (cmd && (strncmp(cmd, "AT+CWJAP=", 9) == 0))
-    {
-        ESP_Log("[ESP 指令] >> AT+CWJAP=\"%s\",\"******\"\r\n", g_sys_cfg.wifi_ssid);
-    }
-    else if (cmd)
-    {
-        ESP_Log("[ESP 指令] >> %s", cmd);
-    }
-#endif
-
-    if (HAL_UART_Transmit(&huart2, (uint8_t *)cmd, strlen(cmd), 100) != HAL_OK)
-    {
-        (void)HAL_UART_Abort(&huart2);
-        ESP_Clear_Error_Flags();
-        (void)HAL_UART_Transmit(&huart2, (uint8_t *)cmd, strlen(cmd), 200);
-    }
-    start = HAL_GetTick();
-    while ((HAL_GetTick() - start) < timeout)
-    {
-        uint8_t ch;
-        if (HAL_UART_Receive(&huart2, &ch, 1, 10) == HAL_OK)  /* 超时从5ms增加到10ms，减少轮询频率 */
-        {
-            if (idx < sizeof(esp_rx_buf) - 1)
-            {
-                esp_rx_buf[idx++] = ch;
-                esp_rx_buf[idx] = 0;
-                if ((reply1 && strstr((char *)esp_rx_buf, reply1)) ||
-                    (reply2 && strstr((char *)esp_rx_buf, reply2)))
-                {
-#if (ESP_DEBUG)
-                    ESP_Log("[ESP 期望] << %s%s\r\n", reply1 ? reply1 : "",
-                            reply2 ? " / alt" : "");
-#endif
-                    return 1;
-                }
-                if (strstr((char *)esp_rx_buf, "ERROR") || strstr((char *)esp_rx_buf, "FAIL"))
-                {
-                    /* 允许上层从 esp_rx_buf 里判断具体错误，但不再傻等超时 */
-                    return 0;
-                }
-                if (ESP_RxBusyDetected())
-                {
-                    busy_hits++;
-#if (ESP_DEBUG)
-                    ESP_Log("[ESP] 模组忙(busy),等待中...\r\n");
-#endif
-                    memset(esp_rx_buf, 0, sizeof(esp_rx_buf));
-                    idx = 0;
-                    HAL_Delay(200);
-                    if (busy_hits <= 3)
-                    {
-                        start = HAL_GetTick();
-                    }
-                }
-            }
-        }
-        else
-        {
-            HAL_Delay(1);  /* 用HAL_Delay替代ESP_RtosYield，减少任务切换开销 */
-        }
-    }
-#if (ESP_DEBUG)
-    ESP_Log("[ESP 超时] 等待关键字: %s%s%s\r\n", reply1 ? reply1 : "",
-            reply2 ? " / " : "", reply2 ? reply2 : "");
-    ESP_Log_RxBuf("TIMEOUT");
-#endif
-    return 0;
-}
-
-static inline char *ESP_AppendI32(char *p, const char *end, int32_t x)
-{
-    if (!p || !end || p >= end)
-        return NULL;
-    if (x == 0)
-    {
-        if (p + 1 > end)
-            return NULL;
-        *p++ = '0';
-        return p;
-    }
-    if (x < 0)
-    {
-        if (p + 1 > end)
-            return NULL;
-        *p++ = '-';
-        /* INT32_MIN 溢出保护：转无符号处理 */
-        uint32_t ux = (uint32_t)(-(x + 1)) + 1u;
-        char tmp[11];
-        int n = 0;
-        while (ux > 0 && n < (int)sizeof(tmp))
-        {
-            tmp[n++] = (char)('0' + (ux % 10u));
-            ux /= 10u;
-        }
-        if ((end - p) < n)
-            return NULL;
-        while (n--)
-            *p++ = tmp[n];
-        return p;
-    }
-    uint32_t ux = (uint32_t)x;
-    char tmp[11];
-    int n = 0;
-    while (ux > 0 && n < (int)sizeof(tmp))
-    {
-        tmp[n++] = (char)('0' + (ux % 10u));
-        ux /= 10u;
-    }
-    if ((end - p) < n)
-        return NULL;
-    while (n--)
-        *p++ = tmp[n];
-    return p;
-}
-
-static int Helper_FloatArray_To_String(char **pp, const char *end, const float *data, int count, int step)
-{
-    if (!pp || !*pp || !end || *pp >= end || !data || count <= 0 || step <= 0)
-        return 0;
-
-    char *p = *pp;
-
-    for (int i = 0; i < count; i += step)
-    {
-        int32_t x = ESP_FloatToI32Scaled(data[i]);
-        char *np = ESP_AppendI32(p, end, x);
-        if (!np)
-            return 0;
-        p = np;
-        if (i + step < count)
-        {
-            if (p + 1 > (char *)end)
-                return 0;
-            *p++ = ',';
-        }
-    }
-
-    if (p >= (char *)end)
-        return 0;
-    *p = 0;
-    *pp = p;
-    return 1;
-}
-
-/* 输出 float 数组（1 位小数），不做 ×200 缩放
- * - 仍不使用 snprintf，避免 CPU 开销
- * - 仅用于 fft_spectrum[]（你要求 FFT 不需要 ×200） */
-static int Helper_FloatArray1dp_To_String(char **pp, const char *end, const float *data, int count, int step)
-{
-    if (!pp || !*pp || !end || *pp >= end || !data || count <= 0 || step <= 0)
-        return 0;
-
-    char *p = *pp;
-    for (int i = 0; i < count; i += step)
-    {
-        float vf = ESP_SafeFloat(data[i]);
-        int32_t x10 = (int32_t)((vf >= 0.0f) ? (vf * 10.0f + 0.5f) : (vf * 10.0f - 0.5f));
-        int32_t ip = x10 / 10;
-        int32_t fp = x10 % 10;
-        if (fp < 0)
-            fp = -fp;
-
-        char *np = ESP_AppendI32(p, end, ip);
-        if (!np || (end - np) < 2)
-            return 0;
-        *np++ = '.';
-        *np++ = (char)('0' + (fp % 10));
-        p = np;
-
-        if (i + step < count)
-        {
-            if (p + 1 > (char *)end)
-                return 0;
-            *p++ = ',';
-        }
-    }
-
-    if (p >= (char *)end)
-        return 0;
-    *p = 0;
-    *pp = p;
-    return 1;
-}
-
-static void ESP_Exit_Transparent_Mode(void)
-{
-    HAL_Delay(200);
-    HAL_UART_Transmit(&huart2, (uint8_t *)"+++", 3, 100);
-    HAL_Delay(1000);
 }
 
 static void ESP_Log(const char *format, ...)
@@ -4681,15 +2871,6 @@ typedef struct
 
 static esp_ui_hooks_t g_ui_hooks;
 static osMessageQueueId_t g_esp_ui_q = NULL;
-static volatile uint8_t g_ui_wifi_ok = 0;
-static volatile uint8_t g_ui_tcp_ok = 0;
-static volatile uint8_t g_ui_reg_ok = 0;
-static volatile uint8_t g_ui_auto_recover_pending = 0U;
-static volatile uint8_t g_ui_auto_recover_want_report = 0U;
-static uint32_t g_ui_auto_recover_next_poll_tick = 0U;
-static uint32_t g_ui_auto_recover_next_attempt_tick = 0U;
-static uint32_t g_ui_last_session_epoch = 0U;
-static uint8_t g_ui_last_session_valid = 0U;
 
 void ESP_UI_SetHooks(esp_ui_log_hook_t log_hook, void *log_ctx,
                      esp_ui_step_hook_t step_hook, void *step_ctx)
@@ -4723,23 +2904,6 @@ void ESP_UI_TaskInit(void)
         return;
     g_esp_ui_q = osMessageQueueNew(8, sizeof(uint8_t), NULL);
 
-    /* UI 模式下也建议在任务启动时把模组复位到干净状态，但不做任何连接。
-     * 目的：避免用户第一次点“WiFi连接”时 ESP 还在上电启动/透传残留，导致 AT 连续超时。 */
-#ifndef EW_ESP_UI_BOOT_HARDRESET_ONCE
-#define EW_ESP_UI_BOOT_HARDRESET_ONCE 1
-#endif
-#if (EW_ESP_UI_BOOT_HARDRESET_ONCE)
-#if (EW_USE_ESP32_SPI_UI)
-    ESP_Log("[ESP32SPI] UI: SPI mode, skip legacy AT boot reset.\r\n");
-#else
-    if (!g_boot_hardreset_done)
-    {
-        g_boot_hardreset_done = 1;
-        ESP_Log("[ESP] UI: boot hard reset once (no auto connect)\r\n");
-        ESP_HardReset();
-    }
-#endif
-#endif
 }
 
 bool ESP_UI_SendCmd(esp_ui_cmd_t cmd)
@@ -4793,10 +2957,9 @@ void ESP_UI_InvalidateReg(void)
     ESP_Log("[UI] Registration expired, please click REG again.\r\n");
 }
 
-/* 从 ESP_Init 抽取的“进入可用 AT 模式”最小流程 */
+
 static void ESP_UI_SyncLinkFlagsFromStatus(const esp32_spi_status_t *st)
 {
-#if (EW_USE_ESP32_SPI_UI)
     if (st == NULL) {
         return;
     }
@@ -4804,14 +2967,10 @@ static void ESP_UI_SyncLinkFlagsFromStatus(const esp32_spi_status_t *st)
     g_ui_tcp_ok = (st->cloud_connected || st->registered_with_cloud || st->reporting_enabled) ? 1U : 0U;
     g_ui_reg_ok = (st->registered_with_cloud || st->reporting_enabled) ? 1U : 0U;
     g_esp_ready = (st->registered_with_cloud || st->reporting_enabled) ? 1U : 0U;
-#else
-    (void)st;
-#endif
 }
 
 static void ESP_UI_ScheduleAutoRecover(const char *reason, uint8_t want_report)
 {
-#if (EW_USE_ESP32_SPI_UI)
     uint32_t now = HAL_GetTick();
     uint8_t should_log = (g_ui_auto_recover_pending == 0U);
 
@@ -4828,15 +2987,10 @@ static void ESP_UI_ScheduleAutoRecover(const char *reason, uint8_t want_report)
                 (reason != NULL) ? reason : "unspecified",
                 (unsigned int)((want_report != 0U) ? 1U : g_ui_auto_recover_want_report));
     }
-#else
-    (void)reason;
-    (void)want_report;
-#endif
 }
 
 static bool ESP_UI_EnsureReportStarted(uint8_t mode, const char *reason_tag)
 {
-#if (EW_USE_ESP32_SPI_UI)
     esp32_spi_status_t st;
     uint8_t target_mode = (mode != 0U) ? 1U : 0U;
 
@@ -4874,16 +3028,10 @@ static bool ESP_UI_EnsureReportStarted(uint8_t mode, const char *reason_tag)
     g_report_enabled = 1U;
     (void)ESP_AutoReconnect_SetLastReporting(true);
     return true;
-#else
-    (void)mode;
-    (void)reason_tag;
-    return false;
-#endif
 }
 
 static void ESP_UI_PollAutoRecover(void)
 {
-#if (EW_USE_ESP32_SPI_UI)
     uint32_t now = HAL_GetTick();
     bool auto_reconnect_en = false;
     bool last_reporting = false;
@@ -5027,165 +3175,8 @@ static void ESP_UI_PollAutoRecover(void)
             st_ok ? (unsigned int)st.registered_with_cloud : 0U,
             st_ok ? (unsigned int)st.reporting_enabled : 0U,
             st_ok ? (unsigned int)st.report_mode : 0U);
-#endif
 }
 
-static bool ESP_UI_PrepareAtMode(void)
-{
-    /* 进 AT 前清场 */
-    g_uart2_at_mode = 1;
-    ESP_ForceStop_DMA();
-    ESP_Clear_Error_Flags();
-
-    /* 确保 RST 拉高 */
-#ifdef ESP8266_RST_Pin
-    HAL_GPIO_WritePin(ESP8266_RST_GPIO_Port, ESP8266_RST_Pin, GPIO_PIN_SET);
-#endif
-
-    /* 先快速探测：若本来就在命令模式，别无谓做 +++（避免大量“OK超时”假象） */
-    ESP_Uart2_Drain(60);
-    for (int k = 0; k < 2; k++)
-    {
-        if (ESP_Send_Cmd("AT\r\n", "OK", 300))
-        {
-            return true;
-        }
-        ESP_RtosYield();
-    }
-
-    /* 如果连续 AT 都“完全没回显”，优先判定为模组未就绪/串口状态机异常，直接硬复位比 +++ 更靠谱 */
-    if (esp_rx_buf[0] == 0)
-    {
-        ESP_Log("[ESP] UI: AT no response, hard reset and retry...\r\n");
-        ESP_HardReset();
-        ESP_Uart2_Drain(200);
-        for (int k = 0; k < 3; k++)
-        {
-            if (ESP_Send_Cmd("AT\r\n", "OK", 1000))
-            {
-                return true;
-            }
-            ESP_RtosYield();
-        }
-    }
-
-    /* 可能在透传：再严格退出一次（带 guard time） */
-    ESP_Log("[ESP] UI:尝试退出透传...\r\n");
-    if (ESP_Exit_Transparent_Mode_Strict(2000))
-    {
-        ESP_Uart2_Drain(80);
-        if (ESP_Send_Cmd("AT\r\n", "OK", 800))
-        {
-            return true;
-        }
-    }
-
-    for (int k = 0; k < 3; k++)
-    {
-        if (ESP_Send_Cmd("AT\r\n", "OK", 800))
-        {
-            return true;
-        }
-        (void)ESP_Exit_Transparent_Mode_Strict(2000);
-        ESP_Uart2_Drain(120);
-    }
-
-    /* AT 无回显：硬复位一次 */
-    ESP_Log("[ESP] UI: AT无回显,执行硬复位...\r\n");
-    ESP_HardReset();
-    ESP_ForceStop_DMA();
-    if (!ESP_Send_Cmd("AT\r\n", "OK", 1500))
-    {
-			ESP_Log("[ESP] UI: 致命:硬复位后仍无法进入 AT\r\n");
-        return false;
-    }
-    return true;
-}
-
-static bool ESP_UI_IsWifiConnected(void)
-{
-    if (!ESP_Send_Cmd_Any("AT+CWJAP?\r\n", "+CWJAP:", "No AP", 1500))
-    {
-        return false;
-    }
-    return (strstr((char *)esp_rx_buf, "+CWJAP:") != NULL);
-}
-
-static bool ESP_UI_IsTcpConnected(void)
-{
-    /* 专用解析：必须读到 STATUS:x 才判定，避免先匹配到 OK 就返回导致误判 */
-    ESP_Clear_Error_Flags();
-    memset(esp_rx_buf, 0, sizeof(esp_rx_buf));
-
-    if (HAL_UART_Transmit(&huart2, (uint8_t *)"AT+CIPSTATUS\r\n", 14, 200) != HAL_OK)
-    {
-        (void)HAL_UART_Abort(&huart2);
-        ESP_Clear_Error_Flags();
-        (void)HAL_UART_Transmit(&huart2, (uint8_t *)"AT+CIPSTATUS\r\n", 14, 400);
-    }
-
-    uint32_t start = HAL_GetTick();
-    uint16_t idx = 0;
-    while ((HAL_GetTick() - start) < 1500U)
-    {
-        uint8_t ch;
-        if (HAL_UART_Receive(&huart2, &ch, 1, 10) == HAL_OK)  /* 超时从5ms增加到10ms，减少轮询频率 */
-        {
-            if (idx < sizeof(esp_rx_buf) - 1)
-            {
-                esp_rx_buf[idx++] = ch;
-                esp_rx_buf[idx] = 0;
-            }
-            /* 读到 STATUS: 就继续收一小段，确保把数字收全 */
-            if (strstr((char *)esp_rx_buf, "STATUS:") != NULL)
-            {
-                /* 再多等最多 150ms 收齐 */
-                uint32_t t2 = HAL_GetTick();
-                while ((HAL_GetTick() - t2) < 150U)
-                {
-                    if (HAL_UART_Receive(&huart2, &ch, 1, 10) == HAL_OK)  /* 超时从5ms增加到10ms */
-                    {
-                        if (idx < sizeof(esp_rx_buf) - 1)
-                        {
-                            esp_rx_buf[idx++] = ch;
-                            esp_rx_buf[idx] = 0;
-                        }
-                    }
-                    else
-                    {
-                        HAL_Delay(1);  /* 用HAL_Delay替代ESP_RtosYield，减少任务切换开销 */
-                    }
-                }
-                break;
-            }
-        }
-        else
-        {
-            HAL_Delay(1);  /* 用HAL_Delay替代ESP_RtosYield，减少任务切换开销 */
-        }
-    }
-
-    char *p = strstr((char *)esp_rx_buf, "STATUS:");
-    if (!p)
-    {
-#if (ESP_DEBUG)
-        ESP_Log("[ESP] CIPSTATUS parse fail (no STATUS)\r\n");
-        ESP_Log_RxBuf("CIPSTATUS");
-#endif
-        return false;
-    }
-    int st = -1;
-    /* 兼容 "STATUS:3" 或 "STATUS: 3" */
-    p += 7;
-    while (*p == ' ' || *p == '\r' || *p == '\n') p++;
-    if (*p >= '0' && *p <= '9')
-        st = *p - '0';
-
-    /* ESP AT: STATUS:3 表示已建立 TCP 连接 */
-    return (st == 3);
-}
-
-#if (EW_USE_ESP32_SPI_UI)
 static bool ESP_UI_SPI_LoadAndApplyConfig(void)
 {
     const SystemConfig_t *cfg;
@@ -5292,18 +3283,15 @@ static bool ESP_UI_DoApplyConfig(void)
     ESP_Log("[UI] Saved SD config applied. Re-run WiFi/TCP/REG/Report if needed.\r\n");
     return true;
 }
-#endif
 
 static bool ESP_UI_DoWiFi(void)
 {
-#if (EW_USE_ESP32_SPI_UI)
     ESP_Log("[UI] Executing WIFI via ESP32 SPI...\r\n");
     g_esp_ready = 0;
     g_report_enabled = 0;
     g_ui_wifi_ok = 0;
     g_ui_tcp_ok = 0;
     g_ui_reg_ok = 0;
-    g_uart2_at_mode = 0;
 #if (ESP32_SPI_ENABLE_FULL_UPLOAD)
     ESP_SPI_FullResetUploadRuntimeState();
 #endif
@@ -5328,68 +3316,10 @@ static bool ESP_UI_DoWiFi(void)
     g_ui_wifi_ok = 1;
     ESP_UI_SPI_LogStatus("wifi ok");
     return true;
-#else
-    char cmd_buf[128];
-
-    ESP_LoadConfig();
-    ESP_Log("[UI] Executing WIFI...\r\n");
-
-    /* 用户要求：每次点击 WiFi 连接，都先硬件复位一次（保证状态干净） */
-    g_esp_ready = 0;
-    g_ui_wifi_ok = 0;
-    g_ui_tcp_ok = 0;
-    g_ui_reg_ok = 0;
-    ESP_HardReset();
-
-    if (!ESP_UI_PrepareAtMode())
-        return false;
-
-    int retry_count = 0;
-    while (!ESP_Send_Cmd("ATE0\r\n", "OK", 500))
-    {
-        ESP_Log("[ESP] UI: ATE0 失败,重试...\r\n");
-        ESP_Clear_Error_Flags();
-        HAL_Delay(500);
-        retry_count++;
-        if (retry_count > 5)
-            break;
-    }
-
-    ESP_Send_Cmd("AT+CWMODE=1\r\n", "OK", 1000);
-    (void)ESP_Send_Cmd_Any("AT+CWQAP\r\n", "OK", "ERROR", 1000); /* 断开旧 AP（若无连接返回 ERROR 也可忽略） */
-
-    sprintf(cmd_buf, "AT+CWJAP=\"%s\",\"%s\"\r\n", g_sys_cfg.wifi_ssid, g_sys_cfg.wifi_password);
-    if (!ESP_Send_Cmd(cmd_buf, "GOT IP", 20000))
-    {
-        /* 第一次失败：硬复位一次再试（比“无限重试”更可控） */
-        ESP_Log("[ESP] WiFi 连接失败,硬复位后重试...\r\n");
-        ESP_HardReset();
-        if (!ESP_UI_PrepareAtMode())
-            return false;
-        ESP_Send_Cmd("ATE0\r\n", "OK", 800);
-        ESP_Send_Cmd("AT+CWMODE=1\r\n", "OK", 1000);
-        if (!ESP_Send_Cmd(cmd_buf, "GOT IP", 20000))
-        {
-            ESP_Log("[ESP] WiFi 连接失败。\r\n");
-            ESP_Log_RxBuf("WIFI_FAIL");
-            g_ui_wifi_ok = 0;
-            return false;
-        }
-    }
-
-    ESP_Log("[ESP] WiFi 连接成功（已获取 IP）。\r\n");
-    HAL_Delay(1200);
-    ESP_Uart2_Drain(200);
-    (void)ESP_Send_Cmd("AT+CIFSR\r\n", "STAIP", 3000);
-    ESP_Log_RxBuf("CIFSR");
-    g_ui_wifi_ok = 1;
-    return true;
-#endif
 }
 
 static bool ESP_UI_DoTCP(void)
 {
-#if (EW_USE_ESP32_SPI_UI)
     esp32_spi_status_t st;
     ESP_Log("[UI] Executing TCP via ESP32 SPI...\r\n");
 
@@ -5410,72 +3340,10 @@ static bool ESP_UI_DoTCP(void)
     g_ui_tcp_ok = 1;
     ESP_UI_SPI_LogStatus("tcp/cloud ok");
     return true;
-#else
-    char cmd_buf[128];
-    ESP_LoadConfig();
-    ESP_Log("[UI] Executing TCP...\r\n");
-
-    if (!ESP_UI_PrepareAtMode())
-        return false;
-
-    if (!ESP_UI_IsWifiConnected())
-    {
-			ESP_Log("[ESP] TCP 前置条件失败:WiFi 未连接\r\n");
-        g_ui_tcp_ok = 0;
-        return false;
-    }
-
-    if (ESP_UI_IsTcpConnected())
-    {
-        ESP_Log("[ESP] TCP 已连接,跳过重连。\r\n");
-        g_ui_tcp_ok = 1;
-        return true;
-    }
-
-    (void)ESP_Send_Cmd_Any("AT+CIPCLOSE\r\n", "OK", "ERROR", 500);
-    sprintf(cmd_buf, "AT+CIPSTART=\"TCP\",\"%s\",%d\r\n", g_sys_cfg.server_ip, g_sys_cfg.server_port);
-
-    uint8_t tcp_ok = 0;
-    for (int k = 0; k < 3; k++)
-    {
-        if (ESP_Send_Cmd(cmd_buf, "CONNECT", 10000))
-        {
-            tcp_ok = 1;
-            break;
-        }
-        if (strstr((char *)esp_rx_buf, "ALREADY") != NULL)
-        {
-            tcp_ok = 1;
-            break;
-        }
-        if (ESP_RxBusyDetected())
-        {
-            ESP_Log("[ESP] CIPSTART busy，等待后重试...\r\n");
-            HAL_Delay(800);
-            continue;
-        }
-        ESP_Log("[ESP] CIPSTART 失败,准备重试...\r\n");
-        HAL_Delay(800);
-    }
-
-    if (!tcp_ok)
-    {
-        ESP_Log("[ESP] TCP 连接失败。\r\n");
-        ESP_Log_RxBuf("TCP_FAIL");
-        g_ui_tcp_ok = 0;
-        return false;
-    }
-    ESP_Log("[ESP] TCP 连接成功（CONNECT）。\r\n");
-    (void)ESP_Send_Cmd_Any("AT+CIPSTATUS\r\n", "STATUS:", "OK", 1000);
-    ESP_Log_RxBuf("CIPSTATUS");
-    g_ui_tcp_ok = 1;
-    return true;
-#endif
 }
 
 static bool ESP_UI_DoRegister(void)
 {
-#if (EW_USE_ESP32_SPI_UI)
     esp32_spi_status_t st;
     ESP_Log("[UI] Executing REG via ESP32 SPI...\r\n");
 
@@ -5497,7 +3365,6 @@ static bool ESP_UI_DoRegister(void)
 
     ESP_Init_Channels_And_DSP();
     g_esp_ready = 1;
-    g_uart2_at_mode = 0;
     g_ui_reg_ok = 1;
 #if (ESP32_SPI_ENABLE_FULL_UPLOAD)
     ESP_SPI_FullResetUploadRuntimeState();
@@ -5528,45 +3395,10 @@ static bool ESP_UI_DoRegister(void)
 #endif
     ESP_Log("[ESP32SPI] registration complete, SPI link ready.\r\n");
     return true;
-#else
-    ESP_Log("[UI] Executing REG...\r\n");
-
-    if (!ESP_UI_PrepareAtMode())
-        return false;
-
-    if (!ESP_UI_IsTcpConnected())
-    {
-			ESP_Log("[ESP] 注册前置条件失败:TCP 未连接\r\n");
-        g_ui_reg_ok = 0;
-        return false;
-    }
-
-    ESP_Send_Cmd("AT+CIPMODE=1\r\n", "OK", 1000);
-    if (!ESP_Send_Cmd("AT+CIPSEND\r\n", ">", 2000))
-    {
-        ESP_Log("[ESP] 进入透传发送失败（未出现 > ）\r\n");
-        g_ui_reg_ok = 0;
-        return false;
-    }
-    HAL_Delay(500);
-    ESP_Register();
-
-    /* 关键：进入“可上报”前初始化 4 通道与 FFT，否则后端只会看到 1 个通道 */
-    ESP_Init_Channels_And_DSP();
-
-    /* 注册完成后，切换到数据监听模式 */
-    g_esp_ready = 1;
-    g_uart2_at_mode = 0;
-    ESP_StreamRx_Start();
-    ESP_Log("[ESP] 注册完成,链路就绪.\r\n");
-    g_ui_reg_ok = 1;
-    return true;
-#endif
 }
 
 static bool ESP_UI_ToggleReport(void)
 {
-#if (EW_USE_ESP32_SPI_UI)
     if (!g_report_enabled)
     {
         uint8_t mode = ESP_ServerReportFull() ? 1U : 0U;
@@ -5599,30 +3431,6 @@ static bool ESP_UI_ToggleReport(void)
         (void)ESP_AutoReconnect_SetLastReporting(false);
         return true;
     }
-#else
-    /* 只允许在链路就绪后开启上报，避免“未注册就上报”造成大量超时 */
-    if (!g_report_enabled)
-    {
-        if (!g_esp_ready)
-        {
-            ESP_Log("[UI] Report denied: link not ready (need REG first)\r\n");
-            return false;
-        }
-        g_report_enabled = 1U;
-        ESP_Log("[UI] Started sensor data upload loop.\r\n");
-        /* 记录上次上电前上报状态：开启 */
-        (void)ESP_AutoReconnect_SetLastReporting(true);
-        return true;
-    }
-    else
-    {
-        g_report_enabled = 0U;
-        ESP_Log("[UI] Data upload stopped.\r\n");
-        /* 记录上次上电前上报状态：关闭 */
-        (void)ESP_AutoReconnect_SetLastReporting(false);
-        return true;
-    }
-#endif
 }
 
 static void ESP_UI_AutoConnect(void)
@@ -5707,11 +3515,7 @@ void ESP_UI_TaskPoll(void)
             break;
         case ESP_UI_CMD_APPLY_CONFIG:
         {
-#if (EW_USE_ESP32_SPI_UI)
             bool ok = ESP_UI_DoApplyConfig();
-#else
-            bool ok = ESP_Config_LoadRuntimeFromSD();
-#endif
             esp_ui_step_done(cmd, ok);
         }
             break;

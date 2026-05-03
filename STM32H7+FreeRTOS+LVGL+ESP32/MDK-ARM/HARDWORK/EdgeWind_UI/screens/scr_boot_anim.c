@@ -49,7 +49,7 @@ static const char *boot_logs[BOOT_LOG_LINES] = {
     "[0.015] INIT AXI/SRAM BUS           OK",
     "[0.040] LOAD KERNEL @0x08000000     DONE",
     "[0.120] CHECK SENSORS (ADS131)      READY",
-    "[0.350] WIFI UPLINK (ESP8266)       LINKED",
+    "[0.350] WIFI UPLINK (EdgeComm)       LINKED",
     "[0.800] MOUNTING FILESYSTEM         MOUNTED",
     "[1.200] STARTING GUI ENGINE         ..."
 };

@@ -6,7 +6,7 @@
 #include "../EdgeWind_UI/edgewind_ui.h"
 #include "gui_assets.h"
 #include "src/generated/gui_guider.h"
-#include "esp8266.h"
+#include "edge_comm.h"
 
 lv_ui guider_ui;
 
@@ -66,7 +66,7 @@ static void boot_autostart_try_cb(lv_timer_t *t)
 
 void edgewind_ui_on_before_enter_button(void)
 {
-    /* Boot auto reconnect is now owned by FreeRTOS ESP8266_Task.
+    /* Boot auto reconnect is now owned by FreeRTOS EdgeComm_Task.
      * Keep this GUI hook as a no-op to avoid duplicate AUTO_CONNECT triggers. */
     (void)g_boot_autostart_timer;
     (void)boot_autostart_try_cb;

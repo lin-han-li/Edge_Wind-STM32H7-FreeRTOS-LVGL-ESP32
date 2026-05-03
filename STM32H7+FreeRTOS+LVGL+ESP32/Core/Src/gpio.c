@@ -71,6 +71,12 @@ void MX_GPIO_Init(void)
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(ESP32_CS_GPIO_Port, ESP32_CS_Pin, GPIO_PIN_SET);
 
+  /*Configure GPIO pins : NC_PD5_Pin NC_PD6_Pin */
+  GPIO_InitStruct.Pin = NC_PD5_Pin|NC_PD6_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
+
   /*Configure GPIO pin : ESP32_EN_Pin */
   GPIO_InitStruct.Pin = ESP32_EN_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_OD;
@@ -79,9 +85,9 @@ void MX_GPIO_Init(void)
   HAL_GPIO_Init(ESP32_EN_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pins : AD7606_CS_Pin AD7606_OS1_Pin AD7606_REST_Pin AD7606_CONVEST_A_Pin
-                           AD7606_CONVEST_B_Pin AD7606_OS0_Pin */
+                           AD7606_CONVEST_B_Pin AD7606_OS0_Pin ESP32_CS_Pin */
   GPIO_InitStruct.Pin = AD7606_CS_Pin|AD7606_OS1_Pin|AD7606_REST_Pin|AD7606_CONVEST_A_Pin
-                          |AD7606_CONVEST_B_Pin|AD7606_OS0_Pin;
+                          |AD7606_CONVEST_B_Pin|AD7606_OS0_Pin|ESP32_CS_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
@@ -111,13 +117,6 @@ void MX_GPIO_Init(void)
   GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
   GPIO_InitStruct.Pull = GPIO_PULLDOWN;
   HAL_GPIO_Init(ESP32_READY_GPIO_Port, &GPIO_InitStruct);
-
-  /*Configure GPIO pin : ESP32_CS_Pin */
-  GPIO_InitStruct.Pin = ESP32_CS_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-  HAL_GPIO_Init(ESP32_CS_GPIO_Port, &GPIO_InitStruct);
 
   /* EXTI interrupt init*/
   HAL_NVIC_SetPriority(EXTI15_10_IRQn, 5, 0);

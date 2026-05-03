@@ -483,11 +483,11 @@ def _write_runtime_info(port):
         "LAN URLs:\n"
         f"{lan_lines}\n"
         "\n"
-        "ESP8266 settings:\n"
+        "ESP32 settings:\n"
         f"  SERVER_IP   \"{primary_ip}\"\n"
         f"  SERVER_PORT {port}\n"
         "\n"
-        "Note: Choose the IP in the same subnet as your ESP8266.\n"
+        "Note: Choose the IP in the same subnet as your ESP32.\n"
     )
     if not lan_ips:
         content += "Note: LAN IP not detected. Check network adapters.\n"
@@ -509,7 +509,7 @@ def _show_runtime_info_popup(port):
         f"本机访问：http://127.0.0.1:{port}\n\n"
         "局域网可用地址：\n"
         f"{lan_lines}\n\n"
-        "ESP8266 设置：\n"
+        "ESP32 设置：\n"
         f'  SERVER_IP   "{primary_ip}"\n'
         f"  SERVER_PORT {port}\n\n"
         "请选与设备同网段的 IP。"

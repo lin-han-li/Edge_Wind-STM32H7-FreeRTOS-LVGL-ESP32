@@ -4,7 +4,7 @@
 
 #include "ff.h"
 
-#include "../ESP8266/esp8266_config.h"
+#include "../EdgeComm/edge_comm_config.h"
 
 #include <stdio.h>
 #include <stdlib.h>

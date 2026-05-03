@@ -58,16 +58,16 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
-#define ESP8266_RX_Pin GPIO_PIN_5
-#define ESP8266_RX_GPIO_Port GPIOD
+#define NC_PD5_Pin GPIO_PIN_5
+#define NC_PD5_GPIO_Port GPIOD
 #define ESP32_EN_Pin GPIO_PIN_4
 #define ESP32_EN_GPIO_Port GPIOD
 #define AD7606_CS_Pin GPIO_PIN_6
 #define AD7606_CS_GPIO_Port GPIOB
 #define AD7606_OS1_Pin GPIO_PIN_4
 #define AD7606_OS1_GPIO_Port GPIOB
-#define ESP8266_TX_Pin GPIO_PIN_6
-#define ESP8266_TX_GPIO_Port GPIOD
+#define NC_PD6_Pin GPIO_PIN_6
+#define NC_PD6_GPIO_Port GPIOD
 #define AD7606_REST_Pin GPIO_PIN_7
 #define AD7606_REST_GPIO_Port GPIOB
 #define AD7606_CONVEST_A_Pin GPIO_PIN_3

@@ -52,7 +52,7 @@
 
 #include <stdio.h>
 
-#include "esp8266.h"
+#include "edge_comm.h"
 #include "SPI_AD7606.h"
 #include "ad_acq_buffers.h"
 
@@ -157,7 +157,6 @@ int main(void)
   MX_FATFS_Init();
   MX_RTC_Init();
   MX_TIM16_Init();
-  MX_USART2_UART_Init();
   MX_QUADSPI_Init();
   MX_TIM2_Init();
   MX_SPI2_Init();

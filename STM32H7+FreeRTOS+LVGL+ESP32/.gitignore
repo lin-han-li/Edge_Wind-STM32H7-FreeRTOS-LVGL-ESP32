@@ -167,6 +167,6 @@ __pycache__/
 !LICENSE
 !README*
 
-# Local private credentials (generated from esp8266_config.h before publishing)
-MDK-ARM/HARDWORK/ESP8266/esp8266_config_private.h
+# Local private credentials (generated from edge_comm_config.h before publishing)
+MDK-ARM/HARDWORK/EdgeComm/edge_comm_config_private.h
 

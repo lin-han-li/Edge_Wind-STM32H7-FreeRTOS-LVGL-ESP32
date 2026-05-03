@@ -35,5 +35,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['C:\\Users\\pengjianzhong\\Desktop\\MY_Project\\Edge_Wind_System+ESP8266\\EdgeWind_Client\\Client_build.ico'],
+    icon=['C:\\Users\\pengjianzhong\\Desktop\\MY_Project\\EdgeWind_STM32_ESP32\\EdgeWind_Client\\Client_build.ico'],
 )
