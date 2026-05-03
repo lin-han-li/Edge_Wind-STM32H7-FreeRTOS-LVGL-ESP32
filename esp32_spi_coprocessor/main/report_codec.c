@@ -23,6 +23,7 @@ static const char *TAG = "report_codec";
 #define REPORT_HTTP_WRITE_CHUNK_AUTO 512U
 #define REPORT_HTTP_WRITE_CHUNK_MIN 512U
 #define REPORT_HTTP_WRITE_CHUNK_MAX 1024U
+#define REPORT_HTTP_WRITE_BLOCK_ABORT_MS 1000U
 #define EW_FULL_V1_MAGIC UINT32_C(0x31465745)
 #define EW_FULL_V2_VERSION 2U
 
@@ -197,6 +198,34 @@ static uint32_t http_write_chunk_delay_ms(const app_config_snapshot_t *config)
     return config->comm.chunk_delay_ms;
 }
 
+static bool http_write_should_abort_socket(int saved_errno, int64_t write_ms)
+{
+    if (write_ms >= (int64_t) REPORT_HTTP_WRITE_BLOCK_ABORT_MS) {
+        return true;
+    }
+#ifdef EINPROGRESS
+    if (saved_errno == EINPROGRESS) {
+        return true;
+    }
+#endif
+#ifdef ETIMEDOUT
+    if (saved_errno == ETIMEDOUT) {
+        return true;
+    }
+#endif
+#ifdef ECONNRESET
+    if (saved_errno == ECONNRESET) {
+        return true;
+    }
+#endif
+#ifdef ENOTCONN
+    if (saved_errno == ENOTCONN) {
+        return true;
+    }
+#endif
+    return false;
+}
+
 static esp_err_t http_write_all(esp_http_client_handle_t client,
                                 const app_config_snapshot_t *config,
                                 const void *data,
@@ -241,6 +270,15 @@ static esp_err_t http_write_all(esp_http_client_handle_t client,
                      (unsigned int) heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
                      (unsigned int) heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
                      (unsigned int) heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+            if (http_write_should_abort_socket(saved_errno, write_ms)) {
+                ESP_LOGW(TAG,
+                         "http_write(binary) abort stalled socket errno=%d offset=%u len=%u write_ms=%lld",
+                         saved_errno,
+                         (unsigned int) offset,
+                         (unsigned int) data_len,
+                         (long long) write_ms);
+                return ESP_ERR_TIMEOUT;
+            }
             if (!retry_allowed) {
                 return ESP_FAIL;
             }

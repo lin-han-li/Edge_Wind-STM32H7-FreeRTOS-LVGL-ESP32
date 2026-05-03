@@ -29,9 +29,9 @@ static const char *TAG = "cloud_client";
 #define CLOUD_LOOP_POLL_MS 200
 #define CLOUD_SUBMIT_QUEUE_TIMEOUT_MS 20
 #define CLOUD_SUMMARY_COALESCE_THRESHOLD 4
-#define CLOUD_FULL_HTTP_TIMEOUT_MIN_MS 15000U
-#define CLOUD_FULL_HTTP_TIMEOUT_MAX_MS 30000U
-#define CLOUD_FULL_HTTP_TOTAL_BUDGET_MS 45000U
+#define CLOUD_FULL_HTTP_TIMEOUT_MIN_MS 5000U
+#define CLOUD_FULL_HTTP_TIMEOUT_MAX_MS 15000U
+#define CLOUD_FULL_HTTP_TOTAL_BUDGET_MS 12000U
 #define CLOUD_REPORT_REREGISTER_FAIL_STREAK 8U
 #define CLOUD_REPORT_WIFI_RECOVER_FAIL_STREAK 6U
 #define CLOUD_REPORT_FULL_WIFI_RECOVER_FAIL_STREAK 20U
@@ -365,7 +365,8 @@ static void maybe_force_wifi_recover(const report_frame_t *frame, esp_err_t err,
 
 static esp_err_t post_report_request(const app_config_snapshot_t *snapshot,
                                      const report_frame_t *frame,
-                                     bool reporting_enabled)
+                                     bool reporting_enabled,
+                                     bool defer_failure_event)
 {
     esp_err_t err;
     size_t payload_len = 0;
@@ -416,11 +417,15 @@ static esp_err_t post_report_request(const app_config_snapshot_t *snapshot,
     };
 
     if (!reporting_enabled) {
-        post_event(CLOUD_CLIENT_EVENT_REPORT_RESULT, ESP_ERR_INVALID_STATE, 0, frame->ref_seq, frame->frame_id, NULL, "reporting_disabled");
+        if (!defer_failure_event) {
+            post_event(CLOUD_CLIENT_EVENT_REPORT_RESULT, ESP_ERR_INVALID_STATE, 0, frame->ref_seq, frame->frame_id, NULL, "reporting_disabled");
+        }
         return ESP_ERR_INVALID_STATE;
     }
     if (!wifi_manager_is_connected()) {
-        post_event(CLOUD_CLIENT_EVENT_REPORT_RESULT, ESP_ERR_INVALID_STATE, 0, frame->ref_seq, frame->frame_id, NULL, "wifi_not_connected");
+        if (!defer_failure_event) {
+            post_event(CLOUD_CLIENT_EVENT_REPORT_RESULT, ESP_ERR_INVALID_STATE, 0, frame->ref_seq, frame->frame_id, NULL, "wifi_not_connected");
+        }
         return ESP_ERR_INVALID_STATE;
     }
 
@@ -428,13 +433,15 @@ static esp_err_t post_report_request(const app_config_snapshot_t *snapshot,
         err = post_register_request(snapshot);
         if (err != ESP_OK || !s_registered) {
             esp_err_t report_err = (err != ESP_OK) ? err : ESP_FAIL;
-            post_event(CLOUD_CLIENT_EVENT_REPORT_RESULT,
-                       report_err,
-                       0,
-                       frame->ref_seq,
-                       frame->frame_id,
-                       NULL,
-                       (err != ESP_OK) ? "register_before_report_failed" : "register_before_report_not_ok");
+            if (!defer_failure_event) {
+                post_event(CLOUD_CLIENT_EVENT_REPORT_RESULT,
+                           report_err,
+                           0,
+                           frame->ref_seq,
+                           frame->frame_id,
+                           NULL,
+                           (err != ESP_OK) ? "register_before_report_failed" : "register_before_report_not_ok");
+            }
             return report_err;
         }
     }
@@ -444,7 +451,9 @@ static esp_err_t post_report_request(const app_config_snapshot_t *snapshot,
         snprintf(url, sizeof(url), "http://%s:%u/api/node/full_frame_bin", snapshot->device.server_host, snapshot->device.server_port);
         err = report_codec_measure_full_binary(snapshot, frame, &binary_info);
         if (err != ESP_OK) {
-            post_event(CLOUD_CLIENT_EVENT_REPORT_RESULT, err, 0, frame->ref_seq, frame->frame_id, NULL, "measure_full_binary_failed");
+            if (!defer_failure_event) {
+                post_event(CLOUD_CLIENT_EVENT_REPORT_RESULT, err, 0, frame->ref_seq, frame->frame_id, NULL, "measure_full_binary_failed");
+            }
             return err;
         }
         payload_len = binary_info.body_len;
@@ -452,7 +461,9 @@ static esp_err_t post_report_request(const app_config_snapshot_t *snapshot,
         snprintf(url, sizeof(url), "http://%s:%u/api/node/heartbeat", snapshot->device.server_host, snapshot->device.server_port);
         err = report_codec_measure_heartbeat_json(snapshot, frame, &payload_len);
         if (err != ESP_OK) {
-            post_event(CLOUD_CLIENT_EVENT_REPORT_RESULT, err, 0, frame->ref_seq, frame->frame_id, NULL, "measure_json_failed");
+            if (!defer_failure_event) {
+                post_event(CLOUD_CLIENT_EVENT_REPORT_RESULT, err, 0, frame->ref_seq, frame->frame_id, NULL, "measure_json_failed");
+            }
             return err;
         }
     }
@@ -475,7 +486,9 @@ static esp_err_t post_report_request(const app_config_snapshot_t *snapshot,
 
     client = esp_http_client_init(&cfg);
     if (client == NULL) {
-        post_event(CLOUD_CLIENT_EVENT_REPORT_RESULT, ESP_ERR_NO_MEM, 0, frame->ref_seq, frame->frame_id, NULL, "http_client_init_failed");
+        if (!defer_failure_event) {
+            post_event(CLOUD_CLIENT_EVENT_REPORT_RESULT, ESP_ERR_NO_MEM, 0, frame->ref_seq, frame->frame_id, NULL, "http_client_init_failed");
+        }
         return ESP_ERR_NO_MEM;
     }
     esp_http_client_set_method(client, HTTP_METHOD_POST);
@@ -492,7 +505,9 @@ static esp_err_t post_report_request(const app_config_snapshot_t *snapshot,
     if (err != ESP_OK) {
         char detail[64];
         format_err_message(detail, sizeof(detail), "report_open_fail", err);
-        post_event(CLOUD_CLIENT_EVENT_REPORT_RESULT, err, 0, frame->ref_seq, frame->frame_id, NULL, detail);
+        if (!defer_failure_event) {
+            post_event(CLOUD_CLIENT_EVENT_REPORT_RESULT, err, 0, frame->ref_seq, frame->frame_id, NULL, detail);
+        }
         goto cleanup;
     }
 
@@ -507,7 +522,9 @@ static esp_err_t post_report_request(const app_config_snapshot_t *snapshot,
     if (err != ESP_OK) {
         char detail[64];
         format_err_message(detail, sizeof(detail), use_full_binary ? "report_bin_stream_fail" : "report_stream_fail", err);
-        post_event(CLOUD_CLIENT_EVENT_REPORT_RESULT, err, 0, frame->ref_seq, frame->frame_id, NULL, detail);
+        if (!defer_failure_event) {
+            post_event(CLOUD_CLIENT_EVENT_REPORT_RESULT, err, 0, frame->ref_seq, frame->frame_id, NULL, detail);
+        }
         goto cleanup;
     }
 
@@ -518,7 +535,9 @@ static esp_err_t post_report_request(const app_config_snapshot_t *snapshot,
     if (err < 0) {
         char detail[64];
         format_err_message(detail, sizeof(detail), "report_fetch_fail", err);
-        post_event(CLOUD_CLIENT_EVENT_REPORT_RESULT, err, 0, frame->ref_seq, frame->frame_id, NULL, detail);
+        if (!defer_failure_event) {
+            post_event(CLOUD_CLIENT_EVENT_REPORT_RESULT, err, 0, frame->ref_seq, frame->frame_id, NULL, detail);
+        }
         goto cleanup;
     }
     err = ESP_OK;
@@ -550,7 +569,9 @@ static esp_err_t post_report_request(const app_config_snapshot_t *snapshot,
     } else {
         char detail[64];
         format_err_message(detail, sizeof(detail), "report_read_fail", err);
-        post_event(CLOUD_CLIENT_EVENT_REPORT_RESULT, err, 0, frame->ref_seq, frame->frame_id, NULL, detail);
+        if (!defer_failure_event) {
+            post_event(CLOUD_CLIENT_EVENT_REPORT_RESULT, err, 0, frame->ref_seq, frame->frame_id, NULL, detail);
+        }
     }
 
 cleanup:
@@ -569,17 +590,19 @@ cleanup:
          * the node remains online even while full snapshots are being skipped.
          */
         clear_request_timestamp();
-        if (s_report_transport_fail_streak < 1000000U) {
-            ++s_report_transport_fail_streak;
+        if (!defer_failure_event) {
+            if (s_report_transport_fail_streak < 1000000U) {
+                ++s_report_transport_fail_streak;
+            }
+            if (s_report_transport_fail_streak >= CLOUD_REPORT_REREGISTER_FAIL_STREAK) {
+                ESP_LOGW(TAG,
+                         "report failures streak=%u err=%s http=%d, keep registration and rely on heartbeat/register retry",
+                         (unsigned int) s_report_transport_fail_streak,
+                          esp_err_to_name(err),
+                          http_status);
+            }
+            maybe_force_wifi_recover(frame, err, http_status);
         }
-        if (s_report_transport_fail_streak >= CLOUD_REPORT_REREGISTER_FAIL_STREAK) {
-            ESP_LOGW(TAG,
-                     "report failures streak=%u err=%s http=%d, keep registration and rely on heartbeat/register retry",
-                     (unsigned int) s_report_transport_fail_streak,
-                      esp_err_to_name(err),
-                      http_status);
-        }
-        maybe_force_wifi_recover(frame, err, http_status);
     } else {
         touch_request_timestamp();
     }
@@ -753,11 +776,16 @@ static void cloud_task(void *arg)
                 last_status = msg.data.frame->status;
                 strncpy(last_fault_code, msg.data.frame->fault_code, sizeof(last_fault_code) - 1U);
                 last_fault_code[sizeof(last_fault_code) - 1U] = '\0';
-                submit_err = post_report_request(&snapshot, msg.data.frame, reporting_enabled);
+                bool full_retry_eligible =
+                    (msg.data.frame->mode == REPORT_MODE_FULL &&
+                     reporting_enabled &&
+                     wifi_connected);
+                submit_err = post_report_request(&snapshot,
+                                                 msg.data.frame,
+                                                 reporting_enabled,
+                                                 full_retry_eligible);
                 if (submit_err != ESP_OK &&
-                    msg.data.frame->mode == REPORT_MODE_FULL &&
-                    reporting_enabled &&
-                    wifi_connected) {
+                    full_retry_eligible) {
                     /*
                      * WAN full uploads occasionally hit a transient open/stream
                      * failure even though the next attempt succeeds immediately.
@@ -772,7 +800,7 @@ static void cloud_task(void *arg)
                              msg.data.frame->frame_id,
                              msg.data.frame->ref_seq);
                     vTaskDelay(pdMS_TO_TICKS(200));
-                    (void) post_report_request(&snapshot, msg.data.frame, reporting_enabled);
+                    (void) post_report_request(&snapshot, msg.data.frame, reporting_enabled, false);
                 }
                 report_frame_free(msg.data.frame);
             }

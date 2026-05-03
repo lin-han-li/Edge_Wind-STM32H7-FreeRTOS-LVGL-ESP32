@@ -19,7 +19,8 @@ extern void ESP_UI_Internal_OnLog(const char *line);
 #define ESP32_SPI_MAX_PAYLOAD 1536U
 #define ESP32_SPI_FRAME_SIZE 1564U
 #define ESP32_SPI_READY_TIMEOUT_MS 3000U
-#define ESP32_SPI_READY_RELEASE_TIMEOUT_MS 2U
+#define ESP32_SPI_READY_RELEASE_TIMEOUT_MS 10U
+#define ESP32_SPI_INTER_TRANSACTION_GUARD_MS 1U
 #define ESP32_SPI_XFER_TIMEOUT_MS 300U
 #define ESP32_SPI_REPORT_RETRY_ATTEMPTS 5U
 #define ESP32_SPI_REPORT_RETRY_BACKOFF_MS 1U
@@ -730,6 +731,7 @@ static bool spi_transaction_built_payload(uint8_t tx_type,
     st = HAL_SPI_TransmitReceive(&hspi2, s_tx_buf, s_rx_buf, ESP32_SPI_FRAME_SIZE, ESP32_SPI_XFER_TIMEOUT_MS);
     cs_set(GPIO_PIN_SET);
     wait_ready_release(ESP32_SPI_READY_RELEASE_TIMEOUT_MS);
+    HAL_Delay(ESP32_SPI_INTER_TRANSACTION_GUARD_MS);
 
     if (st != HAL_OK) {
         printf("[ESP32SPI] HAL_SPI_TransmitReceive failed, st=%d err=0x%08lX state=%d\r\n",
