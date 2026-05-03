@@ -1457,24 +1457,32 @@ def _process_node_report(data: dict,
         float(processed_data.get('current') or 0) == 0.0 and
         float(processed_data.get('leakage') or 0) == 0.0
     )
-    is_bad_frame = (len(raw_channels) == 0) or ((not has_any_series) and metrics_all_zero) or (bad_wave_type > 0) or (bad_spec_type > 0) or (bad_id_type > 0)
+    # ESP32 在 full 上传失败/holdoff 期间会发送 ch=0 的轻量 heartbeat。
+    # 这类包是合法保活，不应覆盖 active_nodes 中最后一帧 full 波形，也不应被记为坏帧。
+    is_empty_keepalive = (request_tag == '/api/node/heartbeat' and len(raw_channels) == 0)
+    is_bad_frame = ((len(raw_channels) == 0 and not is_empty_keepalive) or
+                    ((not has_any_series) and metrics_all_zero and not is_empty_keepalive) or
+                    (bad_wave_type > 0) or
+                    (bad_spec_type > 0) or
+                    (bad_id_type > 0))
 
-    if isinstance(prev, dict) and is_bad_frame:
+    if isinstance(prev, dict) and (is_bad_frame or is_empty_keepalive):
         processed_data = prev
-        last_bad = _last_bad_frame_log_ts.get(f'{request_tag}:{node_id}', 0)
-        if current_timestamp - last_bad >= 5:
-            _last_bad_frame_log_ts[f'{request_tag}:{node_id}'] = current_timestamp
-            logger.warning(
-                '[%s][bad-frame] node_id=%s content_length=%s ch=%d bad_id=%d bad_wave=%d bad_spec=%d bad_val=%d',
-                request_tag,
-                node_id,
-                content_length,
-                len(raw_channels),
-                bad_id_type,
-                bad_wave_type,
-                bad_spec_type,
-                bad_val,
-            )
+        if is_bad_frame:
+            last_bad = _last_bad_frame_log_ts.get(f'{request_tag}:{node_id}', 0)
+            if current_timestamp - last_bad >= 5:
+                _last_bad_frame_log_ts[f'{request_tag}:{node_id}'] = current_timestamp
+                logger.warning(
+                    '[%s][bad-frame] node_id=%s content_length=%s ch=%d bad_id=%d bad_wave=%d bad_spec=%d bad_val=%d',
+                    request_tag,
+                    node_id,
+                    content_length,
+                    len(raw_channels),
+                    bad_id_type,
+                    bad_wave_type,
+                    bad_spec_type,
+                    bad_val,
+                )
     else:
         if isinstance(prev, dict) and not has_any_series:
             for key in series_keys:
@@ -1502,6 +1510,27 @@ def _process_node_report(data: dict,
 
         _last_processed_cache[node_id] = processed_data
         _submit_history_data(node_id, processed_data)
+
+    active_data = dict(data)
+    if isinstance(processed_data, dict):
+        active_data.update(processed_data)
+    active_data['node_id'] = node_id
+    active_data['status'] = data.get('status', 'online')
+    active_data['fault_code'] = fault_code
+    active_data['report_mode'] = _get_report_mode(node_id)
+    active_data['downsample_step'] = (data.get('downsample_step') if data.get('downsample_step') is not None
+                                      else active_data.get('downsample_step'))
+    active_data['upload_points'] = (data.get('upload_points') if data.get('upload_points') is not None
+                                    else active_data.get('upload_points'))
+    for key in ('heartbeat_ms', 'min_interval_ms', 'http_timeout_ms', 'chunk_kb', 'chunk_delay_ms'):
+        if data.get(key) is not None:
+            active_data[key] = data.get(key)
+    active_nodes[node_id] = {
+        'timestamp': current_timestamp,
+        'status': data.get('status', 'online'),
+        'fault_code': fault_code,
+        'data': active_data,
+    }
 
     if fault_code == 'E00':
         save_to_buffer(node_id, data, is_fault=False)

@@ -88,10 +88,10 @@
 #define ESP32_SPI_FULL_NOT_ARMED_LOG_MS 5000U
 #endif
 #ifndef ESP32_SPI_FULL_RESULT_TIMEOUT_MS
-#define ESP32_SPI_FULL_RESULT_TIMEOUT_MS 45000U
+#define ESP32_SPI_FULL_RESULT_TIMEOUT_MS 8000U
 #endif
 #ifndef ESP32_SPI_FULL_WAIT_LOG_MS
-#define ESP32_SPI_FULL_WAIT_LOG_MS 5000U
+#define ESP32_SPI_FULL_WAIT_LOG_MS 2000U
 #endif
 #ifndef ESP32_SPI_FULL_RESULT_POLL_MS
 #define ESP32_SPI_FULL_RESULT_POLL_MS 20U
@@ -668,6 +668,7 @@ static volatile uint8_t g_spi_full_waiting_result = 0;
 static uint32_t g_spi_full_result_ref_seq = 0U;
 static uint32_t g_spi_full_result_frame_id = 0U;
 static uint32_t g_spi_full_result_start_tick = 0U;
+static uint32_t g_spi_full_result_session_epoch = 0U;
 static uint32_t g_spi_full_result_last_log_tick = 0U;
 static uint32_t g_spi_full_result_last_poll_tick = 0U;
 static uint32_t g_spi_full_holdoff_until_tick = 0U;
@@ -2063,6 +2064,7 @@ static void ESP_SPI_FullClearWaitState(void)
     g_spi_full_result_ref_seq = 0U;
     g_spi_full_result_frame_id = 0U;
     g_spi_full_result_start_tick = 0U;
+    g_spi_full_result_session_epoch = 0U;
     g_spi_full_result_last_log_tick = 0U;
     g_spi_full_result_last_poll_tick = 0U;
 }
@@ -2116,7 +2118,9 @@ static bool ESP_SPI_FullHoldoffActive(uint32_t now_tick)
 
 static uint8_t ESP_SPI_FullControlBusy(void)
 {
-    return (g_full_tx_sm.active != 0U || g_spi_full_waiting_result != 0U) ? 1U : 0U;
+    return (g_full_tx_sm.active != 0U ||
+            g_spi_full_waiting_result != 0U ||
+            g_spi_full_holdoff_until_tick != 0U) ? 1U : 0U;
 }
 
 static uint8_t ESP_SPI_FullPacketTxBusy(void)
@@ -3236,6 +3240,27 @@ void ESP_Post_Data(void)
             g_spi_full_result_last_poll_tick = HAL_GetTick();
             (void)ESP32_SPI_PollEvents(20U);
         }
+        {
+            const esp32_spi_status_t *st = ESP32_SPI_GetStatus();
+            if (st != NULL &&
+                g_spi_full_result_session_epoch != 0U &&
+                st->session_epoch != 0U &&
+                st->session_epoch != g_spi_full_result_session_epoch) {
+                ESP_Log("[ESP32SPI] full wait abort: ESP32 session changed frame=%lu ref=%lu old=%lu new=%lu\r\n",
+                        (unsigned long)g_spi_full_result_frame_id,
+                        (unsigned long)g_spi_full_result_ref_seq,
+                        (unsigned long)g_spi_full_result_session_epoch,
+                        (unsigned long)st->session_epoch);
+                ESP_SPI_FullClearWaitState();
+                if (g_spi_full_timeout_count < 1000000UL) {
+                    g_spi_full_timeout_count++;
+                }
+                ESP_UI_ScheduleAutoRecover("ESP32 session changed during full wait", 1U);
+                ESP_SPI_FullEnterHoldoff("full wait session changed",
+                                         ESP32_SPI_FULL_TIMEOUT_HOLDOFF_MS);
+                return;
+            }
+        }
         if (ESP32_SPI_GetTxResult(g_spi_full_result_ref_seq,
                                   &http_status,
                                   &result_code,
@@ -3421,6 +3446,10 @@ void ESP_Post_Data(void)
         g_spi_full_result_ref_seq = ESP32_SPI_GetLastFullEndRefSeq();
         g_spi_full_result_frame_id = done_frame;
         g_spi_full_result_start_tick = HAL_GetTick();
+        {
+            const esp32_spi_status_t *st = ESP32_SPI_GetStatus();
+            g_spi_full_result_session_epoch = (st != NULL) ? st->session_epoch : 0U;
+        }
         g_spi_full_result_last_log_tick = g_spi_full_result_start_tick;
         g_spi_full_result_last_poll_tick = 0U;
         ESP_UploadSnapshot_Release(done_seq);

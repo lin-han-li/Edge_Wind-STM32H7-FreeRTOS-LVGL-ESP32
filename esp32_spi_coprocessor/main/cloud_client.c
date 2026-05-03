@@ -29,14 +29,16 @@ static const char *TAG = "cloud_client";
 #define CLOUD_LOOP_POLL_MS 200
 #define CLOUD_SUBMIT_QUEUE_TIMEOUT_MS 20
 #define CLOUD_SUMMARY_COALESCE_THRESHOLD 4
-#define CLOUD_FULL_HTTP_TIMEOUT_MIN_MS 5000U
-#define CLOUD_FULL_HTTP_TIMEOUT_MAX_MS 15000U
-#define CLOUD_FULL_HTTP_TOTAL_BUDGET_MS 12000U
+#define CLOUD_FULL_HTTP_TIMEOUT_MIN_MS 2500U
+#define CLOUD_FULL_HTTP_TIMEOUT_MAX_MS 3000U
+#define CLOUD_FULL_HTTP_TOTAL_BUDGET_MS 5000U
 #define CLOUD_REPORT_REREGISTER_FAIL_STREAK 8U
 #define CLOUD_REPORT_WIFI_RECOVER_FAIL_STREAK 6U
-#define CLOUD_REPORT_FULL_WIFI_RECOVER_FAIL_STREAK 20U
-#define CLOUD_REPORT_WIFI_RECOVER_COOLDOWN_MS 45000U
+#define CLOUD_REPORT_FULL_WIFI_RECOVER_FAIL_STREAK 4U
+#define CLOUD_REPORT_WIFI_RECOVER_COOLDOWN_MS 15000U
 #define CLOUD_REPORT_WIFI_RECONNECT_SETTLE_MS 500U
+#define CLOUD_FULL_LOW_HEAP_FREE_BYTES 20000U
+#define CLOUD_FULL_LOW_HEAP_LARGEST_BYTES 4096U
 
 typedef enum {
     CLOUD_MSG_APPLY_SNAPSHOT = 1,
@@ -251,12 +253,13 @@ static uint32_t report_request_timeout_ms(const app_config_snapshot_t *snapshot,
 
     if (frame != NULL && frame->mode == REPORT_MODE_FULL) {
         /*
-         * Full snapshots over WAN must not inherit an overly small generic HTTP
-         * timeout from the UI/SD config (for example 5000ms), otherwise large
-         * binary frames will spuriously time out, trigger re-register loops and
-         * finally let the node fall offline.  Use a floor for full-frame POSTs,
-         * and still cap extremely large values so one hung request cannot block
-         * the pipeline forever.
+         * Full binary frames normally finish in about 1.0~1.5s on the current
+         * cloud path.  Do not let the generic UI/SD HTTP timeout (often 5000ms)
+         * become the per-frame connect/write stall budget; a single bad TCP
+         * connect used to consume 5s and accumulated into visible 10s/30s
+         * gaps.  Keep a modest floor for slower links, but cap full-frame POSTs
+         * aggressively so STM32 receives a quick TX_RESULT and can continue with
+         * the next snapshot instead of blocking on one bad HTTP attempt.
          */
         if (timeout_ms < CLOUD_FULL_HTTP_TIMEOUT_MIN_MS) {
             timeout_ms = CLOUD_FULL_HTTP_TIMEOUT_MIN_MS;
@@ -457,6 +460,32 @@ static esp_err_t post_report_request(const app_config_snapshot_t *snapshot,
             return err;
         }
         payload_len = binary_info.body_len;
+        uint32_t free_heap = (uint32_t) heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        uint32_t largest_heap = (uint32_t) heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        if (free_heap < CLOUD_FULL_LOW_HEAP_FREE_BYTES || largest_heap < CLOUD_FULL_LOW_HEAP_LARGEST_BYTES) {
+            ESP_LOGW(TAG,
+                     "skip full POST and force cloud recovery: low heap free=%u largest=%u frame=%" PRIu32 " ref=%" PRIu32,
+                     (unsigned int) free_heap,
+                     (unsigned int) largest_heap,
+                     frame->frame_id,
+                     frame->ref_seq);
+            clear_request_timestamp();
+            s_registered = false;
+            if (s_report_transport_fail_streak < CLOUD_REPORT_FULL_WIFI_RECOVER_FAIL_STREAK) {
+                s_report_transport_fail_streak = CLOUD_REPORT_FULL_WIFI_RECOVER_FAIL_STREAK;
+            }
+            maybe_force_wifi_recover(frame, ESP_ERR_NO_MEM, 0);
+            if (!defer_failure_event) {
+                post_event(CLOUD_CLIENT_EVENT_REPORT_RESULT,
+                           ESP_ERR_NO_MEM,
+                           0,
+                           frame->ref_seq,
+                           frame->frame_id,
+                           NULL,
+                           "full_low_heap_reconnect");
+            }
+            return ESP_ERR_NO_MEM;
+        }
     } else {
         snprintf(url, sizeof(url), "http://%s:%u/api/node/heartbeat", snapshot->device.server_host, snapshot->device.server_port);
         err = report_codec_measure_heartbeat_json(snapshot, frame, &payload_len);
@@ -776,32 +805,11 @@ static void cloud_task(void *arg)
                 last_status = msg.data.frame->status;
                 strncpy(last_fault_code, msg.data.frame->fault_code, sizeof(last_fault_code) - 1U);
                 last_fault_code[sizeof(last_fault_code) - 1U] = '\0';
-                bool full_retry_eligible =
-                    (msg.data.frame->mode == REPORT_MODE_FULL &&
-                     reporting_enabled &&
-                     wifi_connected);
                 submit_err = post_report_request(&snapshot,
                                                  msg.data.frame,
                                                  reporting_enabled,
-                                                 full_retry_eligible);
-                if (submit_err != ESP_OK &&
-                    full_retry_eligible) {
-                    /*
-                     * WAN full uploads occasionally hit a transient open/stream
-                     * failure even though the next attempt succeeds immediately.
-                     * Retry the same full frame once before giving it back to the
-                     * STM32-side holdoff logic; this shortens the visible gap on
-                     * the cloud monitor without changing the one-frame-at-a-time
-                     * backpressure contract.
-                     */
-                    ESP_LOGW(TAG,
-                             "retry full frame once after err=%s frame=%" PRIu32 " ref=%" PRIu32,
-                             esp_err_to_name(submit_err),
-                             msg.data.frame->frame_id,
-                             msg.data.frame->ref_seq);
-                    vTaskDelay(pdMS_TO_TICKS(200));
-                    (void) post_report_request(&snapshot, msg.data.frame, reporting_enabled, false);
-                }
+                                                 false);
+                (void) submit_err;
                 report_frame_free(msg.data.frame);
             }
             break;

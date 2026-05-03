@@ -1104,9 +1104,24 @@ static void process_cloud_event(const cloud_client_event_t *event)
         s_status.last_http_status = event->http_status;
         s_status.last_frame_id = event->frame_id;
         if (event->error != ESP_OK || event->http_status < 200 || event->http_status >= 300) {
-            s_status.cloud_connected = false;
+            bool auth_lost = (event->http_status == 401 || event->http_status == 404);
+            bool wifi_alive = wifi_manager_is_connected();
+            /*
+             * A single full-frame POST can fail because one TCP connect/write
+             * attempt hit its short timeout.  Treat that as a frame TX failure,
+             * not as global cloud logout.  Clearing cloud_connected here makes
+             * STM32 run the slower auto-recovery/status loop before the next
+             * full frame, which turns one 3s transient into a visible 8~10s gap.
+             * Only mark cloud offline for authentication loss or real WiFi loss;
+             * heartbeat/error events still handle sustained cloud outages.
+             */
+            if (auth_lost || !wifi_alive) {
+                s_status.cloud_connected = false;
+            } else if (s_status.registered_with_cloud) {
+                s_status.cloud_connected = true;
+            }
             s_status.last_error_code = (int32_t) (event->error != ESP_OK ? event->error : event->http_status);
-            if (event->http_status == 401 || event->http_status == 404) {
+            if (auth_lost || !wifi_alive) {
                 s_status.registered_with_cloud = false;
             }
         } else {
@@ -1120,7 +1135,8 @@ static void process_cloud_event(const cloud_client_event_t *event)
                        event->frame_id,
                        event->http_status,
                        map_transport_and_http_to_result(event->error, event->http_status));
-        if (event->error != ESP_OK || event->http_status < 200 || event->http_status >= 300) {
+        if ((event->error != ESP_OK || event->http_status < 200 || event->http_status >= 300) &&
+            (event->http_status == 401 || event->http_status == 404 || !wifi_manager_is_connected())) {
             send_protocol_event(PROTOCOL_EVENT_CLOUD_STATE,
                                 PROTOCOL_CLOUD_FAILED,
                                 (uint32_t) event->http_status,
