@@ -1322,8 +1322,8 @@ static bool ui_param_cfg_validate_and_warn(lv_ui *ui, bool strict)
         ui_param_cfg_set_tips(ui, "错误：分段大小建议范围 0..16 KB（0=不分段）", 0xFF4444);
         return !strict;
     }
-    if (cdly > 200u) {
-        ui_param_cfg_set_tips(ui, "错误：分段间隔建议范围 0..200 ms（例如 10）", 0xFF4444);
+    if (cdly > 20u) {
+        ui_param_cfg_set_tips(ui, "错误：分段间隔建议范围 0..20 ms（例如 10）", 0xFF4444);
         return !strict;
     }
 
@@ -1818,20 +1818,20 @@ static void ParamConfig_preset_lan_event_handler(lv_event_t *e)
 {
     lv_ui *ui = (lv_ui *)lv_event_get_user_data(e);
     ParamConfig_apply_preset(ui,
-                             "5000", "200", "1200", "60",
+                             "5000", "0", "1200", "60",
                              "0", "0", "1",
                              "4096",
-                             "已应用局域网参数，正在保存...");
+                             "已应用局域网极速参数，正在保存...");
 }
 
 static void ParamConfig_preset_wan_event_handler(lv_event_t *e)
 {
     lv_ui *ui = (lv_ui *)lv_event_get_user_data(e);
     ParamConfig_apply_preset(ui,
-                             "30000", "1000", "8000", "60",
-                             "1", "160", "1",
-                             "4096",
-                             "已应用公网参数，正在保存...");
+                             "15000", "300", "6000", "90",
+                             "4", "10", "4",
+                             "1024",
+                             "已应用公网高性能参数，正在保存...");
 }
 
 static void ParamConfig_nochunk_event_handler(lv_event_t *e)
