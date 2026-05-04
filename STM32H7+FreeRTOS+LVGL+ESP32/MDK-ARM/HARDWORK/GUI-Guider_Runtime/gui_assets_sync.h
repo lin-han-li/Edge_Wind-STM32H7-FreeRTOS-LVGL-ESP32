@@ -5,7 +5,6 @@
 #include <stdbool.h>
 #include "gui_resource_map.h"
 
-#define EW_QSPI_SYNC_MODE 0
 /* ================= QSPI<->SD 同步策略（编译期可选） =================
  *
  * EW_QSPI_SYNC_MODE:
@@ -13,13 +12,22 @@
  *  - 1: ALWAYS（用于“更新 bin 文件”）—— 只要 SD 可用就执行同步，即使 QSPI 已完整
  *  - 2: NEVER —— 永不访问 SD（QSPI 不完整则返回 FR_NOT_READY）
  *
-对应文件               
  * 额外运行时开关（不改宏也能触发一次同步）：
  *  - 在 QSPI FatFs 分区放置文件: 1:/force_sync.flag
  *    启动时将强制执行一次 SD->QSPI 同步，同步结束后自动删除该文件。
+ *  - 在 SD 卡放置文件: 0:/gui/update.flag
+ *    AUTO 模式下也会先快速探测该文件；存在时覆盖同步到 W25Q256，同步结束后自动删除。
  */
 #ifndef EW_QSPI_SYNC_MODE
 #define EW_QSPI_SYNC_MODE 0
+#endif
+
+#ifndef EW_QSPI_CHECK_SD_UPDATE_FLAG
+#define EW_QSPI_CHECK_SD_UPDATE_FLAG 1
+#endif
+
+#ifndef EW_QSPI_SD_UPDATE_CHECK_ATTEMPTS
+#define EW_QSPI_SD_UPDATE_CHECK_ATTEMPTS 1
 #endif
 
 FRESULT GUI_Assets_SyncFromSD(void);

@@ -21,6 +21,7 @@ void events_init(lv_ui *ui);
 void events_init_Main_1(lv_ui *ui);
 void events_init_Main_2(lv_ui *ui);
 void events_init_Main_3(lv_ui *ui);
+void events_init_RealtimeMonitor(lv_ui *ui);
 void events_init_WifiConfig(lv_ui *ui);
 void events_init_ServerConfig(lv_ui *ui);
 void events_init_ParamConfig(lv_ui *ui);

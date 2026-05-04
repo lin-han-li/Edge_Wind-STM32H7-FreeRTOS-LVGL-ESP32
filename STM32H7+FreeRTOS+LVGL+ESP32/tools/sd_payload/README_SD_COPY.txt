@@ -7,6 +7,7 @@
 
 2. 如需强制板子同步资源到 QSPI Flash：
    在 SD:/gui 下放置 update.flag（空文件即可）。
+   新固件在 AUTO 模式下也会检查该文件，发现后覆盖写入 W25Q256，成功后自动删除。
 
 3. 确认工程加载字库文件名：
    - SourceHanSerifSC_Regular_12.bin (日志小字，可选)

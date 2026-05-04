@@ -36,6 +36,20 @@ typedef struct
 	lv_obj_t *Main_1_dot_2;
 	lv_obj_t *Main_1_dot_3;
 
+	// RealtimeMonitor Screen Objects
+	lv_obj_t *RealtimeMonitor;
+	bool RealtimeMonitor_del;
+	lv_obj_t *RealtimeMonitor_lbl_title;
+	lv_obj_t *RealtimeMonitor_lbl_status;
+	lv_obj_t *RealtimeMonitor_lbl_node;
+	lv_obj_t *RealtimeMonitor_lbl_ch[4];
+	lv_obj_t *RealtimeMonitor_lbl_diag;
+	lv_obj_t *RealtimeMonitor_lbl_health;
+	lv_obj_t *RealtimeMonitor_lbl_cloud;
+	lv_obj_t *RealtimeMonitor_lbl_event;
+	lv_obj_t *RealtimeMonitor_btn_back;
+	lv_obj_t *RealtimeMonitor_lbl_back;
+
 	// === Screen 2 (Config) ===
 	lv_obj_t *Main_2;
 	bool Main_2_del;
@@ -212,6 +226,7 @@ extern lv_ui guider_ui;
 void setup_scr_Main_1(lv_ui *ui);
 void setup_scr_Main_2(lv_ui *ui);
 void setup_scr_Main_3(lv_ui *ui);
+void setup_scr_RealtimeMonitor(lv_ui *ui);
 void setup_scr_WifiConfig(lv_ui *ui);
 void setup_scr_ServerConfig(lv_ui *ui);
 void setup_scr_ParamConfig(lv_ui *ui);

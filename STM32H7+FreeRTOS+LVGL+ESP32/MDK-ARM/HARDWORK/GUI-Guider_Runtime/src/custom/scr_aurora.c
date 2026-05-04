@@ -72,6 +72,7 @@ static lv_obj_t * s_lbl_rep = NULL;
 
 typedef enum {
     AURORA_NAV_NONE = 0,
+    AURORA_NAV_REALTIME,
     AURORA_NAV_PARAM,
     AURORA_NAV_WIFI,
     AURORA_NAV_SERVER,
@@ -87,6 +88,7 @@ static aurora_nav_ctx_t nav_wifi;
 static aurora_nav_ctx_t nav_server;
 static aurora_nav_ctx_t nav_device;
 static aurora_nav_ctx_t nav_param;
+static aurora_nav_ctx_t nav_realtime;
 
 /**********************
  * ANIMATION FUNCTIONS
@@ -345,6 +347,11 @@ static void aurora_nav_event_cb(lv_event_t * e)
     lv_indev_wait_release(lv_indev_active());
 
     switch (ctx->target) {
+    case AURORA_NAV_REALTIME:
+        ui_load_scr_animation(ctx->ui, &ctx->ui->RealtimeMonitor, ctx->ui->RealtimeMonitor_del,
+                              &ctx->ui->Main_1_del, setup_scr_RealtimeMonitor,
+                              LV_SCR_LOAD_ANIM_FADE_ON, 200, 20, false, false);
+        break;
     case AURORA_NAV_PARAM:
         ui_load_scr_animation(ctx->ui, &ctx->ui->ParamConfig, ctx->ui->ParamConfig_del, &ctx->ui->Main_1_del,
                               setup_scr_ParamConfig, LV_SCR_LOAD_ANIM_FADE_ON, 200, 20, false, false);
@@ -456,6 +463,8 @@ void setup_scr_Aurora(lv_ui * ui)
     nav_device.target = AURORA_NAV_DEVICE;
     nav_param.ui = ui;
     nav_param.target = AURORA_NAV_PARAM;
+    nav_realtime.ui = ui;
+    nav_realtime.target = AURORA_NAV_REALTIME;
 
     ui->Main_1 = lv_obj_create(NULL);
     ui_AuroraScr = ui->Main_1;
@@ -560,7 +569,7 @@ void setup_scr_Aurora(lv_ui * ui)
     lv_obj_add_event_cb(ui_Carousel, carousel_event_cb, LV_EVENT_SCROLL_END, NULL);
 
     lv_obj_t * p1 = create_grid_page(ui_Carousel);
-    create_app_card(p1, "实时监控", 0, COL_BLUE, NULL);
+    create_app_card(p1, "实时监控", 0, COL_BLUE, &nav_realtime);
     create_app_card(p1, "故障监测", 1, COL_RED, NULL);
     create_app_card(p1, "数据分析", 2, COL_PURPLE, NULL);
     create_app_card(p1, "历史记录", 3, COL_GREEN, NULL);

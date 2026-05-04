@@ -5115,6 +5115,11 @@
               <FilePath>.\HARDWORK\GUI-Guider_Runtime\src\generated\setup_scr_Main_1.c</FilePath>
             </File>
             <File>
+              <FileName>setup_scr_RealtimeMonitor.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\HARDWORK\GUI-Guider_Runtime\src\generated\setup_scr_RealtimeMonitor.c</FilePath>
+            </File>
+            <File>
               <FileName>setup_scr_Main_2.c</FileName>
               <FileType>1</FileType>
               <FilePath>.\HARDWORK\GUI-Guider_Runtime\src\generated\setup_scr_Main_2.c</FilePath>

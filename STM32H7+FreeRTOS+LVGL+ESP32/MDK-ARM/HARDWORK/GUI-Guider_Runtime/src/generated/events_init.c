@@ -79,11 +79,40 @@ static void Main_1_dot_3_event_handler(lv_event_t *e)
     lv_screen_load_anim(ui->Main_3, LV_SCR_LOAD_ANIM_MOVE_LEFT, 300, 0, false);
 }
 
+static void Main_1_tile_1_event_handler(lv_event_t *e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    switch (code) {
+    case LV_EVENT_CLICKED:
+    {
+        lv_indev_wait_release(lv_indev_active());
+        ui_load_scr_animation(&guider_ui, &guider_ui.RealtimeMonitor, guider_ui.RealtimeMonitor_del,
+                              &guider_ui.Main_1_del, setup_scr_RealtimeMonitor,
+                              LV_SCR_LOAD_ANIM_FADE_ON, 200, 20, false, false);
+        break;
+    }
+    default:
+        break;
+    }
+}
+
 void events_init_Main_1 (lv_ui *ui)
 {
     lv_obj_add_event_cb(ui->Main_1, Main_1_event_handler, LV_EVENT_ALL, ui);
+    lv_obj_add_event_cb(ui->Main_1_tile_1, Main_1_tile_1_event_handler, LV_EVENT_CLICKED, ui);
     lv_obj_add_event_cb(ui->Main_1_dot_2, Main_1_dot_2_event_handler, LV_EVENT_CLICKED, ui);
     lv_obj_add_event_cb(ui->Main_1_dot_3, Main_1_dot_3_event_handler, LV_EVENT_CLICKED, ui);
+}
+
+static void RealtimeMonitor_back_event_handler(lv_event_t *e)
+{
+    lv_ui *ui = (lv_ui *)lv_event_get_user_data(e);
+    if (!ui) {
+        return;
+    }
+    lv_indev_wait_release(lv_indev_active());
+    ui_load_scr_animation(&guider_ui, &guider_ui.Main_1, guider_ui.Main_1_del, &guider_ui.RealtimeMonitor_del,
+                          setup_scr_Aurora, LV_SCR_LOAD_ANIM_FADE_ON, 200, 20, false, false);
 }
 
 static void Main_2_event_handler (lv_event_t *e)
@@ -1881,6 +1910,11 @@ void events_init_Main_3 (lv_ui *ui)
     lv_obj_add_event_cb(ui->Main_3, Main_3_event_handler, LV_EVENT_ALL, ui);
     lv_obj_add_event_cb(ui->Main_3_dot_1, Main_3_dot_1_event_handler, LV_EVENT_CLICKED, ui);
     lv_obj_add_event_cb(ui->Main_3_dot_2, Main_3_dot_2_event_handler, LV_EVENT_CLICKED, ui);
+}
+
+void events_init_RealtimeMonitor(lv_ui *ui)
+{
+    lv_obj_add_event_cb(ui->RealtimeMonitor_btn_back, RealtimeMonitor_back_event_handler, LV_EVENT_CLICKED, ui);
 }
 
 void events_init_WifiConfig(lv_ui *ui)

@@ -163,14 +163,16 @@ def _decode_c_string(s: str) -> str:
 def collect_ui_chinese_chars(root: Path) -> set[str]:
     """扫描 UI + 日志文案，提取所有中文字符（Unicode 0x4E00-0x9FFF）
 
-    说明：除 UI 文案外，还会扫描常见日志来源（ESP8266/SD_Card/Core），保证控制台/日志区域不缺字。
+    说明：除 UI 文案外，还会扫描常见日志来源（ESP32/边缘通讯/SD_Card/Core），保证控制台/日志区域不缺字。
     """
     scan_dirs = [
-        # UI（GUI Guider 生成代码 + 业务 UI 资源）
+        # UI（GUI Guider 生成代码 + 自定义首页/页面 + 业务 UI 资源）
         root / "MDK-ARM/HARDWORK/GUI-Guider_Runtime/src/generated",
+        root / "MDK-ARM/HARDWORK/GUI-Guider_Runtime/src/custom",
         root / "MDK-ARM/HARDWORK/EdgeWind_UI",
-        # 日志（ESP/存储/系统）
-        root / "MDK-ARM/HARDWORK/ESP8266",
+        # 日志（ESP32/边缘通讯/存储/系统）
+        root / "MDK-ARM/HARDWORK/ESP32SPI",
+        root / "MDK-ARM/HARDWORK/EdgeComm",
         root / "MDK-ARM/HARDWORK/SD_Card",
         root / "Core/Src",
         root / "Core/Inc",
@@ -470,7 +472,8 @@ def write_readme(out_dir: Path) -> None:
         "     - tools/sd_payload/gui/   → SD:/gui/\n"
         "     - tools/sd_payload/fonts/ → SD:/fonts/\n\n"
         "2. 如需强制板子同步资源到 QSPI Flash：\n"
-        "   在 SD:/gui 下放置 update.flag（空文件即可）。\n\n"
+        "   在 SD:/gui 下放置 update.flag（空文件即可）。\n"
+        "   新固件在 AUTO 模式下也会检查该文件，发现后覆盖写入 W25Q256，成功后自动删除。\n\n"
         "3. 确认工程加载字库文件名：\n"
         "   - SourceHanSerifSC_Regular_12.bin (日志小字，可选)\n"
         "   - SourceHanSerifSC_Regular_14.bin (小字，可选)\n"
@@ -539,7 +542,7 @@ def main() -> None:
     ap.add_argument(
         "--user-chars-scope",
         choices=["all", "font20"],
-        default="font20",
+        default="all",
         help="用户追加字符并入范围：all=所有字号；font20=仅20px（默认，拼音候选用 20px）",
     )
     ap.add_argument(

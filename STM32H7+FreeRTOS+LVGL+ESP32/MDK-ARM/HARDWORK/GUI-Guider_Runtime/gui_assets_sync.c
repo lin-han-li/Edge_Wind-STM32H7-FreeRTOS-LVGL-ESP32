@@ -270,32 +270,46 @@ static bool qspi_assets_complete(void)
     return true;
 }
 
-static FRESULT qspi_write_from_sd(const char * src, uint32_t dst_offset, uint32_t max_size, uint32_t * written_out)
+static FRESULT qspi_write_from_sd(const char * src,
+                                  uint32_t dst_offset,
+                                  uint32_t max_size,
+                                  uint32_t src_size,
+                                  uint32_t * written_out)
 {
     static uint8_t buf[4096];
     FIL fsrc;
     UINT br = 0;
     uint32_t total = 0;
     FRESULT res = FR_OK;
+    uint32_t erase_size = src_size;
 
     memset(&fsrc, 0, sizeof(fsrc));
 
-    res = f_open(&fsrc, src, FA_READ);
-    if (res != FR_OK) {
-        printf("[QSPI_FS] open src fail: %s, res=%d\r\n", src, (int)res);
-        return res;
+    if (src_size == 0U || src_size > max_size) {
+        printf("[QSPI_FS] invalid src size: %s size=%lu max=%lu\r\n",
+               src, (unsigned long)src_size, (unsigned long)max_size);
+        return FR_INT_ERR;
     }
 
+    erase_size = (erase_size + QSPI_RES_SLOT_SIZE - 1U) & ~(QSPI_RES_SLOT_SIZE - 1U);
+    if (erase_size > max_size) {
+        erase_size = max_size;
+    }
     for (uint32_t erase_addr = dst_offset;
-         erase_addr < (dst_offset + max_size);
+         erase_addr < (dst_offset + erase_size);
          erase_addr += QSPI_RES_SLOT_SIZE) {
         int8_t erase_ret = QSPI_W25Qxx_BlockErase_64K(erase_addr);
         if (erase_ret != QSPI_W25Qxx_OK) {
             printf("[QSPI_FS] erase 64K fail @0x%08lX, ret=%d\r\n", 
                    (unsigned long)erase_addr, (int)erase_ret);
-            (void)f_close(&fsrc);
             return FR_DISK_ERR;
         }
+    }
+
+    res = f_open(&fsrc, src, FA_READ);
+    if (res != FR_OK) {
+        printf("[QSPI_FS] open src fail: %s, res=%d\r\n", src, (int)res);
+        return res;
     }
 
     do {
@@ -330,10 +344,52 @@ static FRESULT qspi_write_from_sd(const char * src, uint32_t dst_offset, uint32_
     return res;
 }
 
+static FRESULT sd_mount_for_asset_sync(uint8_t max_attempts)
+{
+    FRESULT res = FR_NOT_READY;
+    if (max_attempts == 0U) {
+        max_attempts = 1U;
+    }
+
+    /*
+     * 对齐 PN_TI_LVGL_SD：让 disk_initialize() 内部完成 BSP_SD_Init，
+     * 避免外部重复 init 导致状态机紊乱。
+     */
+    for (uint8_t attempt = 1; attempt <= max_attempts; ++attempt) {
+        HAL_Delay(200);
+
+        DSTATUS st_init = disk_initialize(0);
+        DSTATUS st_stat = disk_status(0);
+        uint32_t hal_err = HAL_SD_GetError(&hsd1);
+        printf("[QSPI_FS] SD init attempt=%u/%u, disk_init=0x%02X, disk_status=0x%02X, HAL_SD_GetError=0x%08lX\r\n",
+               (unsigned)attempt, (unsigned)max_attempts,
+               (unsigned)st_init, (unsigned)st_stat, (unsigned long)hal_err);
+
+        uint32_t t0 = HAL_GetTick();
+        while ((HAL_GetTick() - t0) < 300U) {
+            if (BSP_SD_GetCardState() == SD_TRANSFER_OK) {
+                break;
+            }
+            HAL_Delay(10);
+        }
+        printf("[QSPI_FS] SD state=%u (0=OK,1=BUSY)\r\n", (unsigned)BSP_SD_GetCardState());
+
+        res = f_mount(&SDFatFS, (TCHAR const *)SDPath, 1);
+        printf("[QSPI_FS] SD mount %s -> %d\r\n", SDPath, (int)res);
+        if (res == FR_OK) {
+            break;
+        }
+    }
+
+    return res;
+}
+
 FRESULT GUI_Assets_SyncFromSD(void)
 {
     FILINFO info;
     FRESULT res = FR_OK;
+    bool sd_mounted = false;
+    bool force_update = false;
 
     g_qspi_sd_sync_in_progress = 1; /* 标记 SD 同步开始 */
     g_qspi_assets_ready = 0;
@@ -362,6 +418,23 @@ FRESULT GUI_Assets_SyncFromSD(void)
     /* 检查 QSPI 资源是否完整，如果完整则无需 SD 卡 */
     const bool qspi_ok = qspi_assets_complete();
 
+#if (EW_QSPI_SYNC_MODE == 0) && (EW_QSPI_CHECK_SD_UPDATE_FLAG != 0)
+    /*
+     * AUTO 模式下原本会在 QSPI 完整时直接返回，导致 SD:/gui/update.flag
+     * 永远没有机会生效。这里用一次短探测恢复“拷 SD 卡即可更新 W25Q256”的旧流程。
+     */
+    if (qspi_ok && !qspi_force_sync) {
+        res = sd_mount_for_asset_sync(EW_QSPI_SD_UPDATE_CHECK_ATTEMPTS);
+        if (res == FR_OK) {
+            sd_mounted = true;
+            force_update = (f_stat("0:/gui/update.flag", &info) == FR_OK);
+            printf("[QSPI_FS] SD update.flag probe: force_update=%d\r\n", (int)force_update);
+        } else {
+            printf("[QSPI_FS] SD update.flag probe skipped: mount res=%d\r\n", (int)res);
+        }
+    }
+#endif
+
 #if (EW_QSPI_SYNC_MODE == 2)
     if (qspi_ok) {
         g_qspi_assets_ready = 1;
@@ -376,10 +449,10 @@ FRESULT GUI_Assets_SyncFromSD(void)
 #endif
 
 #if (EW_QSPI_SYNC_MODE == 0)
-    if (qspi_ok && !qspi_force_sync) {
+    if (qspi_ok && !qspi_force_sync && !force_update) {
         g_qspi_assets_ready = 1;
         /* 不在这里进入 memory-mapped，让字体通过 FatFs 加载，图标访问时再按需进入 */
-        printf("[QSPI_FS] QSPI assets complete, skip SD card access\r\n");
+        printf("[QSPI_FS] QSPI assets complete, no SD update requested\r\n");
         g_qspi_sd_sync_in_progress = 0;
         return FR_OK;
     }
@@ -398,30 +471,9 @@ FRESULT GUI_Assets_SyncFromSD(void)
     /* QSPI 不完整，需要从 SD 卡同步
      * 对齐 PN_TI_LVGL_SD：让 disk_initialize() 内部完成 BSP_SD_Init，避免外部重复 init 导致状态机紊乱。
      */
-    for (int attempt = 1; attempt <= 3; ++attempt) {
-        HAL_Delay(200);
-
-        DSTATUS st_init = disk_initialize(0);
-        DSTATUS st_stat = disk_status(0);
-        uint32_t hal_err = HAL_SD_GetError(&hsd1);
-        printf("[QSPI_FS] SD init attempt=%d, disk_init=0x%02X, disk_status=0x%02X, HAL_SD_GetError=0x%08lX\r\n",
-               attempt, (unsigned)st_init, (unsigned)st_stat, (unsigned long)hal_err);
-
-        /* 等待卡进入 TRANSFER 状态（短超时） */
-        uint32_t t0 = HAL_GetTick();
-        while ((HAL_GetTick() - t0) < 300U) {
-            if (BSP_SD_GetCardState() == SD_TRANSFER_OK) {
-                break;
-            }
-            HAL_Delay(10);
-        }
-        printf("[QSPI_FS] SD state=%u (0=OK,1=BUSY)\r\n", (unsigned)BSP_SD_GetCardState());
-
-        res = f_mount(&SDFatFS, (TCHAR const *)SDPath, 1);
-        printf("[QSPI_FS] SD mount %s -> %d\r\n", SDPath, (int)res);
-        if (res == FR_OK) {
-            break;
-        }
+    if (!sd_mounted) {
+        res = sd_mount_for_asset_sync(3U);
+        sd_mounted = (res == FR_OK);
     }
 
     if (res != FR_OK) {
@@ -436,7 +488,7 @@ FRESULT GUI_Assets_SyncFromSD(void)
         return res;
     }
 
-    const bool force_update = (f_stat("0:/gui/update.flag", &info) == FR_OK);
+    force_update = force_update || (f_stat("0:/gui/update.flag", &info) == FR_OK);
     printf("[QSPI_FS] sync check: force_update=%d\r\n", (int)force_update);
 
     gui_res_header_t hdr;
@@ -502,6 +554,7 @@ FRESULT GUI_Assets_SyncFromSD(void)
         g_qspi_sd_sync_in_progress = 0;
         return FR_NOT_READY;
     }
+    (void)QSPI_W25Qxx_SectorErase(RES_MAGIC_OFFSET);
     printf("[QSPI_FS] QSPI reinit OK, starting resource write...\r\n");
 
     for (size_t i = 0; i < (sizeof(k_gui_assets) / sizeof(k_gui_assets[0])); ++i) {
@@ -521,7 +574,7 @@ FRESULT GUI_Assets_SyncFromSD(void)
                (unsigned)id, k_gui_assets[i].name,
                (unsigned long)flash_offset, (unsigned long)src_sizes[id]);
 
-        res = qspi_write_from_sd(src, flash_offset, max_size, &written);
+        res = qspi_write_from_sd(src, flash_offset, max_size, (uint32_t)src_sizes[id], &written);
         if (res != FR_OK) {
             printf("[QSPI_FS] qspi write fail: %s, res=%d\r\n", src, (int)res);
             if (!gui_res_is_optional(id)) {
