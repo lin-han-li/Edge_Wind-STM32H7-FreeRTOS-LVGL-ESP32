@@ -1988,6 +1988,7 @@ static uint32_t g_dc_report_stop_tick = 0;
 static uint8_t g_dc_reg_dimmed = 0;
 static lv_obj_t *g_dc_lbl_reg_countdown = NULL;
 static uint32_t g_dc_console_len = 0;
+static uint8_t g_dc_console_dirty = 0;
 /* DeviceConnect console is intentionally tiny and curated.
  * Full upload / DSP / SPI debug logs can arrive for hours. Feeding those
  * lines into an LVGL textarea repeatedly causes large text relayouts and can
@@ -2232,7 +2233,7 @@ static void dc_post_log_from_esp(const char *line, void *ctx)
     /* Throttle visible UI logs. Do not print "dropped N lines" into the
      * textarea; that message itself becomes high-rate noise during full upload. */
     static uint32_t last_log_tick = 0;
-    uint32_t now = lv_tick_get();
+    uint32_t now = HAL_GetTick();
     if (!is_server_cmd && last_log_tick != 0U && (now - last_log_tick) < 500U) {
         return;
     }
@@ -2255,11 +2256,16 @@ static void dc_post_step_from_esp(esp_ui_cmd_t step, bool ok, void *ctx)
     (void)osMessageQueuePut(g_dc_q, &m, 0U, 0U);
 }
 
+static bool dc_console_target_valid(lv_ui *ui)
+{
+    return (ui &&
+            ui->DeviceConnect_ta_console &&
+            lv_obj_is_valid(ui->DeviceConnect_ta_console));
+}
+
 static void dc_console_append(lv_ui *ui, const char *line)
 {
-    if (!ui || !ui->DeviceConnect_ta_console || !line)
-        return;
-    if (!lv_obj_is_valid(ui->DeviceConnect_ta_console))
+    if (!dc_console_target_valid(ui) || !line)
         return;
     if (line[0] == '\0')
         return;
@@ -2306,8 +2312,17 @@ static void dc_console_append(lv_ui *ui, const char *line)
         g_dc_console_lines++;
     }
 
+    g_dc_console_dirty = 1U;
+}
+
+static void dc_console_flush(lv_ui *ui)
+{
+    if (!g_dc_console_dirty || !dc_console_target_valid(ui))
+        return;
+
     lv_textarea_set_text(ui->DeviceConnect_ta_console, g_dc_console_text);
     lv_textarea_set_cursor_pos(ui->DeviceConnect_ta_console, LV_TEXTAREA_CURSOR_LAST);
+    g_dc_console_dirty = 0U;
 }
 
 static void dc_led_set_state(lv_obj_t *led, uint32_t color_hex, bool on)
@@ -2485,18 +2500,63 @@ static void DeviceConnect_cfg_load_timer_cb(lv_timer_t *t)
     g_dc_cfg_loaded = dc_apply_cfg_to_esp_from_files(ui) ? 1U : 0U;
     if (!g_dc_cfg_loaded) {
         dc_console_append(ui, "Config not ready. Please enter WiFi/Server config and save.");
+        dc_console_flush(ui);
+    }
+}
+
+static void dc_drain_queue(void)
+{
+    if (!g_dc_q)
+        return;
+
+    dc_msg_t m;
+    while (osMessageQueueGet(g_dc_q, &m, NULL, 0U) == osOK) {
+        /* drain stale DeviceConnect messages */
     }
 }
 
 static void DeviceConnect_screen_event_handler(lv_event_t *e)
 {
-    if (lv_event_get_code(e) != LV_EVENT_SCREEN_LOADED)
-        return;
+    lv_event_code_t code = lv_event_get_code(e);
     lv_ui *ui = (lv_ui *)lv_event_get_user_data(e);
     if (!ui) return;
-    g_dc_cfg_loaded = 0;
+
+    if (code == LV_EVENT_SCREEN_UNLOADED || code == LV_EVENT_DELETE) {
+        if (g_dc_cfg_timer) {
+            lv_timer_del(g_dc_cfg_timer);
+            g_dc_cfg_timer = NULL;
+        }
+        if (g_dc_ui == ui) {
+            g_dc_ui = NULL;
+            ESP_UI_SetHooks(NULL, NULL, NULL, NULL);
+        }
+        if (code == LV_EVENT_DELETE) {
+            g_dc_lbl_reg_countdown = NULL;
+        }
+        g_dc_console_dirty = 0U;
+        dc_drain_queue();
+        return;
+    }
+
+    if (code != LV_EVENT_SCREEN_LOADED)
+        return;
+
+    g_dc_ui = ui;
+    if (!g_dc_q)
+        g_dc_q = osMessageQueueNew(24, sizeof(dc_msg_t), NULL);
+    ESP_UI_SetHooks(dc_post_log_from_esp, NULL, dc_post_step_from_esp, NULL);
+
+    g_dc_cfg_loaded = ESP_UI_IsReporting() ? 1U : 0U;
     /* 进入界面立即同步一次“上报 UI 状态”，避免实际在上报但 UI 显示 Idle */
     dc_sync_reporting_ui(ui);
+
+    if (ESP_UI_IsReporting()) {
+        if (g_dc_cfg_timer) {
+            lv_timer_del(g_dc_cfg_timer);
+            g_dc_cfg_timer = NULL;
+        }
+        return;
+    }
 
     /* 右上角：断电重连开关（从 SD 读取并刷新 UI） */
     if (ui->DeviceConnect_btn_autorec && lv_obj_is_valid(ui->DeviceConnect_btn_autorec) &&
@@ -2843,6 +2903,7 @@ static void dc_timer_cb(lv_timer_t *t)
     }
 
     /* 兜底：即使步骤消息被日志淹没或丢失，也保证“上报状态”能实时反映到 UI 上 */
+    dc_console_flush(g_dc_ui);
     dc_sync_reporting_ui(g_dc_ui);
 }
 
@@ -2872,6 +2933,7 @@ static void DeviceConnect_auto_event_handler(lv_event_t *e)
     lv_obj_add_state(ui->DeviceConnect_btn_report, LV_STATE_DISABLED);
 
     dc_console_append(ui, "Auto sequence started...");
+    dc_console_flush(ui);
     dc_set_processing(ui, ESP_UI_CMD_WIFI, "Processing...");
     /* 关键：先强制刷新一帧，让“Processing...”立刻可见，再交给 ESP 任务执行耗时步骤 */
     lv_obj_update_layout(ui->DeviceConnect);
@@ -2901,6 +2963,7 @@ static void DeviceConnect_wifi_event_handler(lv_event_t *e)
     lv_obj_add_state(ui->DeviceConnect_btn_wifi, LV_STATE_DISABLED);
     dc_set_processing(ui, ESP_UI_CMD_WIFI, "Processing...");
     dc_console_append(ui, "Executing WIFI...");
+    dc_console_flush(ui);
     lv_obj_update_layout(ui->DeviceConnect);
     lv_refr_now(NULL);
     (void)ESP_UI_SendCmd(ESP_UI_CMD_WIFI);
@@ -2928,6 +2991,7 @@ static void DeviceConnect_tcp_event_handler(lv_event_t *e)
     lv_obj_add_state(ui->DeviceConnect_btn_tcp, LV_STATE_DISABLED);
     dc_set_processing(ui, ESP_UI_CMD_TCP, "Processing...");
     dc_console_append(ui, "Executing TCP...");
+    dc_console_flush(ui);
     lv_obj_update_layout(ui->DeviceConnect);
     lv_refr_now(NULL);
     (void)ESP_UI_SendCmd(ESP_UI_CMD_TCP);
@@ -2960,6 +3024,7 @@ static void DeviceConnect_reg_event_handler(lv_event_t *e)
     lv_obj_add_state(ui->DeviceConnect_btn_reg, LV_STATE_DISABLED);
     dc_set_processing(ui, ESP_UI_CMD_REG, "Processing...");
     dc_console_append(ui, "Executing REG...");
+    dc_console_flush(ui);
     lv_obj_update_layout(ui->DeviceConnect);
     lv_refr_now(NULL);
     (void)ESP_UI_SendCmd(ESP_UI_CMD_REG);
@@ -3002,13 +3067,14 @@ void events_init_DeviceConnect(lv_ui *ui)
     g_dc_console_text[sizeof(g_dc_console_text) - 1U] = '\0';
     g_dc_console_len = (uint32_t)strlen(g_dc_console_text);
     g_dc_console_lines = 2U;
+    g_dc_console_dirty = 0U;
     if (ui->DeviceConnect_ta_console && lv_obj_is_valid(ui->DeviceConnect_ta_console)) {
         lv_textarea_set_text(ui->DeviceConnect_ta_console, g_dc_console_text);
         lv_textarea_set_cursor_pos(ui->DeviceConnect_ta_console, LV_TEXTAREA_CURSOR_LAST);
     }
 
     /* 每次进入 DeviceConnect 界面都自动从 SD 加载配置并应用到 ESP 缓冲区 */
-    lv_obj_add_event_cb(ui->DeviceConnect, DeviceConnect_screen_event_handler, LV_EVENT_SCREEN_LOADED, ui);
+    lv_obj_add_event_cb(ui->DeviceConnect, DeviceConnect_screen_event_handler, LV_EVENT_ALL, ui);
 
     /* 注册 hook：ESP 任务会把日志/步骤结果通过消息队列投递给 LVGL 线程 */
     g_dc_ui = ui;
