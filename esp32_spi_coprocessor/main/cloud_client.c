@@ -29,8 +29,8 @@ static const char *TAG = "cloud_client";
 #define CLOUD_LOOP_POLL_MS 200
 #define CLOUD_SUBMIT_QUEUE_TIMEOUT_MS 20
 #define CLOUD_SUMMARY_COALESCE_THRESHOLD 4
-#define CLOUD_FULL_HTTP_TIMEOUT_MIN_MS 2500U
-#define CLOUD_FULL_HTTP_TIMEOUT_MAX_MS 3000U
+#define CLOUD_FULL_HTTP_TIMEOUT_MIN_MS 6000U
+#define CLOUD_FULL_HTTP_TIMEOUT_MAX_MS 7000U
 #define CLOUD_FULL_HTTP_TOTAL_BUDGET_MS 5000U
 #define CLOUD_REPORT_REREGISTER_FAIL_STREAK 8U
 #define CLOUD_REPORT_WIFI_RECOVER_FAIL_STREAK 6U
@@ -206,8 +206,27 @@ static esp_err_t post_register_request(const app_config_snapshot_t *snapshot)
     }
     esp_http_client_set_method(client, HTTP_METHOD_POST);
     esp_http_client_set_header(client, "Content-Type", "application/json");
-    esp_http_client_set_post_field(client, body, (int) body_len);
-    err = esp_http_client_perform(client);
+    esp_http_client_set_header(client, "Connection", "close");
+    err = esp_http_client_open(client, (int) body_len);
+    if (err == ESP_OK) {
+        size_t written_total = 0U;
+        while (written_total < body_len) {
+            int written = esp_http_client_write(client,
+                                                body + written_total,
+                                                (int) (body_len - written_total));
+            if (written <= 0) {
+                err = ESP_FAIL;
+                break;
+            }
+            written_total += (size_t) written;
+        }
+    }
+    if (err == ESP_OK) {
+        int header_len = esp_http_client_fetch_headers(client);
+        if (header_len < 0) {
+            err = ESP_FAIL;
+        }
+    }
     if (err == ESP_OK) {
         err = read_response_body(client, response, sizeof(response), &http_status);
         if (err == ESP_OK) {
@@ -253,13 +272,12 @@ static uint32_t report_request_timeout_ms(const app_config_snapshot_t *snapshot,
 
     if (frame != NULL && frame->mode == REPORT_MODE_FULL) {
         /*
-         * Full binary frames normally finish in about 1.0~1.5s on the current
-         * cloud path.  Do not let the generic UI/SD HTTP timeout (often 5000ms)
-         * become the per-frame connect/write stall budget; a single bad TCP
-         * connect used to consume 5s and accumulated into visible 10s/30s
-         * gaps.  Keep a modest floor for slower links, but cap full-frame POSTs
-         * aggressively so STM32 receives a quick TX_RESULT and can continue with
-         * the next snapshot instead of blocking on one bad HTTP attempt.
+         * Full binary frames normally finish in about 1.0~2.5s on the current
+         * cloud path.  The generic UI/SD HTTP timeout can be tuned down by server
+         * command, but a low value must not undercut large full-frame POSTs and
+         * turn normal network jitter into a false timeout.  Keep the full-frame
+         * budget bounded so a real bad TCP attempt still returns to STM32 within
+         * the recovery window.
          */
         if (timeout_ms < CLOUD_FULL_HTTP_TIMEOUT_MIN_MS) {
             timeout_ms = CLOUD_FULL_HTTP_TIMEOUT_MIN_MS;

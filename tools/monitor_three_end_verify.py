@@ -18,6 +18,11 @@ ESP_REPORT_READ_RE = re.compile(
 )
 
 
+def is_cloud_error_line(line):
+    lower = line.lower().replace("error=none", "")
+    return any(k in lower for k in ["node_timeout", "offline", "bad-frame", "traceback", "error", " 500 ", " 502 ", "timeout"])
+
+
 class Monitor:
     def __init__(self, args):
         self.args = args
@@ -105,8 +110,7 @@ class Monitor:
                     self.stats["cloud_full_series"] += 1
                 if "raw_lens=[(0, 4096, 2048)" in line and "emit_lens=[(0, 4096, 2048)" in line:
                     self.stats["cloud_raw_4096_2048"] += 1
-                lower = line.lower()
-                if any(k in lower for k in ["node_timeout", "offline", "bad-frame", "traceback", "error", " 500 ", " 502 ", "timeout"]):
+                if is_cloud_error_line(line):
                     self.stats["cloud_errors"] += 1
                     if len(self.stats["cloud_errors_text"]) < 20:
                         self.stats["cloud_errors_text"].append(line)

@@ -315,9 +315,9 @@ static uint8_t s_pending_server_chunk_kb_valid = 0U;
 static uint32_t s_pending_server_chunk_kb = 0U;
 static uint8_t s_pending_server_chunk_delay_valid = 0U;
 static uint32_t s_pending_server_chunk_delay_ms = 0U;
-static char s_last_server_cmd_log_key[65];
-static uint32_t s_last_server_cmd_log_value = 0U;
-static uint32_t s_last_server_cmd_log_tick = 0U;
+static char s_last_server_cmd_key[65];
+static uint32_t s_last_server_cmd_value = 0U;
+static uint32_t s_last_server_cmd_tick = 0U;
 
 static bool nack_reason_is_retryable(uint16_t reason);
 
@@ -411,9 +411,32 @@ static bool is_full_chunk_msg(uint8_t msg_type)
            msg_type == ESP32_MSG_REPORT_FULL_FFT_CHUNK;
 }
 
+static bool should_log_event_payload(const esp32_event_payload_t *event)
+{
+    if (event == NULL) {
+        return false;
+    }
+
+    if (event->event_type == ESP32_EVENT_ERROR) {
+        return true;
+    }
+    if (event->event_type == ESP32_EVENT_WIFI_STATE &&
+        event->result_code == ESP32_WIFI_FAILED) {
+        return true;
+    }
+    if (event->event_type == ESP32_EVENT_CLOUD_STATE &&
+        event->result_code == ESP32_CLOUD_FAILED) {
+        return true;
+    }
+    return false;
+}
+
 static bool should_log_packet(uint8_t msg_type)
 {
     if (msg_type == ESP32_MSG_NOOP) {
+        return false;
+    }
+    if (msg_type == ESP32_MSG_EVENT) {
         return false;
     }
 #if (!ESP32_SPI_LOG_FULL_CHUNKS)
@@ -460,57 +483,22 @@ static void copy_fixed_text(char *dst, size_t dst_size, const char *src, size_t 
     dst[n] = '\0';
 }
 
-static bool log_server_command_to_ui(const char *key, uint32_t value)
+static bool accept_server_command_event(const char *key, uint32_t value)
 {
-    char line[128];
     uint32_t now = HAL_GetTick();
 
     if (key == NULL) {
         key = "";
     }
 
-    if (strncmp(s_last_server_cmd_log_key, key, sizeof(s_last_server_cmd_log_key)) == 0 &&
-        s_last_server_cmd_log_value == value &&
-        (now - s_last_server_cmd_log_tick) < 10000U) {
+    if (strncmp(s_last_server_cmd_key, key, sizeof(s_last_server_cmd_key)) == 0 &&
+        s_last_server_cmd_value == value &&
+        (now - s_last_server_cmd_tick) < 10000U) {
         return false;
     }
-    copy_text(s_last_server_cmd_log_key, sizeof(s_last_server_cmd_log_key), key);
-    s_last_server_cmd_log_value = value;
-    s_last_server_cmd_log_tick = now;
-
-    if (strcmp(key, "reset") == 0) {
-        snprintf(line, sizeof(line), "[服务器命令] 收到命令：清除故障码\r\n");
-    } else if (strcmp(key, "report_mode") == 0) {
-        snprintf(line, sizeof(line), "[服务器命令] 收到命令：上报模式=%s\r\n",
-                 value ? "全量" : "摘要");
-    } else if (strcmp(key, "downsample_step") == 0) {
-        snprintf(line, sizeof(line), "[服务器命令] 收到命令：降采样步进=%lu\r\n",
-                 (unsigned long)value);
-    } else if (strcmp(key, "upload_points") == 0) {
-        snprintf(line, sizeof(line), "[服务器命令] 收到命令：上传点数=%lu\r\n",
-                 (unsigned long)value);
-    } else if (strcmp(key, "heartbeat_ms") == 0) {
-        snprintf(line, sizeof(line), "[服务器命令] 收到命令：心跳间隔=%lums\r\n",
-                 (unsigned long)value);
-    } else if (strcmp(key, "min_interval_ms") == 0) {
-        snprintf(line, sizeof(line), "[服务器命令] 收到命令：最小上传间隔=%lums\r\n",
-                 (unsigned long)value);
-    } else if (strcmp(key, "http_timeout_ms") == 0) {
-        snprintf(line, sizeof(line), "[服务器命令] 收到命令：HTTP超时=%lums\r\n",
-                 (unsigned long)value);
-    } else if (strcmp(key, "chunk_kb") == 0) {
-        snprintf(line, sizeof(line), "[服务器命令] 收到命令：分块大小=%luKB\r\n",
-                 (unsigned long)value);
-    } else if (strcmp(key, "chunk_delay_ms") == 0) {
-        snprintf(line, sizeof(line), "[服务器命令] 收到命令：分块延时=%lums\r\n",
-                 (unsigned long)value);
-    } else {
-        snprintf(line, sizeof(line), "[服务器命令] 收到命令：%s=%lu\r\n",
-                 key, (unsigned long)value);
-    }
-
-    printf("%s", line);
-    ESP_UI_Internal_OnLog(line);
+    copy_text(s_last_server_cmd_key, sizeof(s_last_server_cmd_key), key);
+    s_last_server_cmd_value = value;
+    s_last_server_cmd_tick = now;
     return true;
 }
 
@@ -881,7 +869,7 @@ static void update_status_from_event(const esp32_event_payload_t *event)
         if (event->result_code != ESP32_RESULT_OK) {
             break;
         }
-        if (!log_server_command_to_ui(text, event->value1)) {
+        if (!accept_server_command_event(text, event->value1)) {
             break;
         }
         if (strcmp(text, "reset") == 0) {
@@ -1011,13 +999,15 @@ static bool handle_rx_packet(const esp32_spi_packet_t *packet)
         if (packet->header.payload_len >= sizeof(esp32_event_payload_t)) {
             const esp32_event_payload_t *event = (const esp32_event_payload_t *)packet->payload;
             update_status_from_event(event);
-            printf("[ESP32SPI] EVENT type=%u result=%u v0=%lu v1=%lu text=",
-                   (unsigned int)event->event_type,
-                   (unsigned int)event->result_code,
-                   (unsigned long)event->value0,
-                   (unsigned long)event->value1);
-            print_text64(event->text);
-            printf("\r\n");
+            if (should_log_event_payload(event)) {
+                printf("[ESP32SPI] EVENT type=%u result=%u v0=%lu v1=%lu text=",
+                       (unsigned int)event->event_type,
+                       (unsigned int)event->result_code,
+                       (unsigned long)event->value0,
+                       (unsigned long)event->value1);
+                print_text64(event->text);
+                printf("\r\n");
+            }
         }
         break;
     case ESP32_MSG_TX_ACCEPTED:

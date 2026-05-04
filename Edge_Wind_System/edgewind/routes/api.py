@@ -50,6 +50,7 @@ node_report_modes = {}  # {node_id: 'summary'|'full'}
 node_downsample_commands = {}  # {node_id: int(1..64)}
 node_upload_points_commands = {}  # {node_id: int(256..4096, step=256)}
 DEFAULT_REPORT_MODE = 'summary'
+MAX_CHUNK_DELAY_MS = 20
 CONFIG_COMMAND_KEYS = {
     'report_mode',
     'downsample_step',
@@ -398,7 +399,7 @@ def _normalize_command_value(key: str, value):
     if key == 'chunk_kb':
         return _parse_int_range(value, 0, 16)
     if key == 'chunk_delay_ms':
-        return _parse_int_range(value, 0, 200)
+        return _parse_int_range(value, 0, MAX_CHUNK_DELAY_MS)
     return None
 
 
@@ -838,9 +839,29 @@ def _ack_upload_points_command(
                 node_upload_points_commands[node_id] = int(pending)
             except Exception:
                 pass
+    raw_actual_points = None
+    try:
+        if actual_points is not None:
+            raw_actual_points = int(actual_points)
+    except Exception:
+        raw_actual_points = None
+
     reported = _parse_upload_points(actual_points)
-    if reported is None and allow_payload_fallback:
-        reported = _parse_upload_points(payload.get('upload_points'))
+    payload_points = _parse_upload_points(payload.get('upload_points'))
+    if reported is None and payload_points is not None:
+        # Full binary frames can be downsampled before they reach the server, so
+        # the raw waveform length may be 64 even when upload_points is 4096.  In
+        # that case the device-reported top-level value is the only reliable ACK
+        # signal.  Only trust it when it matches the outstanding target, or when
+        # the caller explicitly allows payload fallback.
+        if allow_payload_fallback or (pending is not None and int(pending) == payload_points):
+            reported = payload_points
+    if reported is None and raw_actual_points is not None:
+        step = _parse_downsample_step(payload.get('downsample_step'))
+        if step is not None:
+            inferred_points = _parse_upload_points(raw_actual_points * int(step))
+            if inferred_points is not None and (pending is None or int(pending) == inferred_points):
+                reported = inferred_points
     if reported is None:
         if pending is not None:
             _sync_active_node_upload_points(node_id, int(pending))

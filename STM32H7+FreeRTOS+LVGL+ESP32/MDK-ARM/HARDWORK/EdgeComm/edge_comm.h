@@ -67,6 +67,10 @@ extern "C" {
 #define ESP_CHUNK_DELAY_MS_DEFAULT 10
 #endif
 
+#ifndef ESP_CHUNK_DELAY_MS_MAX
+#define ESP_CHUNK_DELAY_MS_MAX 20
+#endif
+
 typedef struct {
     uint32_t heartbeat_ms;
     uint32_t min_interval_ms;

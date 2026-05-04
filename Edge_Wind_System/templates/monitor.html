@@ -255,7 +255,7 @@
                         <input class="form-control" id="min-interval-ms-input" type="number" min="0" max="600000" step="10" value="200" title="min_interval_ms" aria-label="min_interval_ms">
                         <input class="form-control" id="http-timeout-ms-input" type="number" min="1000" max="600000" step="100" value="15000" title="http_timeout_ms" aria-label="http_timeout_ms">
                         <input class="form-control" id="chunk-kb-input" type="number" min="0" max="16" step="1" value="0" title="chunk_kb" aria-label="chunk_kb">
-                        <input class="form-control" id="chunk-delay-ms-input" type="number" min="0" max="200" step="1" value="0" title="chunk_delay_ms" aria-label="chunk_delay_ms">
+                        <input class="form-control" id="chunk-delay-ms-input" type="number" min="0" max="20" step="1" value="0" title="chunk_delay_ms" aria-label="chunk_delay_ms">
                         <button class="btn btn-outline-light" id="btn-send-comm-params" type="button">Apply</button>
                     </div>
                     <span class="small text-light" id="report-mode-indicator">当前模式：摘要</span>
@@ -756,7 +756,7 @@
             ['min-interval-ms-input', 'min_interval_ms', 0, 600000],
             ['http-timeout-ms-input', 'http_timeout_ms', 1000, 600000],
             ['chunk-kb-input', 'chunk_kb', 0, 16],
-            ['chunk-delay-ms-input', 'chunk_delay_ms', 0, 200],
+            ['chunk-delay-ms-input', 'chunk_delay_ms', 0, 20],
         ];
         const payload = { node_id: currentNodeId };
         for (const [id, key, lo, hi] of spec) {
@@ -1355,7 +1355,7 @@
                     newConfigs[nodeId].upload_points = up;
                     uploadPointsByNode[nodeId] = up;
                 }
-                for (const [key, lo, hi] of [['heartbeat_ms',200,54999], ['min_interval_ms',0,600000], ['http_timeout_ms',1000,600000], ['chunk_kb',0,16], ['chunk_delay_ms',0,200]]) {
+                for (const [key, lo, hi] of [['heartbeat_ms',200,54999], ['min_interval_ms',0,600000], ['http_timeout_ms',1000,600000], ['chunk_kb',0,16], ['chunk_delay_ms',0,20]]) {
                     const cv = normalizeCommInt(node[key], lo, hi);
                     if (cv !== null) newConfigs[nodeId][key] = cv;
                 }
@@ -2409,7 +2409,7 @@
                             NODE_CONFIGS[node.node_id].upload_points = up;
                             uploadPointsByNode[node.node_id] = up;
                         }
-                        for (const [key, lo, hi] of [['heartbeat_ms',200,54999], ['min_interval_ms',0,600000], ['http_timeout_ms',1000,600000], ['chunk_kb',0,16], ['chunk_delay_ms',0,200]]) {
+                        for (const [key, lo, hi] of [['heartbeat_ms',200,54999], ['min_interval_ms',0,600000], ['http_timeout_ms',1000,600000], ['chunk_kb',0,16], ['chunk_delay_ms',0,20]]) {
                             const cv = normalizeCommInt(node[key], lo, hi);
                             if (cv !== null) NODE_CONFIGS[node.node_id][key] = cv;
                         }
@@ -2453,7 +2453,7 @@
                     NODE_CONFIGS[nodeId].upload_points = createdPoints;
                     uploadPointsByNode[nodeId] = createdPoints;
                 }
-                for (const [key, lo, hi] of [['heartbeat_ms',200,54999], ['min_interval_ms',0,600000], ['http_timeout_ms',1000,600000], ['chunk_kb',0,16], ['chunk_delay_ms',0,200]]) {
+                for (const [key, lo, hi] of [['heartbeat_ms',200,54999], ['min_interval_ms',0,600000], ['http_timeout_ms',1000,600000], ['chunk_kb',0,16], ['chunk_delay_ms',0,20]]) {
                     const cv = normalizeCommInt(msg[key], lo, hi);
                     if (cv !== null) NODE_CONFIGS[nodeId][key] = cv;
                 }
@@ -2474,7 +2474,7 @@
                     NODE_CONFIGS[nodeId].upload_points = updatePoints;
                     uploadPointsByNode[nodeId] = updatePoints;
                 }
-                for (const [key, lo, hi] of [['heartbeat_ms',200,54999], ['min_interval_ms',0,600000], ['http_timeout_ms',1000,600000], ['chunk_kb',0,16], ['chunk_delay_ms',0,200]]) {
+                for (const [key, lo, hi] of [['heartbeat_ms',200,54999], ['min_interval_ms',0,600000], ['http_timeout_ms',1000,600000], ['chunk_kb',0,16], ['chunk_delay_ms',0,20]]) {
                     const cv = normalizeCommInt(msg[key], lo, hi);
                     if (cv !== null) NODE_CONFIGS[nodeId][key] = cv;
                 }

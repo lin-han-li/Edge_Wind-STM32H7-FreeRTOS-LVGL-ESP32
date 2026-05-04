@@ -6,6 +6,14 @@
 
 #include "app_types.h"
 
+#ifndef APP_COMM_CHUNK_KB_MAX
+#define APP_COMM_CHUNK_KB_MAX 16U
+#endif
+
+#ifndef APP_COMM_CHUNK_DELAY_MS_MAX
+#define APP_COMM_CHUNK_DELAY_MS_MAX 20U
+#endif
+
 void app_config_init_defaults(void);
 esp_err_t app_config_load_from_nvs(void);
 void app_config_get_snapshot(app_config_snapshot_t *out_snapshot);

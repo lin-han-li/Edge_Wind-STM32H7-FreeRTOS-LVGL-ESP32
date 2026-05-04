@@ -76,7 +76,15 @@ static void update_rssi_locked(void)
 
 static void reconnect_timer_cb(TimerHandle_t timer)
 {
+    bool connected;
+
     (void) timer;
+    lock_state();
+    connected = s_connected;
+    unlock_state();
+    if (connected) {
+        return;
+    }
     (void) esp_wifi_connect();
 }
 
@@ -424,9 +432,13 @@ esp_err_t wifi_manager_disconnect(void)
 esp_err_t wifi_manager_set_reconnect_backoff_ms(uint32_t backoff_ms)
 {
     TickType_t delay_ticks;
+    BaseType_t timer_active;
 
     if (!s_initialized) {
         return ESP_ERR_INVALID_STATE;
+    }
+    if (s_reconnect_timer == NULL) {
+        return ESP_ERR_TIMEOUT;
     }
     if (backoff_ms < 500U) {
         backoff_ms = 500U;
@@ -436,7 +448,11 @@ esp_err_t wifi_manager_set_reconnect_backoff_ms(uint32_t backoff_ms)
     if (delay_ticks == 0U) {
         delay_ticks = 1U;
     }
-    return (s_reconnect_timer != NULL && xTimerChangePeriod(s_reconnect_timer, delay_ticks, pdMS_TO_TICKS(100)) == pdPASS)
+    timer_active = xTimerIsTimerActive(s_reconnect_timer);
+    if (timer_active == pdFALSE) {
+        return ESP_OK;
+    }
+    return (xTimerChangePeriod(s_reconnect_timer, delay_ticks, pdMS_TO_TICKS(100)) == pdPASS)
                ? ESP_OK
                : ESP_ERR_TIMEOUT;
 }

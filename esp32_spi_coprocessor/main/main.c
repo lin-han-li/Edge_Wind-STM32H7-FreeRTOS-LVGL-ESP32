@@ -25,6 +25,8 @@ static const char *TAG = "spi_coproc";
 #define APP_EVENT_QUEUE_LEN 32
 #define APP_EVENT_QUEUE_TIMEOUT_MS 100
 #define SPI_PACKET_QUEUE_TIMEOUT_MS 500
+#define SPI_PACKET_LOW_PRIORITY_QUEUE_TIMEOUT_MS 0
+#define HEARTBEAT_CLOUD_EVENT_MIN_INTERVAL_MS 10000U
 #define CAPABILITY_SPI_SLAVE (1U << 0)
 #define CAPABILITY_HTTP_CLIENT (1U << 1)
 #define CAPABILITY_REGISTER (1U << 2)
@@ -54,6 +56,7 @@ static app_status_snapshot_t s_status;
 static uint32_t s_session_epoch;
 static uint32_t s_last_processed_seq;
 static uint32_t s_last_processed_session;
+static uint32_t s_last_heartbeat_cloud_event_ms;
 
 static void lock_status(void)
 {
@@ -146,8 +149,8 @@ static bool comm_params_valid(const app_comm_params_t *comm)
            comm->upload_points >= 256U &&
            comm->upload_points <= 4096U &&
            (comm->upload_points % 256U) == 0U &&
-           comm->chunk_kb <= 256U &&
-           comm->chunk_delay_ms <= 5000U;
+           comm->chunk_kb <= APP_COMM_CHUNK_KB_MAX &&
+           comm->chunk_delay_ms <= APP_COMM_CHUNK_DELAY_MS_MAX;
 }
 
 static void get_status_snapshot(app_status_snapshot_t *out_status)
@@ -270,11 +273,38 @@ static void protocol_mark_processed(const protocol_packet_t *packet)
     s_last_processed_seq = packet->header.seq;
 }
 
+static bool is_low_priority_tx_packet(const protocol_packet_t *packet)
+{
+    const protocol_event_payload_t *event;
+
+    if (packet == NULL || packet->header.msg_type != PROTOCOL_MSG_EVENT ||
+        packet->header.payload_len < sizeof(protocol_event_payload_t)) {
+        return false;
+    }
+
+    event = (const protocol_event_payload_t *) packet->payload;
+    switch ((protocol_event_type_t) event->event_type) {
+    case PROTOCOL_EVENT_CONFIG_APPLIED:
+    case PROTOCOL_EVENT_STATUS:
+        return true;
+    case PROTOCOL_EVENT_CLOUD_STATE:
+        return event->result_code == PROTOCOL_CLOUD_REGISTERED ||
+               event->result_code == PROTOCOL_CLOUD_CONNECTING;
+    default:
+        return false;
+    }
+}
+
 static void queue_packet(protocol_packet_t *packet)
 {
+    bool low_priority;
+    TickType_t timeout_ticks;
+
     packet->header.session_epoch = s_session_epoch;
     protocol_packet_finalize(packet);
-    if (spi_link_enqueue_tx(packet, pdMS_TO_TICKS(SPI_PACKET_QUEUE_TIMEOUT_MS)) != ESP_OK) {
+    low_priority = is_low_priority_tx_packet(packet);
+    timeout_ticks = pdMS_TO_TICKS(low_priority ? SPI_PACKET_LOW_PRIORITY_QUEUE_TIMEOUT_MS : SPI_PACKET_QUEUE_TIMEOUT_MS);
+    if (spi_link_enqueue_tx(packet, timeout_ticks) != ESP_OK && !low_priority) {
         ESP_LOGW(TAG, "Failed to queue TX packet %s", protocol_msg_type_name((protocol_msg_type_t) packet->header.msg_type));
     }
 }
@@ -485,8 +515,8 @@ static void apply_server_command_event(const server_command_event_t *command)
         (command->has_heartbeat_ms && (command->heartbeat_ms < 200U || command->heartbeat_ms >= 55000U)) ||
         (command->has_min_interval_ms && command->min_interval_ms > 600000U) ||
         (command->has_http_timeout_ms && (command->http_timeout_ms < 1000U || command->http_timeout_ms > 600000U)) ||
-        (command->has_chunk_kb && command->chunk_kb > 16U) ||
-        (command->has_chunk_delay_ms && command->chunk_delay_ms > 200U)) {
+        (command->has_chunk_kb && command->chunk_kb > APP_COMM_CHUNK_KB_MAX) ||
+        (command->has_chunk_delay_ms && command->chunk_delay_ms > APP_COMM_CHUNK_DELAY_MS_MAX)) {
         err = ESP_ERR_INVALID_ARG;
     }
 
@@ -1147,20 +1177,32 @@ static void process_cloud_event(const cloud_client_event_t *event)
         break;
 
     case CLOUD_CLIENT_EVENT_HEARTBEAT_RESULT:
+    {
+        bool was_registered;
+        uint32_t now_ms;
+
         lock_status();
+        was_registered = s_status.registered_with_cloud;
         s_status.last_http_status = event->http_status;
         s_status.cloud_connected = true;
         s_status.registered_with_cloud = true;
         s_status.last_error_code = 0;
         copy_string(s_status.last_error, sizeof(s_status.last_error), event->message);
         unlock_status();
-        send_protocol_event(PROTOCOL_EVENT_CLOUD_STATE,
-                            PROTOCOL_CLOUD_REGISTERED,
-                            (uint32_t) event->http_status,
-                            0,
-                            0,
-                            event->message);
+
+        now_ms = (uint32_t) (xTaskGetTickCount() * portTICK_PERIOD_MS);
+        if (!was_registered ||
+            (uint32_t) (now_ms - s_last_heartbeat_cloud_event_ms) >= HEARTBEAT_CLOUD_EVENT_MIN_INTERVAL_MS) {
+            s_last_heartbeat_cloud_event_ms = now_ms;
+            send_protocol_event(PROTOCOL_EVENT_CLOUD_STATE,
+                                PROTOCOL_CLOUD_REGISTERED,
+                                (uint32_t) event->http_status,
+                                0,
+                                0,
+                                event->message);
+        }
         break;
+    }
 
     case CLOUD_CLIENT_EVENT_SERVER_COMMAND:
         apply_server_command_event(&event->server_command);

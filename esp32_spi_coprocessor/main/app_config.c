@@ -72,9 +72,6 @@ void app_config_sanitize_comm(app_comm_params_t *comm)
     if (comm->heartbeat_ms < 200U) {
         comm->heartbeat_ms = 200U;
     }
-    if (comm->min_interval_ms < 50U) {
-        comm->min_interval_ms = 50U;
-    }
     if (comm->http_timeout_ms < 1000U) {
         comm->http_timeout_ms = 1000U;
     }
@@ -106,11 +103,11 @@ void app_config_sanitize_comm(app_comm_params_t *comm)
     if (comm->hardreset_sec > 600U) {
         comm->hardreset_sec = 600U;
     }
-    if (comm->chunk_kb > 256U) {
-        comm->chunk_kb = 256U;
+    if (comm->chunk_kb > APP_COMM_CHUNK_KB_MAX) {
+        comm->chunk_kb = APP_COMM_CHUNK_KB_MAX;
     }
-    if (comm->chunk_delay_ms > 5000U) {
-        comm->chunk_delay_ms = 5000U;
+    if (comm->chunk_delay_ms > APP_COMM_CHUNK_DELAY_MS_MAX) {
+        comm->chunk_delay_ms = APP_COMM_CHUNK_DELAY_MS_MAX;
     }
 }
 

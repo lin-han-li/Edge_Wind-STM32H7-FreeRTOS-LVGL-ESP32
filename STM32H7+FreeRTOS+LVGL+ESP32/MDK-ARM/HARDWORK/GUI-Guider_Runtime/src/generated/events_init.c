@@ -465,6 +465,11 @@ static FRESULT ui_sd_mount_with_mkfs(void)
     /* 处理 FR_NO_FILESYSTEM：自动格式化 */
     if (res == FR_NO_FILESYSTEM)
 {
+        printf("[UI_SD] no filesystem, mkfs disabled in UI path\r\n");
+        g_ui_sd_last_err = FR_NO_FILESYSTEM;
+        g_ui_sd_last_err_tick = osKernelGetTickCount();
+        return FR_NO_FILESYSTEM;
+#if 0
         printf("[UI_SD] no filesystem, formatting (FAT32)...\r\n");
         static uint8_t mkfs_work[4096];
         FRESULT mkfs_res = f_mkfs((TCHAR const *)SDPath, FM_FAT32, 0, mkfs_work, sizeof(mkfs_work));
@@ -487,6 +492,7 @@ static FRESULT ui_sd_mount_with_mkfs(void)
             printf("[UI_SD] mkdir 0:/config -> %d\r\n", (int)mkdir_res);
             return FR_OK;
     }
+#endif
     }
 
     g_ui_sd_mounted = 0;
@@ -2148,6 +2154,13 @@ static bool dc_log_line_should_show(const char *line)
         return false;
     }
 
+    if (dc_line_has(line, "[SERVER_CMD]")) {
+        return true;
+    }
+    if (dc_line_has(line, "[服务器命令]")) {
+        return false;
+    }
+
     /* High-rate diagnostics: debug console only, never DeviceConnect textarea. */
     if (dc_line_has(line, "[DSP]") ||
         dc_line_has(line, "[AD7606]") ||
@@ -2175,8 +2188,6 @@ static bool dc_log_line_should_show(const char *line)
 
     /* Keep explicit user actions, connection steps and real problems. */
     if (dc_line_has(line, "[UI]") ||
-        dc_line_has(line, "[SERVER_CMD]") ||
-        dc_line_has(line, "[服务器命令]") ||
         dc_line_has(line, "Executing") ||
         dc_line_has(line, "AutoReconnect") ||
         dc_line_has(line, "Config") ||
@@ -2217,8 +2228,7 @@ static void dc_post_log_from_esp(const char *line, void *ctx)
     if (!dc_log_line_should_show(line)) {
         return;
     }
-    bool is_server_cmd = dc_line_has(line, "[服务器命令]") ||
-                         dc_line_has(line, "[SERVER_CMD]");
+    bool is_server_cmd = dc_line_has(line, "[SERVER_CMD]");
     /* Throttle visible UI logs. Do not print "dropped N lines" into the
      * textarea; that message itself becomes high-rate noise during full upload. */
     static uint32_t last_log_tick = 0;
@@ -2795,7 +2805,7 @@ static void dc_timer_cb(lv_timer_t *t)
         if (m.type == DC_MSG_LOG)
         {
             /* 自动流程中优先处理“步骤结果”，日志会明显拖慢状态刷新；这里丢弃日志以保证 UI 及时推进。 */
-            if (!g_dc_auto_running || dc_line_has(m.text, "[服务器命令]") || dc_line_has(m.text, "[SERVER_CMD]")) {
+            if (!g_dc_auto_running || dc_line_has(m.text, "[SERVER_CMD]")) {
                 dc_console_append(g_dc_ui, m.text);
             }
         }

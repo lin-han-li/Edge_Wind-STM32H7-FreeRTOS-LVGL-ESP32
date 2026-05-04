@@ -113,6 +113,9 @@
 #ifndef ESP32_SPI_FULL_PACKET_ACCEPT_TIMEOUT_MS
 #define ESP32_SPI_FULL_PACKET_ACCEPT_TIMEOUT_MS 500U
 #endif
+#ifndef ESP_SERVER_CMD_DEDUPE_WINDOW_MS
+#define ESP_SERVER_CMD_DEDUPE_WINDOW_MS 120000U
+#endif
 #ifndef ESP32_SPI_AUTO_RECOVER_POLL_MS
 #define ESP32_SPI_AUTO_RECOVER_POLL_MS 1500U
 #endif
@@ -231,7 +234,6 @@ static bool ESP_UI_EnsureReportStarted(uint8_t mode, const char *reason_tag);
 static void ESP_UI_ScheduleAutoRecover(const char *reason, uint8_t want_report);
 static void ESP_UI_PollAutoRecover(void);
 #if (ESP32_SPI_ENABLE_FULL_UPLOAD)
-static uint8_t ESP_SPI_FullPacketTxBusy(void);
 static uint8_t ESP_SPI_FullControlBusy(void);
 static void ESP_SPI_QueueCommParamsSync(const ESP_CommParams_t *p);
 static void ESP_SPI_QueueReportModeSync(uint8_t full);
@@ -640,6 +642,188 @@ void ESP_CommParams_Get(ESP_CommParams_t *out)
     out->chunk_delay_ms  = (uint32_t)g_comm_chunk_delay_ms;
 }
 
+static bool ESP_CommParams_Equals(const ESP_CommParams_t *a, const ESP_CommParams_t *b)
+{
+    if (!a || !b) return false;
+    return (a->heartbeat_ms == b->heartbeat_ms &&
+            a->min_interval_ms == b->min_interval_ms &&
+            a->http_timeout_ms == b->http_timeout_ms &&
+            a->hardreset_sec == b->hardreset_sec &&
+            a->wave_step == b->wave_step &&
+            a->upload_points == b->upload_points &&
+            a->chunk_kb == b->chunk_kb &&
+            a->chunk_delay_ms == b->chunk_delay_ms);
+}
+
+static void ESP_ServerCmdAppendText(char *buf, size_t buf_size, const char *text)
+{
+    if (!buf || buf_size == 0U || !text || text[0] == '\0') {
+        return;
+    }
+    size_t used = strlen(buf);
+    if (used >= (buf_size - 1U)) {
+        return;
+    }
+    if (used > 0U) {
+        (void)snprintf(buf + used, buf_size - used, ", ");
+        used = strlen(buf);
+        if (used >= (buf_size - 1U)) {
+            return;
+        }
+    }
+    (void)snprintf(buf + used, buf_size - used, "%s", text);
+}
+
+static void ESP_ServerCmdAppendU32(char *buf, size_t buf_size, const char *key, uint32_t value)
+{
+    char item[40];
+    (void)snprintf(item, sizeof(item), "%s=%lu", key, (unsigned long)value);
+    ESP_ServerCmdAppendText(buf, buf_size, item);
+}
+
+static void ESP_BuildServerCommandSummary(char *buf,
+                                          size_t buf_size,
+                                          uint8_t reset,
+                                          uint8_t has_mode,
+                                          uint8_t full,
+                                          uint8_t has_downsample,
+                                          uint32_t downsample,
+                                          uint8_t has_upload,
+                                          uint32_t upload_points,
+                                          uint8_t has_hb,
+                                          uint32_t hb_ms,
+                                          uint8_t has_min,
+                                          uint32_t min_ms,
+                                          uint8_t has_http,
+                                          uint32_t http_ms,
+                                          uint8_t has_chunk,
+                                          uint32_t chunk_kb,
+                                          uint8_t has_chunk_delay,
+                                          uint32_t chunk_delay_ms)
+{
+    if (!buf || buf_size == 0U) {
+        return;
+    }
+    buf[0] = '\0';
+    if (reset) {
+        ESP_ServerCmdAppendText(buf, buf_size, "reset=1");
+    }
+    if (has_mode) {
+        ESP_ServerCmdAppendText(buf, buf_size, full ? "report_mode=full" : "report_mode=summary");
+    }
+    if (has_downsample) {
+        ESP_ServerCmdAppendU32(buf, buf_size, "downsample_step", downsample);
+    }
+    if (has_upload) {
+        ESP_ServerCmdAppendU32(buf, buf_size, "upload_points", upload_points);
+    }
+    if (has_hb) {
+        ESP_ServerCmdAppendU32(buf, buf_size, "heartbeat_ms", hb_ms);
+    }
+    if (has_min) {
+        ESP_ServerCmdAppendU32(buf, buf_size, "min_interval_ms", min_ms);
+    }
+    if (has_http) {
+        ESP_ServerCmdAppendU32(buf, buf_size, "http_timeout_ms", http_ms);
+    }
+    if (has_chunk) {
+        ESP_ServerCmdAppendU32(buf, buf_size, "chunk_kb", chunk_kb);
+    }
+    if (has_chunk_delay) {
+        ESP_ServerCmdAppendU32(buf, buf_size, "chunk_delay_ms", chunk_delay_ms);
+    }
+    if (buf[0] == '\0') {
+        ESP_ServerCmdAppendText(buf, buf_size, "command");
+    }
+}
+
+static char g_server_cmd_last_applied_summary[192];
+static uint32_t g_server_cmd_last_applied_tick = 0U;
+static char g_server_cmd_pending_summary[192];
+static uint8_t g_server_cmd_pending_active = 0U;
+static uint8_t g_server_cmd_pending_saved = 0U;
+static uint8_t g_server_cmd_pending_save_failed = 0U;
+static uint8_t g_server_cmd_pending_applied = 0U;
+
+static bool ESP_ServerCommandRecentlyApplied(const char *summary, uint32_t now_tick)
+{
+    if (!summary || summary[0] == '\0' || g_server_cmd_last_applied_summary[0] == '\0') {
+        return false;
+    }
+    if (strncmp(summary, g_server_cmd_last_applied_summary, sizeof(g_server_cmd_last_applied_summary)) != 0) {
+        return false;
+    }
+    return ((uint32_t)(now_tick - g_server_cmd_last_applied_tick) < (uint32_t)ESP_SERVER_CMD_DEDUPE_WINDOW_MS);
+}
+
+static void ESP_ServerCommandRememberApplied(const char *summary, uint32_t now_tick)
+{
+    if (!summary || summary[0] == '\0') {
+        return;
+    }
+    strncpy(g_server_cmd_last_applied_summary, summary, sizeof(g_server_cmd_last_applied_summary) - 1U);
+    g_server_cmd_last_applied_summary[sizeof(g_server_cmd_last_applied_summary) - 1U] = '\0';
+    g_server_cmd_last_applied_tick = now_tick;
+}
+
+static void ESP_ServerCommandLogClear(void)
+{
+    g_server_cmd_pending_summary[0] = '\0';
+    g_server_cmd_pending_active = 0U;
+    g_server_cmd_pending_saved = 0U;
+    g_server_cmd_pending_save_failed = 0U;
+    g_server_cmd_pending_applied = 0U;
+}
+
+static void ESP_ServerCommandLogStore(const char *summary,
+                                      uint8_t seen,
+                                      uint8_t saved,
+                                      uint8_t save_failed,
+                                      uint8_t applied)
+{
+    if (seen == 0U || summary == NULL || summary[0] == '\0') {
+        return;
+    }
+    strncpy(g_server_cmd_pending_summary, summary, sizeof(g_server_cmd_pending_summary) - 1U);
+    g_server_cmd_pending_summary[sizeof(g_server_cmd_pending_summary) - 1U] = '\0';
+    g_server_cmd_pending_active = 1U;
+    if (saved != 0U) {
+        g_server_cmd_pending_saved = 1U;
+    }
+    if (save_failed != 0U) {
+        g_server_cmd_pending_save_failed = 1U;
+    }
+    if (applied != 0U) {
+        g_server_cmd_pending_applied = 1U;
+    }
+}
+
+static void ESP_ServerCommandLogRestore(char *summary,
+                                        size_t summary_size,
+                                        uint8_t *seen,
+                                        uint8_t *saved,
+                                        uint8_t *save_failed,
+                                        uint8_t *applied)
+{
+    if (g_server_cmd_pending_active == 0U || summary == NULL || summary_size == 0U) {
+        return;
+    }
+    strncpy(summary, g_server_cmd_pending_summary, summary_size - 1U);
+    summary[summary_size - 1U] = '\0';
+    if (seen != NULL) {
+        *seen = 1U;
+    }
+    if (saved != NULL && g_server_cmd_pending_saved != 0U) {
+        *saved = 1U;
+    }
+    if (save_failed != NULL && g_server_cmd_pending_save_failed != 0U) {
+        *save_failed = 1U;
+    }
+    if (applied != NULL && g_server_cmd_pending_applied != 0U) {
+        *applied = 1U;
+    }
+}
+
 static uint32_t clamp_u32(uint32_t v, uint32_t lo, uint32_t hi)
 {
     if (v < lo) return lo;
@@ -672,7 +856,7 @@ void ESP_CommParams_Apply(const ESP_CommParams_t *p)
     }
     uint32_t ckb   = p->chunk_kb;
     if (ckb > 16u) ckb = 16u; /* 允许 0 表示“关闭分段” */
-    uint32_t cdly  = clamp_u32(p->chunk_delay_ms,  0u,   200u);
+    uint32_t cdly  = clamp_u32(p->chunk_delay_ms,  0u,   (uint32_t)ESP_CHUNK_DELAY_MS_MAX);
 
     g_comm_heartbeat_ms    = hb;
     g_comm_min_interval_ms = minit;
@@ -1687,14 +1871,14 @@ static bool ESP_SPI_FullHoldoffActive(uint32_t now_tick)
 
 static uint8_t ESP_SPI_FullControlBusy(void)
 {
+#if (ESP32_SPI_ENABLE_FULL_UPLOAD)
+    if (g_spi_full_holdoff_until_tick != 0U) {
+        (void)ESP_SPI_FullHoldoffActive(HAL_GetTick());
+    }
+#endif
     return (g_full_tx_sm.active != 0U ||
             g_spi_full_waiting_result != 0U ||
             g_spi_full_holdoff_until_tick != 0U) ? 1U : 0U;
-}
-
-static uint8_t ESP_SPI_FullPacketTxBusy(void)
-{
-    return (g_full_tx_sm.active != 0U) ? 1U : 0U;
 }
 
 static void ESP_SPI_QueueCommParamsSync(const ESP_CommParams_t *p)
@@ -1723,7 +1907,7 @@ static void ESP_SPI_ServiceDeferredSync(void)
     uint8_t report_target = 0U;
     ESP_CommParams_t pending_comm;
 
-    if (!g_esp_ready || ESP_SPI_FullPacketTxBusy()) {
+    if (!g_esp_ready || ESP_SPI_FullControlBusy()) {
         return;
     }
 
@@ -1750,13 +1934,12 @@ static void ESP_SPI_ServiceDeferredSync(void)
                                        pending_comm.hardreset_sec,
                                        pending_comm.chunk_kb,
                                        pending_comm.chunk_delay_ms)) {
-            ESP_Log("[服务器命令] ESP32同步通信参数失败，延后重试\r\n");
+            ESP_Log("[ESP32SPI] deferred comm params sync failed, retry later\r\n");
             ESP_SPI_QueueCommParamsSync(&pending_comm);
             ESP_SPI_FullEnterHoldoff("deferred comm sync failed",
                                      ESP32_SPI_FULL_BUSY_HOLDOFF_MS);
             return;
         }
-        ESP_Log("[服务器命令] ESP32同步通信参数成功\r\n");
     }
 
     if (do_report_sync != 0U && g_report_enabled != 0U) {
@@ -1764,13 +1947,12 @@ static void ESP_SPI_ServiceDeferredSync(void)
             ESP_SPI_FullResetUploadRuntimeState();
         }
         if (!ESP32_SPI_StartReport(report_target, 3000U)) {
-            ESP_Log("[服务器命令] ESP32同步上报模式失败，延后重试\r\n");
+            ESP_Log("[ESP32SPI] deferred report mode sync failed, retry later\r\n");
             ESP_SPI_QueueReportModeSync(report_target);
             ESP_SPI_FullEnterHoldoff("deferred report sync failed",
                                      ESP32_SPI_FULL_BUSY_HOLDOFF_MS);
             return;
         }
-        ESP_Log("[服务器命令] ESP32同步上报模式成功\r\n");
     }
 }
 #endif
@@ -1886,9 +2068,8 @@ static void ESP_SPI_ApplyCommParamsToCoprocessor(const ESP_CommParams_t *p)
         return;
     }
 #if (ESP32_SPI_ENABLE_FULL_UPLOAD)
-    if (ESP_SPI_FullPacketTxBusy()) {
+    if (ESP_SPI_FullControlBusy()) {
         ESP_SPI_QueueCommParamsSync(p);
-        ESP_Log("[服务器命令] ESP32通信参数同步延后：等待当前SPI full分包结束\r\n");
         return;
     }
 #endif
@@ -1901,9 +2082,7 @@ static void ESP_SPI_ApplyCommParamsToCoprocessor(const ESP_CommParams_t *p)
                                    p->hardreset_sec,
                                    p->chunk_kb,
                                    p->chunk_delay_ms)) {
-        ESP_Log("[服务器命令] ESP32同步通信参数失败\r\n");
-    } else {
-        ESP_Log("[服务器命令] ESP32同步通信参数成功\r\n");
+        ESP_Log("[ESP32SPI] comm params sync failed\r\n");
     }
 }
 
@@ -1928,6 +2107,19 @@ void ESP_Console_Poll(void)
 {
 #if (ESP_CONSOLE_ENABLE)
     uint32_t now = HAL_GetTick();
+    uint8_t server_cmd_seen = 0U;
+    uint8_t server_cmd_saved = 0U;
+    uint8_t server_cmd_save_failed = 0U;
+    uint8_t server_cmd_applied = 0U;
+    static char server_cmd_summary[192];
+
+    server_cmd_summary[0] = '\0';
+    ESP_ServerCommandLogRestore(server_cmd_summary,
+                                sizeof(server_cmd_summary),
+                                &server_cmd_seen,
+                                &server_cmd_saved,
+                                &server_cmd_save_failed,
+                                &server_cmd_applied);
     // 1) 处理“已收到的一整行”控制台指令
     if (g_console_line_ready)
     {
@@ -1939,6 +2131,7 @@ void ESP_Console_Poll(void)
 
     {
         static uint32_t s_last_async_event_poll_tick = 0U;
+        uint8_t can_apply_server_cmd = 1U;
         uint8_t reset = 0U, has_mode = 0U, full = 0U;
         uint8_t has_downsample = 0U, has_upload = 0U;
         uint8_t has_hb = 0U, has_min = 0U, has_http = 0U, has_chunk = 0U, has_chunk_delay = 0U;
@@ -1960,7 +2153,13 @@ void ESP_Console_Poll(void)
             (void)ESP32_SPI_PollEvents(10U);
         }
 
-        if (ESP32_SPI_ConsumeServerCommand(&reset,
+#if (ESP32_SPI_ENABLE_FULL_UPLOAD)
+        can_apply_server_cmd = (ESP_SPI_FullControlBusy() == 0U) ? 1U : 0U;
+#endif
+
+        if (server_cmd_seen == 0U &&
+            can_apply_server_cmd != 0U &&
+            ESP32_SPI_ConsumeServerCommand(&reset,
                                            &has_mode,
                                            &full,
                                            &has_downsample,
@@ -1973,89 +2172,131 @@ void ESP_Console_Poll(void)
                                            &min_ms,
                                            &has_http,
                                            &http_ms,
-                                           &has_chunk,
-                                           &chunk_kb,
+                                            &has_chunk,
+                                            &chunk_kb,
                                            &has_chunk_delay,
                                            &chunk_delay_ms)) {
-            if (reset) {
-                g_server_reset_pending = 1U;
-            }
-            if (has_mode) {
-                ESP_SetServerReportMode(full);
-            }
-            if (has_downsample) {
-                ESP_SetServerDownsampleStep(downsample);
-            }
-            if (has_upload) {
-                ESP_SetServerUploadPoints(upload_points);
-            }
-            if (has_hb || has_min || has_http || has_chunk || has_chunk_delay) {
-                ESP_CommParams_t old_p;
-                ESP_CommParams_t p;
-                ESP_CommParams_Get(&old_p);
-                p = old_p;
-                if (has_hb) {
-                    p.heartbeat_ms = hb_ms;
+            ESP_BuildServerCommandSummary(server_cmd_summary,
+                                          sizeof(server_cmd_summary),
+                                          reset,
+                                          has_mode,
+                                          full,
+                                          has_downsample,
+                                          downsample,
+                                          has_upload,
+                                          upload_points,
+                                          has_hb,
+                                          hb_ms,
+                                          has_min,
+                                          min_ms,
+                                          has_http,
+                                          http_ms,
+                                          has_chunk,
+                                          chunk_kb,
+                                          has_chunk_delay,
+                                          chunk_delay_ms);
+            if (!ESP_ServerCommandRecentlyApplied(server_cmd_summary, now)) {
+                server_cmd_seen = 1U;
+                ESP_ServerCommandLogStore(server_cmd_summary, server_cmd_seen, 0U, 0U, 0U);
+                if (reset) {
+                    g_server_reset_pending = 1U;
                 }
-                if (has_min) {
-                    p.min_interval_ms = min_ms;
+                if (has_mode) {
+                    ESP_SetServerReportMode(full);
                 }
-                if (has_http) {
-                    p.http_timeout_ms = http_ms;
+                if (has_downsample) {
+                    ESP_SetServerDownsampleStep(downsample);
                 }
-                if (has_chunk) {
-                    p.chunk_kb = chunk_kb;
+                if (has_upload) {
+                    ESP_SetServerUploadPoints(upload_points);
                 }
-                if (has_chunk_delay) {
-                    p.chunk_delay_ms = chunk_delay_ms;
-                }
-                ESP_Log("[服务器命令] 收到命令：通信参数 心跳=%lums 间隔=%lums HTTP=%lums 降采样=%lu 上传点数=%lu 分块=%luKB 延时=%lums\r\n",
-                        (unsigned long)p.heartbeat_ms,
-                        (unsigned long)p.min_interval_ms,
-                        (unsigned long)p.http_timeout_ms,
-                        (unsigned long)p.wave_step,
-                        (unsigned long)p.upload_points,
-                        (unsigned long)p.chunk_kb,
-                        (unsigned long)p.chunk_delay_ms);
-                ESP_CommParams_Apply(&p);
-                ESP_Log("[服务器命令] 运行态已应用：通信参数\r\n");
-                if (ESP_CommParams_SaveToSD()) {
-                    ESP_Log("[服务器命令] SD卡保存成功：通信参数\r\n");
-                    ESP_SPI_ApplyCommParamsToCoprocessor(&p);
-                } else {
-                    ESP_CommParams_Apply(&old_p);
-                    ESP_Log("[服务器命令] SD卡保存失败：通信参数，运行态已回滚\r\n");
+                if (has_hb || has_min || has_http || has_chunk || has_chunk_delay) {
+                    ESP_CommParams_t old_p;
+                    ESP_CommParams_t p;
+                    ESP_CommParams_Get(&old_p);
+                    p = old_p;
+                    if (has_hb) {
+                        p.heartbeat_ms = hb_ms;
+                    }
+                    if (has_min) {
+                        p.min_interval_ms = min_ms;
+                    }
+                    if (has_http) {
+                        p.http_timeout_ms = http_ms;
+                    }
+                    if (has_chunk) {
+                        p.chunk_kb = chunk_kb;
+                    }
+                    if (has_chunk_delay) {
+                        p.chunk_delay_ms = chunk_delay_ms;
+                    }
+                    bool params_changed = !ESP_CommParams_Equals(&old_p, &p);
+                    if (params_changed) {
+                        ESP_CommParams_Apply(&p);
+                        ESP_CommParams_Get(&p);
+                        if (ESP_CommParams_SaveToSD()) {
+                            server_cmd_saved = 1U;
+                            ESP_SPI_ApplyCommParamsToCoprocessor(&p);
+                            server_cmd_applied = 1U;
+                        } else {
+                            ESP_CommParams_Apply(&old_p);
+                            server_cmd_save_failed = 1U;
+                        }
+                    } else {
+                        ESP_SPI_ApplyCommParamsToCoprocessor(&p);
+                        server_cmd_applied = 1U;
+                    }
                 }
             }
         }
     }
+
+#if (ESP32_SPI_ENABLE_FULL_UPLOAD)
+    if (ESP_SPI_FullControlBusy()) {
+        ESP_ServerCommandLogStore(server_cmd_summary,
+                                  server_cmd_seen,
+                                  server_cmd_saved,
+                                  server_cmd_save_failed,
+                                  server_cmd_applied);
+        return;
+    }
+#endif
 
     // 2) 处理“服务器下发 reset”指令
     if (g_server_reset_pending)
     {
         g_server_reset_pending = 0;
         ESP_SetFaultCode("E00");
-        ESP_Log("[服务器命令] 运行态已应用：故障码清除为E00\r\n");
+        server_cmd_applied = 1U;
     }
 
     // 2.0) Apply server-issued report_mode.
     if (g_server_report_full_dirty)
     {
         uint8_t full = g_server_report_full ? 1U : 0U;
-        const char *mode_text = full ? "全量" : "摘要";
+        const char *mode_text = full ? "full" : "summary";
+        uint8_t mode_persist_changed = 1U;
         g_server_report_full_dirty = 0;
-        ESP_Log("[服务器命令] 开始应用：上报模式=%s\r\n", mode_text);
-        if (!ESP_UploadMode_SaveToSD(full)) {
-            g_server_report_full = full ? 0U : 1U;
-            ESP_Log("[服务器命令] SD卡保存失败：上报模式=%s，运行态未切换\r\n",
-                    mode_text);
-            return;
+#if (ESP32_SPI_ENABLE_FULL_UPLOAD)
+        mode_persist_changed = (g_spi_full_continuous != full) ? 1U : 0U;
+#endif
+        if (mode_persist_changed != 0U) {
+            if (!ESP_UploadMode_SaveToSD(full)) {
+                server_cmd_save_failed = 1U;
+                if (server_cmd_seen != 0U) {
+                    ESP_Log("[SERVER_CMD] save_failed: %s\r\n", server_cmd_summary);
+                }
+            } else {
+                server_cmd_saved = 1U;
+            }
         }
-        ESP_Log("[服务器命令] SD卡保存成功：上报模式=%s\r\n", mode_text);
 #if (ESP32_SPI_ENABLE_FULL_UPLOAD)
         g_spi_full_continuous = full;
         if (!full) {
             g_spi_full_manual_frames = 0U;
+            if (g_spi_full_waiting_result == 0U && g_full_tx_sm.active == 0U) {
+                ESP_SPI_FullResetUploadRuntimeState();
+            }
         }
 #endif
         /* The final clean status log is emitted below.  Avoid an extra
@@ -2063,32 +2304,23 @@ void ESP_Console_Poll(void)
          */
         if (g_esp_ready && g_report_enabled) {
 #if (ESP32_SPI_ENABLE_FULL_UPLOAD)
-            if (ESP_SPI_FullPacketTxBusy()) {
+            if (ESP_SPI_FullControlBusy()) {
                 ESP_SPI_QueueReportModeSync(full);
-                ESP_Log("[服务器命令] ESP32上报模式同步延后：等待当前SPI full分包结束\r\n");
             } else {
                 if (g_spi_full_waiting_result == 0U) {
                     ESP_SPI_FullResetUploadRuntimeState();
                 }
-                if (ESP32_SPI_StartReport(full, 3000U)) {
-                    ESP_Log("[服务器命令] ESP32同步成功：上报模式=%s\r\n",
-                            mode_text);
-                } else {
-                    ESP_Log("[服务器命令] ESP32同步失败：上报模式=%s\r\n",
-                            mode_text);
+                if (!ESP32_SPI_StartReport(full, 3000U)) {
+                    ESP_Log("[ESP32SPI] report mode sync failed: %s\r\n", mode_text);
                 }
             }
 #else
-            if (ESP32_SPI_StartReport(full, 3000U)) {
-                ESP_Log("[服务器命令] ESP32同步成功：上报模式=%s\r\n",
-                        mode_text);
-            } else {
-                ESP_Log("[服务器命令] ESP32同步失败：上报模式=%s\r\n",
-                        mode_text);
+            if (!ESP32_SPI_StartReport(full, 3000U)) {
+                ESP_Log("[ESP32SPI] report mode sync failed: %s\r\n", mode_text);
             }
 #endif
         }
-        ESP_Log("[服务器命令] 运行态已应用：上报模式=%s\r\n", mode_text);
+        server_cmd_applied = 1U;
     }
 
     // 2.1) 处理“服务器下发 downsample_step”指令
@@ -2103,21 +2335,25 @@ void ESP_Console_Poll(void)
         uint32_t target = (uint32_t)g_server_downsample_step;
         if (target < 1U) target = 1U;
         if (target > 64U) target = 64U;
-        ESP_Log("[服务器命令] 开始应用：降采样步进=%lu\r\n", (unsigned long)target);
 
+        bool params_changed = (p.wave_step != target);
         if (p.wave_step != target) {
             p.wave_step = target;
             ESP_CommParams_Apply(&p);
         }
-        ESP_Log("[服务器命令] 运行态已应用：降采样步进=%lu\r\n", (unsigned long)target);
 
-        if (ESP_CommParams_SaveToSD()) {
-            ESP_Log("[服务器命令] SD卡保存成功：降采样步进=%lu\r\n", (unsigned long)target);
-            ESP_SPI_ApplyCommParamsToCoprocessor(&p);
+        if (params_changed) {
+            if (ESP_CommParams_SaveToSD()) {
+                server_cmd_saved = 1U;
+                ESP_SPI_ApplyCommParamsToCoprocessor(&p);
+                server_cmd_applied = 1U;
+            } else {
+                ESP_CommParams_Apply(&old_p);
+                server_cmd_save_failed = 1U;
+            }
         } else {
-            ESP_CommParams_Apply(&old_p);
-            ESP_Log("[服务器命令] SD卡保存失败：降采样步进=%lu，运行态已回滚\r\n",
-                    (unsigned long)target);
+            ESP_SPI_ApplyCommParamsToCoprocessor(&p);
+            server_cmd_applied = 1U;
         }
     }
 
@@ -2131,21 +2367,48 @@ void ESP_Console_Poll(void)
         ESP_CommParams_Get(&old_p);
         p = old_p;
         uint32_t target = (uint32_t)g_server_upload_points;
-        ESP_Log("[服务器命令] 开始应用：上传点数=%lu\r\n", (unsigned long)target);
 
+        bool params_changed = (p.upload_points != target);
         if (p.upload_points != target) {
             p.upload_points = target;
             ESP_CommParams_Apply(&p);
         }
-        ESP_Log("[服务器命令] 运行态已应用：上传点数=%lu\r\n", (unsigned long)target);
 
-        if (ESP_CommParams_SaveToSD()) {
-            ESP_Log("[服务器命令] SD卡保存成功：上传点数=%lu\r\n", (unsigned long)target);
-            ESP_SPI_ApplyCommParamsToCoprocessor(&p);
+        if (params_changed) {
+            if (ESP_CommParams_SaveToSD()) {
+                server_cmd_saved = 1U;
+                ESP_SPI_ApplyCommParamsToCoprocessor(&p);
+                server_cmd_applied = 1U;
+            } else {
+                ESP_CommParams_Apply(&old_p);
+                server_cmd_save_failed = 1U;
+            }
         } else {
-            ESP_CommParams_Apply(&old_p);
-            ESP_Log("[服务器命令] SD卡保存失败：上传点数=%lu，运行态已回滚\r\n",
-                    (unsigned long)target);
+            ESP_SPI_ApplyCommParamsToCoprocessor(&p);
+            server_cmd_applied = 1U;
+        }
+    }
+
+    if (server_cmd_seen != 0U) {
+        if (server_cmd_save_failed != 0U || server_cmd_applied != 0U) {
+            ESP_Log("[SERVER_CMD] received: %s\r\n", server_cmd_summary);
+        }
+        if (server_cmd_save_failed != 0U) {
+            ESP_Log("[SERVER_CMD] save_failed: %s\r\n", server_cmd_summary);
+            ESP_ServerCommandLogClear();
+        } else if (server_cmd_saved != 0U) {
+            ESP_Log("[SERVER_CMD] saved: SD\r\n");
+        }
+        if (server_cmd_save_failed == 0U && server_cmd_applied != 0U) {
+            ESP_Log("[SERVER_CMD] applied: %s\r\n", server_cmd_summary);
+            ESP_ServerCommandRememberApplied(server_cmd_summary, now);
+            ESP_ServerCommandLogClear();
+        } else if (server_cmd_save_failed == 0U) {
+            ESP_ServerCommandLogStore(server_cmd_summary,
+                                      server_cmd_seen,
+                                      server_cmd_saved,
+                                      server_cmd_save_failed,
+                                      server_cmd_applied);
         }
     }
 
