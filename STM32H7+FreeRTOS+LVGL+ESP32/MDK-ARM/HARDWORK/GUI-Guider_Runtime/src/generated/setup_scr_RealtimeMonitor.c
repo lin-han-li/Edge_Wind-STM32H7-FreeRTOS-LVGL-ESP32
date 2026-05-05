@@ -22,6 +22,11 @@ static lv_obj_t *s_switch_cards[4];
 static lv_obj_t *s_switch_labels[4];
 static lv_chart_series_t *s_wave_series = NULL;
 static uint32_t s_active_ch = 0U;
+static bool s_rtmon_manual_view = false;
+static uint32_t s_wave_window_start = 0U;
+static int32_t s_wave_axis_offset = 0;
+static int32_t s_drag_x_accum_px = 0;
+static int32_t s_drag_y_accum_px = 0;
 
 typedef enum {
     RTMON_VIEW_WAVE = 0,
@@ -87,6 +92,8 @@ static const float s_ch_wave_axis_max[RTMON_CH_COUNT] = {
 static void rtmon_update_wave_chart(void);
 static void rtmon_update_switch_cards(void);
 static void rtmon_update_mode_buttons(void);
+static void rtmon_reset_view(void);
+static void rtmon_chart_event_cb(lv_event_t *e);
 static void rtmon_mode_event_cb(lv_event_t *e);
 static void rtmon_switch_event_cb(lv_event_t *e);
 
@@ -234,6 +241,7 @@ static void rtmon_style_wave_chart(lv_obj_t *chart)
     lv_obj_set_style_width(chart, 0, LV_PART_INDICATOR);
     lv_obj_set_style_height(chart, 0, LV_PART_INDICATOR);
     lv_obj_clear_flag(chart, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(chart, LV_OBJ_FLAG_CLICKABLE);
 }
 
 static void rtmon_switch_event_cb(lv_event_t *e)
@@ -246,6 +254,7 @@ static void rtmon_switch_event_cb(lv_event_t *e)
         return;
     }
     s_active_ch = ch;
+    rtmon_reset_view();
     rtmon_update_switch_cards();
     rtmon_update_wave_chart();
 }
@@ -260,6 +269,7 @@ static void rtmon_mode_event_cb(lv_event_t *e)
         return;
     }
     s_view_mode = (rtmon_view_t)mode;
+    rtmon_reset_view();
     rtmon_update_mode_buttons();
     rtmon_update_wave_chart();
 }
@@ -334,6 +344,119 @@ static uint32_t rtmon_source_fft_points(void)
 {
     return ((uint32_t)FFT_POINTS < RTMON_FFT_SOURCE_POINTS) ?
            (uint32_t)FFT_POINTS : RTMON_FFT_SOURCE_POINTS;
+}
+
+static uint32_t rtmon_visible_points(uint32_t source_count)
+{
+    if (source_count == 0U) {
+        return 1U;
+    }
+    return (source_count < RTMON_CHART_POINTS) ? source_count : RTMON_CHART_POINTS;
+}
+
+static uint32_t rtmon_window_max(uint32_t source_count)
+{
+    uint32_t visible = rtmon_visible_points(source_count);
+    return (source_count > visible) ? (source_count - visible) : 0U;
+}
+
+static void rtmon_clamp_current_window(uint32_t source_count)
+{
+    uint32_t max_start = rtmon_window_max(source_count);
+    if (s_wave_window_start > max_start) {
+        s_wave_window_start = max_start;
+    }
+}
+
+static void rtmon_reset_view(void)
+{
+    s_rtmon_manual_view = false;
+    s_wave_window_start = 0U;
+    s_wave_axis_offset = 0;
+    s_drag_x_accum_px = 0;
+    s_drag_y_accum_px = 0;
+}
+
+static void rtmon_chart_event_cb(lv_event_t *e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+
+    if (code == LV_EVENT_DOUBLE_CLICKED) {
+        rtmon_reset_view();
+        rtmon_update_wave_chart();
+        return;
+    }
+
+    if (code == LV_EVENT_PRESSED || code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
+        s_drag_x_accum_px = 0;
+        s_drag_y_accum_px = 0;
+        return;
+    }
+
+    if (code != LV_EVENT_PRESSING) {
+        return;
+    }
+
+    lv_indev_t *indev = lv_indev_active();
+    if (!indev || !s_wave_chart || !lv_obj_is_valid(s_wave_chart)) {
+        return;
+    }
+
+    lv_point_t vect;
+    lv_indev_get_vect(indev, &vect);
+    if (vect.x == 0 && vect.y == 0) {
+        return;
+    }
+
+    uint32_t source_count = (s_view_mode == RTMON_VIEW_FFT) ?
+                            rtmon_source_fft_points() : rtmon_source_wave_points();
+    if (source_count == 0U) {
+        source_count = 1U;
+    }
+    uint32_t visible = rtmon_visible_points(source_count);
+    int32_t chart_w = lv_obj_get_width(s_wave_chart);
+    int32_t chart_h = lv_obj_get_height(s_wave_chart);
+    if (chart_w <= 0) {
+        chart_w = 1;
+    }
+    if (chart_h <= 0) {
+        chart_h = 1;
+    }
+
+    s_rtmon_manual_view = true;
+
+    /* Finger left means later samples; finger right means earlier samples. */
+    s_drag_x_accum_px += -vect.x;
+    int32_t step_points = (s_drag_x_accum_px * (int32_t)visible) / chart_w;
+    if (step_points != 0) {
+        int32_t next_start = (int32_t)s_wave_window_start + step_points;
+        int32_t max_start = (int32_t)rtmon_window_max(source_count);
+        next_start = rtmon_clamp_i32(next_start, 0, max_start);
+        s_wave_window_start = (uint32_t)next_start;
+        s_drag_x_accum_px -= (step_points * chart_w) / (int32_t)visible;
+    }
+
+    if (s_view_mode == RTMON_VIEW_WAVE) {
+        float axis_min = 0.0f;
+        float axis_max = 1.0f;
+        rtmon_wave_axis_range(s_active_ch, &axis_min, &axis_max);
+        int32_t axis_span = rtmon_to_axis_i32(axis_max) - rtmon_to_axis_i32(axis_min);
+        if (axis_span <= 0) {
+            axis_span = 1;
+        }
+
+        s_drag_y_accum_px += vect.y;
+        int32_t step_axis = (s_drag_y_accum_px * axis_span) / chart_h;
+        if (step_axis != 0) {
+            s_wave_axis_offset += step_axis;
+            s_wave_axis_offset = rtmon_clamp_i32(s_wave_axis_offset, -axis_span, axis_span);
+            s_drag_y_accum_px -= (step_axis * chart_h) / axis_span;
+        }
+    } else {
+        s_drag_y_accum_px = 0;
+    }
+
+    rtmon_update_wave_chart();
 }
 
 static void rtmon_wave_stats(uint32_t ch, float *min_out, float *max_out, float *mean_out)
@@ -460,6 +583,9 @@ static void rtmon_update_wave_chart(void)
 
     float mn = 0.0f, mx = 0.0f, mean = 0.0f;
     uint32_t source_count = 1U;
+    uint32_t visible = 1U;
+    uint32_t window_start = 0U;
+    uint32_t window_end = 0U;
     uint32_t peak_index = 0U;
     const bool fft_mode = (s_view_mode == RTMON_VIEW_FFT);
 
@@ -469,10 +595,16 @@ static void rtmon_update_wave_chart(void)
         if (source_count == 0U) {
             source_count = 1U;
         }
+        rtmon_clamp_current_window(source_count);
+        visible = rtmon_visible_points(source_count);
+        window_start = s_wave_window_start;
+        window_end = window_start + visible - 1U;
         float scale = (mx < 0.000001f) ? 1.0f : mx;
         for (uint32_t i = 0; i < RTMON_CHART_POINTS; i++) {
-            uint32_t src_i = (RTMON_CHART_POINTS > 1U) ?
-                             ((i * (source_count - 1U)) / (RTMON_CHART_POINTS - 1U)) : 0U;
+            uint32_t src_i = window_start + ((i < visible) ? i : (visible - 1U));
+            if (src_i >= source_count) {
+                src_i = source_count - 1U;
+            }
             float raw = rtmon_safe_float(node_channels[ch].fft_data[src_i]);
             if (raw < 0.0f) {
                 raw = 0.0f;
@@ -493,15 +625,22 @@ static void rtmon_update_wave_chart(void)
         if (source_count == 0U) {
             source_count = 1U;
         }
+        rtmon_clamp_current_window(source_count);
+        visible = rtmon_visible_points(source_count);
+        window_start = s_wave_window_start;
+        window_end = window_start + visible - 1U;
 
         for (uint32_t i = 0; i < RTMON_CHART_POINTS; i++) {
-            uint32_t src_i = (RTMON_CHART_POINTS > 1U) ?
-                             ((i * (source_count - 1U)) / (RTMON_CHART_POINTS - 1U)) : 0U;
+            uint32_t src_i = window_start + ((i < visible) ? i : (visible - 1U));
+            if (src_i >= source_count) {
+                src_i = source_count - 1U;
+            }
             float raw = rtmon_safe_float(node_channels[ch].waveform[src_i]);
             s_wave_y[i] = rtmon_to_axis_i32(raw);
         }
         lv_chart_set_axis_range(s_wave_chart, LV_CHART_AXIS_PRIMARY_Y,
-                                rtmon_to_axis_i32(axis_min), rtmon_to_axis_i32(axis_max));
+                                rtmon_to_axis_i32(axis_min) + s_wave_axis_offset,
+                                rtmon_to_axis_i32(axis_max) + s_wave_axis_offset);
         lv_chart_set_div_line_count(s_wave_chart, 5, 8);
         lv_chart_set_series_color(s_wave_chart, s_wave_series, lv_color_hex(s_ch_plot_colors[ch]));
     }
@@ -524,18 +663,21 @@ static void rtmon_update_wave_chart(void)
         char range_max_buf[24];
         if (fft_mode) {
             rtmon_format_fixed_2(value_buf, sizeof(value_buf), mx);
-            lv_label_set_text_fmt(s_lbl_wave_meta, "峰值 %s%s  峰点 #%lu  2048点FFT",
-                                  value_buf, unit, (unsigned long)peak_index);
+            lv_label_set_text_fmt(s_lbl_wave_meta, "峰值 %s%s  峰点 #%lu  窗口 %lu-%lu",
+                                  value_buf, unit, (unsigned long)peak_index,
+                                  (unsigned long)window_start, (unsigned long)window_end);
         } else {
             float axis_min = 0.0f;
             float axis_max = 1.0f;
             rtmon_wave_axis_range(ch, &axis_min, &axis_max);
+            float axis_offset = ((float)s_wave_axis_offset) / RTMON_WAVE_AXIS_SCALE;
             rtmon_format_fixed_2(mean_buf, sizeof(mean_buf), mean);
             rtmon_format_fixed_2(value_buf, sizeof(value_buf), mx - mn);
-            rtmon_format_fixed_2(range_min_buf, sizeof(range_min_buf), axis_min);
-            rtmon_format_fixed_2(range_max_buf, sizeof(range_max_buf), axis_max);
-            lv_label_set_text_fmt(s_lbl_wave_meta, "均值 %s%s  峰峰值 %s%s  量程 %s-%s%s",
+            rtmon_format_fixed_2(range_min_buf, sizeof(range_min_buf), axis_min + axis_offset);
+            rtmon_format_fixed_2(range_max_buf, sizeof(range_max_buf), axis_max + axis_offset);
+            lv_label_set_text_fmt(s_lbl_wave_meta, "均值 %s%s  峰峰值 %s%s  窗口 %lu-%lu  量程 %s-%s%s",
                                   mean_buf, unit, value_buf, unit,
+                                  (unsigned long)window_start, (unsigned long)window_end,
                                   range_min_buf, range_max_buf, unit);
         }
     }
@@ -657,6 +799,7 @@ static void rtmon_screen_event_cb(lv_event_t *e)
             s_lbl_wave_title = NULL;
             s_lbl_wave_meta = NULL;
             s_wave_series = NULL;
+            rtmon_reset_view();
             for (uint32_t i = 0; i < 2U; i++) {
                 s_mode_btns[i] = NULL;
                 s_mode_labels[i] = NULL;
@@ -672,6 +815,7 @@ static void rtmon_screen_event_cb(lv_event_t *e)
 void setup_scr_RealtimeMonitor(lv_ui *ui)
 {
     s_view_mode = RTMON_VIEW_WAVE;
+    rtmon_reset_view();
 
     ui->RealtimeMonitor = lv_obj_create(NULL);
     lv_obj_remove_style_all(ui->RealtimeMonitor);
@@ -742,6 +886,7 @@ void setup_scr_RealtimeMonitor(lv_ui *ui)
     lv_obj_set_pos(s_wave_chart, 0, 8);
     lv_obj_set_size(s_wave_chart, 512, 318);
     rtmon_style_wave_chart(s_wave_chart);
+    lv_obj_add_event_cb(s_wave_chart, rtmon_chart_event_cb, LV_EVENT_ALL, NULL);
     lv_chart_set_type(s_wave_chart, LV_CHART_TYPE_LINE);
     lv_chart_set_point_count(s_wave_chart, RTMON_CHART_POINTS);
     lv_chart_set_axis_range(s_wave_chart, LV_CHART_AXIS_PRIMARY_Y, -100, 100);
@@ -763,8 +908,8 @@ void setup_scr_RealtimeMonitor(lv_ui *ui)
     lv_obj_set_pos(s_lbl_wave_title, 16, 10);
 
     s_lbl_wave_meta = lv_label_create(wave_panel);
-    lv_label_set_text(s_lbl_wave_meta, "均值 --  峰峰值 --  0-1023点窗口");
-    lv_obj_set_width(s_lbl_wave_meta, 470);
+    lv_label_set_text(s_lbl_wave_meta, "均值 --  峰峰值 --  窗口 0-255");
+    lv_obj_set_width(s_lbl_wave_meta, 496);
     lv_label_set_long_mode(s_lbl_wave_meta, LV_LABEL_LONG_CLIP);
     lv_obj_set_style_text_font(s_lbl_wave_meta, gui_assets_get_font_16(), LV_PART_MAIN);
     lv_obj_set_style_text_color(s_lbl_wave_meta, lv_color_hex(RT_COL_TITLE), LV_PART_MAIN);
