@@ -765,15 +765,66 @@
     
     <!-- 基础JavaScript -->
     <script>
+        function createGuardedJsonFetcher(label, minIntervalMs = 1000, timeoutMs = 6000) {
+            let inFlight = false;
+            let lastFetchAt = 0;
+            let backoffUntil = 0;
+            let failCount = 0;
+            let lastLogAt = 0;
+
+            return async function guardedJsonFetch(url) {
+                const now = Date.now();
+                if (inFlight) return null;
+                if (now < backoffUntil) return null;
+                if (now - lastFetchAt < minIntervalMs) return null;
+
+                inFlight = true;
+                lastFetchAt = now;
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+                try {
+                    const response = await fetch(url, {
+                        signal: controller.signal,
+                        cache: 'no-store'
+                    });
+                    const ct = (response.headers.get('Content-Type') || '').toLowerCase();
+                    if (!response.ok || !ct.includes('application/json')) {
+                        throw new Error(`HTTP ${response.status} ${response.statusText}`);
+                    }
+                    const data = await response.json();
+                    failCount = 0;
+                    backoffUntil = 0;
+                    return data;
+                } catch (error) {
+                    failCount += 1;
+                    const backoffMs = Math.min(30000, 1000 * Math.pow(2, Math.min(failCount - 1, 5)));
+                    backoffUntil = Date.now() + backoffMs;
+                    const logNow = Date.now();
+                    if (logNow - lastLogAt > 10000) {
+                        lastLogAt = logNow;
+                        console.warn(`[${label}] 请求失败，${Math.round(backoffMs / 1000)}s 后重试:`, error);
+                    }
+                    return null;
+                } finally {
+                    clearTimeout(timeoutId);
+                    inFlight = false;
+                }
+            };
+        }
+
+        const fetchSidebarStatsJson = createGuardedJsonFetcher('sidebarStatus', 3000);
+        const fetchNodeSuggestionsJson = createGuardedJsonFetcher('nodeSuggestions', 10000);
+        const fetchGlobalNodesJson = createGuardedJsonFetcher('globalNodeMonitor', 2500);
+
         // 更新侧边栏节点状态
         async function updateSidebarStatus() {
             try {
-                const response = await fetch('/api/dashboard/stats');
-                const data = await response.json();
+                const data = await fetchSidebarStatsJson('/api/dashboard/stats');
+                if (!data) return;
                 document.getElementById('sidebar-online-count').textContent = data.online_nodes || 0;
                 document.getElementById('sidebar-total-count').textContent = data.total_nodes || 0;
             } catch (error) {
-                console.error('Failed to update sidebar status:', error);
+                console.warn('Failed to update sidebar status:', error);
             }
         }
 
@@ -823,17 +874,12 @@
         // 从API获取活动节点并更新建议
         async function updateNodeSuggestions() {
             try {
-                const response = await fetch('/api/get_active_nodes');
-
-                // 兼容：登录失效时后端可能返回 HTML（302 跳转/登录页），此时 response.json() 会报错
-                const ct = (response.headers.get('Content-Type') || '').toLowerCase();
-                if (!response.ok || !ct.includes('application/json')) {
+                const result = await fetchNodeSuggestionsJson('/api/get_active_nodes');
+                if (!result) {
                     activeNodeSuggestions = [];
                     return;
                 }
 
-                const result = await response.json();
-                
                 // 处理API响应格式：{success: true, nodes: [...]}
                 const nodes = result.success ? (result.nodes || []) : [];
                 
@@ -1178,8 +1224,8 @@
 
             // 初始加载节点建议
             updateNodeSuggestions();
-            // 定期更新节点建议（每10秒）
-            setInterval(updateNodeSuggestions, 10000);
+            // 定期更新节点建议，避免和监测页轮询争抢浏览器连接池
+            setInterval(updateNodeSuggestions, 30000);
         }
 
         // ========== 消息中心功能 ==========
@@ -1522,11 +1568,11 @@
         // 全局节点监控函数（在所有页面运行）
         async function globalNodeMonitor() {
             try {
-                const response = await fetch('/api/get_active_nodes');
-                const result = await response.json();
+                const result = await fetchGlobalNodesJson('/api/get_active_nodes');
+                if (!result) return;
                 
                 if (!result.success) {
-                    console.error('[全局监控] 获取节点列表失败:', result.error);
+                    console.warn('[全局监控] 获取节点列表失败:', result.error);
                     return;
                 }
                 
@@ -1620,7 +1666,7 @@
                 globalLastNodeIds = currentIds;
                 globalLastNodeStates = currentStates;
             } catch (e) {
-                console.error('[全局监控] 轮询失败:', e);
+                console.warn('[全局监控] 轮询失败:', e);
             }
         }
         
@@ -1694,17 +1740,16 @@
             
             initMessageCenter(); // 初始化消息中心
             
-            // 启动全局节点监控（快速轮询模式：从localStorage读取设置，默认800ms）
+            // 启动全局节点监控：只做节点集合/故障状态同步，不参与实时波形刷新
             const fastPollingEnabled = localStorage.getItem('fastPollingEnabled') !== 'false';
-            const globalPollingInterval = fastPollingEnabled ? 800 : 3000;
+            const globalPollingInterval = fastPollingEnabled ? 3000 : 5000;
             globalNodeMonitor(); // 立即执行一次
             setInterval(globalNodeMonitor, globalPollingInterval);
             
-            setInterval(updateSidebarStatus, 1000); // 每1秒更新一次（优化响应速度）
+            setInterval(updateSidebarStatus, 5000);
         });
     </script>
     
     {% block extra_js %}{% endblock %}
 </body>
 </html>
-

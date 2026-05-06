@@ -29,8 +29,8 @@ static const char *TAG = "cloud_client";
 #define CLOUD_LOOP_POLL_MS 200
 #define CLOUD_SUBMIT_QUEUE_TIMEOUT_MS 20
 #define CLOUD_SUMMARY_COALESCE_THRESHOLD 4
-#define CLOUD_FULL_HTTP_TIMEOUT_MIN_MS 6000U
-#define CLOUD_FULL_HTTP_TIMEOUT_MAX_MS 7000U
+#define CLOUD_FULL_HTTP_TIMEOUT_MIN_MS 2500U
+#define CLOUD_FULL_HTTP_TIMEOUT_MAX_MS 3000U
 #define CLOUD_FULL_HTTP_TOTAL_BUDGET_MS 5000U
 #define CLOUD_REPORT_REREGISTER_FAIL_STREAK 8U
 #define CLOUD_REPORT_WIFI_RECOVER_FAIL_STREAK 6U
@@ -272,12 +272,10 @@ static uint32_t report_request_timeout_ms(const app_config_snapshot_t *snapshot,
 
     if (frame != NULL && frame->mode == REPORT_MODE_FULL) {
         /*
-         * Full binary frames normally finish in about 1.0~2.5s on the current
-         * cloud path.  The generic UI/SD HTTP timeout can be tuned down by server
-         * command, but a low value must not undercut large full-frame POSTs and
-         * turn normal network jitter into a false timeout.  Keep the full-frame
-         * budget bounded so a real bad TCP attempt still returns to STM32 within
-         * the recovery window.
+         * Full binary frames normally finish in about 1.0~1.5s on the current
+         * cloud path.  Do not let a bad TCP connect/open consume the generic
+         * UI/SD HTTP timeout; STM32 needs a quick TX_RESULT to keep the full
+         * upload cadence stable.
          */
         if (timeout_ms < CLOUD_FULL_HTTP_TIMEOUT_MIN_MS) {
             timeout_ms = CLOUD_FULL_HTTP_TIMEOUT_MIN_MS;

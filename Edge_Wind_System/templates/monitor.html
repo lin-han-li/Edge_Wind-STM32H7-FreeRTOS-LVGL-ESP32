@@ -317,6 +317,14 @@
     
     // ========== WebSocket 连接 ==========
     let socket = null;
+    let pollingFallbackActive = false;
+    let activeNodesFetchInFlight = false;
+    let activeNodesLastFetchAt = 0;
+    let activeNodesBackoffUntil = 0;
+    let activeNodesFetchFailCount = 0;
+    let activeNodesLastErrorLogAt = 0;
+    const ACTIVE_NODES_FETCH_TIMEOUT_MS = 6000;
+    const ACTIVE_NODES_MIN_INTERVAL_MS = 900;
 
     // ========== 辅助函数：获取URL查询参数 ==========
     function getQueryParam(param) {
@@ -1221,9 +1229,33 @@
     // ========== 获取活动边缘节点 (心跳发现系统) ==========
     // 注意：边缘节点注册/注销通知已移至全局脚本（base.html），这里只负责监测页面的数据更新
     
-    async function fetchActiveNodes() {
+    function noteActiveNodesFetchFailure(error) {
+        activeNodesFetchFailCount += 1;
+        const backoffMs = Math.min(30000, 1000 * Math.pow(2, Math.min(activeNodesFetchFailCount - 1, 5)));
+        activeNodesBackoffUntil = Date.now() + backoffMs;
+        const now = Date.now();
+        if (now - activeNodesLastErrorLogAt > 10000) {
+            activeNodesLastErrorLogAt = now;
+            console.warn(`[fetchActiveNodes] 获取边缘节点失败，${Math.round(backoffMs / 1000)}s 后重试:`, error);
+        }
+    }
+
+    async function fetchActiveNodes(options = {}) {
+        const now = Date.now();
+        const force = options && options.force === true;
+        if (activeNodesFetchInFlight) return false;
+        if (!force && now < activeNodesBackoffUntil) return false;
+        if (!force && now - activeNodesLastFetchAt < ACTIVE_NODES_MIN_INTERVAL_MS) return false;
+
+        activeNodesFetchInFlight = true;
+        activeNodesLastFetchAt = now;
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), ACTIVE_NODES_FETCH_TIMEOUT_MS);
         try {
-            const response = await fetch('/api/get_active_nodes');
+            const response = await fetch('/api/get_active_nodes', {
+                signal: controller.signal,
+                cache: 'no-store'
+            });
             
             // 处理 HTTP 错误（500, 404 等）
             if (!response.ok) {
@@ -1239,7 +1271,7 @@
                     }
                     return;
                 }
-                console.error(`[fetchActiveNodes] HTTP错误: ${response.status} ${response.statusText}`);
+                noteActiveNodesFetchFailure(new Error(`HTTP ${response.status} ${response.statusText}`));
                 // 即使出错也继续轮询，不中断
                 return;
             }
@@ -1247,14 +1279,14 @@
             // 兼容：登录失效时可能返回 HTML（重定向到登录页），避免 response.json() 抛错导致轮询中断
             const ct = (response.headers.get('Content-Type') || '').toLowerCase();
             if (!ct.includes('application/json')) {
-                console.warn('[fetchActiveNodes] 响应非JSON，可能登录已失效，跳过本轮更新');
+                noteActiveNodesFetchFailure(new Error('响应非JSON，可能登录已失效'));
                 return;
             }
 
             const result = await response.json();
             
             if (!result.success) {
-                console.error('[fetchActiveNodes] API返回失败:', result.error);
+                noteActiveNodesFetchFailure(new Error(result.error || 'API返回失败'));
                 // 显示加载状态
                 if (timeDomainChart && !timeDomainChart._loadingShown) {
                     timeDomainChart.showLoading('default', {
@@ -1279,6 +1311,9 @@
                 // 即使出错也继续轮询，不中断
                 return;
             }
+
+            activeNodesFetchFailCount = 0;
+            activeNodesBackoffUntil = 0;
             
             // 成功获取数据，清除加载状态标志
             if (timeDomainChart) {
@@ -1299,12 +1334,16 @@
                 if (!nodeId) return;
                 
                 // 转换通道数据格式（从后端接收完整数据）
-                const channels = (node.channels || []).map((ch, index) => {
+                const oldNodeForChannels = NODE_CONFIGS[nodeId] || {};
+                const incomingChannels = Array.isArray(node.channels) ? node.channels : [];
+                const sourceChannels = incomingChannels.length > 0 ? incomingChannels : (oldNodeForChannels.channels || []);
+                const channels = sourceChannels.map((ch, index) => {
+                    const numericValue = ch.value !== undefined ? ch.value : (ch.currentValue !== undefined ? ch.currentValue : 0);
                     // 根据通道类型确定颜色
                     let color = "primary";
                     
                     if (ch.type === "DC") {
-                        color = ch.value < 0 ? "danger" : "primary";
+                        color = numericValue < 0 ? "danger" : "primary";
                     } else if (ch.type === "Current") {
                         color = "info";
                     } else if (ch.type === "Leakage") {
@@ -1317,13 +1356,13 @@
                     
                     // 确定范围（基于通道类型和单位）
                     let defaultRange = [0, 1000];
-                    if (ch.unit === "V") defaultRange = ch.value < 0 ? [-800, 0] : [0, 800];
+                    if (ch.unit === "V") defaultRange = numericValue < 0 ? [-800, 0] : [0, 800];
                     else if (ch.unit === "A") defaultRange = [0, 60];
                     else if (ch.unit === "mA") defaultRange = [0, 50];
                     else if (ch.unit === "MΩ") defaultRange = [0, 100];
                     else if (ch.unit === "°C") defaultRange = [0, 100];
                     
-                    const currentValue = ch.value !== undefined ? ch.value : 0;
+                    const currentValue = numericValue;
                     
                     return {
                         id: ch.id !== undefined ? ch.id : index,
@@ -1333,8 +1372,8 @@
                         range: ch.range || defaultRange,
                         color: color,
                         currentValue: currentValue,  // 当前瞬时值（从后端接收）
-                        waveform: ch.waveform || [],  // 波形数组（从后端接收，120个采样点）
-                        fft_spectrum: ch.fft_spectrum || []  // FFT频谱数组（从后端接收，30个频率bin）
+                        waveform: Array.isArray(ch.waveform) ? ch.waveform : [],  // 波形数组（从后端接收，120个采样点）
+                        fft_spectrum: Array.isArray(ch.fft_spectrum) ? ch.fft_spectrum : []  // FFT频谱数组（从后端接收，30个频率bin）
                     };
                 });
                 
@@ -1453,12 +1492,15 @@
             }
             
         } catch (error) {
-            console.error('[fetchActiveNodes] 获取边缘节点列表时出错:', error);
+            noteActiveNodesFetchFailure(error);
             // 即使出错也继续轮询，不中断
             // 如果获取失败，显示等待提示
             if (Object.keys(NODE_CONFIGS).length === 0) {
             renderNodeList();
             }
+        } finally {
+            clearTimeout(timeoutId);
+            activeNodesFetchInFlight = false;
         }
     }
 
@@ -1470,7 +1512,7 @@
             clearTimeout(t);
             t = setTimeout(() => {
                 // 立即拉取一次最新列表，保证“节点注册/注销”马上反映到侧边栏
-                fetchActiveNodes();
+                fetchActiveNodes({ force: true });
             }, 50);
         };
     })();
@@ -2335,6 +2377,18 @@
         socket.on('connect', () => {
             console.log('⚡ [WebSocket] 实时推送连接已建立！');
             if (typeof window.updatePerfPanel === 'function') window.updatePerfPanel();  // 立即更新状态
+            if (pollingFallbackActive) {
+                pollingFallbackActive = false;
+                if (updateInterval) {
+                    clearInterval(updateInterval);
+                    updateInterval = null;
+                }
+                if (nodeListInterval) {
+                    clearInterval(nodeListInterval);
+                    nodeListInterval = null;
+                }
+                nodeListInterval = setInterval(() => fetchActiveNodes(), 5000);
+            }
             
             // 如果已选择边缘节点，立即订阅
             if (currentNodeId) {
@@ -2569,7 +2623,7 @@
             try {
                 console.log('🔄 [WebSocket] nodes_changed:', msg);
                 // 立即拉取最新列表，确保新增/移除节点立刻体现在 UI
-                fetchActiveNodes();
+                fetchActiveNodes({ force: true });
             } catch (e) {}
         });
         
@@ -2719,7 +2773,8 @@
         });
         
         // 定期获取边缘节点列表（作为WebSocket的补充，确保边缘节点列表完整）
-        nodeListInterval = setInterval(fetchActiveNodes, 5000);  // 5秒获取一次边缘节点列表
+        if (nodeListInterval) clearInterval(nodeListInterval);
+        nodeListInterval = setInterval(() => fetchActiveNodes(), 5000);  // 5秒获取一次边缘节点列表
     }
 
     // ========== 时间格式化：用于故障快照事件定位 ==========
@@ -2743,20 +2798,19 @@
         return `${map.year}-${map.month}-${map.day} ${map.hour}:${map.minute}:${map.second}`;
     }
     
-    // 回退到HTTP轮询模式（当WebSocket不可用时）- 优化：使用更快的轮询
+    // 回退到HTTP轮询模式（当WebSocket不可用时）
     function startPollingFallback() {
+        if (pollingFallbackActive) return;
+        pollingFallbackActive = true;
         console.log('[Monitor] 使用HTTP轮询模式（回退）');
-        // 优化：使用更快的轮询间隔（50ms，接近模拟器的20ms上传频率）
-        const interval = parseInt(localStorage.getItem('pollInterval')) || 50;  // 从1000ms改为50ms
+        const savedInterval = parseInt(localStorage.getItem('pollInterval'), 10);
+        const interval = Number.isFinite(savedInterval) ? Math.max(savedInterval, 500) : 500;
         if (nodeListInterval) clearInterval(nodeListInterval);
         if (updateInterval) clearInterval(updateInterval);
-        // 关键：当 WebSocket 不可用时，fetchActiveNodes 实际上也是“数据源”。
-        // 若仍按 5s 拉一次，会表现为“只有节点但不刷新波形/数据”。
-        // 设备侧默认约 5Hz（200ms）上报，因此这里下限设置为 200ms，避免过度压测后端。
-        const fetchInterval = Math.max(200, interval);
+        const fetchInterval = Math.max(1500, interval);
         // 先立即拉一次，避免刚切换回退模式时等待间隔造成“卡住”的错觉
-        fetchActiveNodes();
-        nodeListInterval = setInterval(fetchActiveNodes, fetchInterval);
+        fetchActiveNodes({ force: true });
+        nodeListInterval = setInterval(() => fetchActiveNodes(), fetchInterval);
         updateInterval = setInterval(updateAllNodesData, interval);  // 数据更新使用快速轮询
     }
     
@@ -3010,7 +3064,7 @@
         
         const node = NODE_CONFIGS[currentNodeId];
             if (!node || !node.channels || node.channels.length === 0) {
-                console.warn('[updateCharts] 边缘节点数据不完整:', currentNodeId);
+                debugLog('[updateCharts] 边缘节点数据不完整:', currentNodeId);
                 return;
             }
             

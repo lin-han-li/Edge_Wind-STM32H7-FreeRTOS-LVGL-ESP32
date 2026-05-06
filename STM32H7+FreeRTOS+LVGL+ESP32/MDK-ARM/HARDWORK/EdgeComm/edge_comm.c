@@ -53,7 +53,7 @@
 #endif
 
 #ifndef ESP32_SPI_STRESS_SPI_LABEL
-#define ESP32_SPI_STRESS_SPI_LABEL "10MHz"
+#define ESP32_SPI_STRESS_SPI_LABEL "5MHz"
 #endif
 
 #ifndef ESP32_SPI_RESULT_OK
@@ -1359,7 +1359,7 @@ bool ESP_Config_LoadRuntimeFromSD(void)
     (void)ESP_UploadMode_LoadFromSD();
 
     cfg = ESP_Config_Get();
-    if (!cfg_ok || !ESP_Config_IsValidForLink(cfg)) {
+    if (!ESP_Config_IsValidForLink(cfg)) {
         ESP_Log("[ESP_CFG] runtime SD load invalid: cfg_ok=%u ssid=%u host=%u port=%u node=%u\r\n",
                 cfg_ok ? 1U : 0U,
                 (cfg && cfg->wifi_ssid[0]) ? 1U : 0U,
@@ -1367,6 +1367,9 @@ bool ESP_Config_LoadRuntimeFromSD(void)
                 (cfg && cfg->server_port) ? 1U : 0U,
                 (cfg && cfg->node_id[0]) ? 1U : 0U);
         return false;
+    }
+    if (!cfg_ok) {
+        ESP_Log("[ESP_CFG] SD UI config incomplete; using current runtime link config.\r\n");
     }
 
     if (!comm_ok) {

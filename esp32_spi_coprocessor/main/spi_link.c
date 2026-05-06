@@ -30,6 +30,8 @@ static protocol_packet_t s_pending_tx;
 static uint32_t s_next_tx_seq = 1;
 static uint32_t s_last_rx_seq = 0;
 
+static void assign_tx_sequence(protocol_packet_t *packet);
+
 static void spi_link_cleanup_partial_init(void)
 {
     if (s_tx_queue != NULL) {
@@ -72,6 +74,7 @@ static void queue_link_nack(protocol_nack_reason_t reason, uint32_t ref_seq)
     }
     protocol_packet_finalize(&packet);
     if (!s_has_pending) {
+        assign_tx_sequence(&packet);
         s_pending_tx = packet;
         s_has_pending = true;
         return;
