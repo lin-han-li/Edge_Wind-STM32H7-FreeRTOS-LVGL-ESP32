@@ -55,6 +55,7 @@
 #include "edge_comm.h"
 #include "SPI_AD7606.h"
 #include "ad_acq_buffers.h"
+#include "edgewind_ai_selftest.h"
 
 /* USER CODE END Includes */
 
@@ -166,6 +167,9 @@ int main(void)
 
   LED_Init();                              //
   SDRAM_Initialization_Sequence(&hsdram1); //
+  printf("[AI] golden selftest begin\r\n");
+  int ai_selftest_result = EdgeWind_AI_RunGoldenSelfTest();
+  printf("[AI] golden selftest result=%d\r\n", ai_selftest_result);
   LCD_RGB_Init();                          //
   Touch_Init();                            //
 
@@ -256,7 +260,7 @@ void SystemClock_Config(void)
   RCC_ClkInitStruct.AHBCLKDivider = RCC_HCLK_DIV2;
   RCC_ClkInitStruct.APB3CLKDivider = RCC_APB3_DIV2;
   RCC_ClkInitStruct.APB1CLKDivider = RCC_APB1_DIV2;
-  RCC_ClkInitStruct.APB2CLKDivider = RCC_APB2_DIV4;
+  RCC_ClkInitStruct.APB2CLKDivider = RCC_APB2_DIV2;
   RCC_ClkInitStruct.APB4CLKDivider = RCC_APB4_DIV2;
 
   if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_4) != HAL_OK)

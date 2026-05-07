@@ -15,11 +15,11 @@
 
 /*
  * 模拟前端增益（Vin_adc = Vin_in * AD7606_FRONTEND_GAIN）
- * - 大多数情况下为 1.0 (无外部运放衰减)
- * - 如果你的板子前面有电阻分压（例如 1/2 分压），则填 0.5
+ * - EdgeWind board front-end is 1/2 divider, so 1.0V external analog reaches
+ *   the AD7606 pin as about 0.5V. RawToVoltsF() returns the external analog V.
  */
 #ifndef AD7606_FRONTEND_GAIN
-#define AD7606_FRONTEND_GAIN (1.0f)
+#define AD7606_FRONTEND_GAIN (0.5f)
 #endif
 
 /* 默认过采样模式（0=无过采样，1=2x，2=4x，3=8x，4=16x，5=32x，6=64x） */
@@ -27,15 +27,18 @@
 #define AD7606_OS_MODE (3u)
 #endif
 
-/* * 获取满量程电压范围
- * AD7606 的 Range 引脚决定输入范围是 ±5V 还是 ±10V。
- * 当设置为 ±10V 范围时，相当于内部基准的 4 倍 (4 * 2.5V = 10V)。
- * 此函数用于将 ADC 的原始值 (Raw Code) 换算为实际电压。
+/*
+ * AD7606 analog input full-scale voltage.
+ * RANGE=0 is +/-5V, RANGE=1 is +/-10V. The EdgeWind monitoring chain uses
+ * the low-voltage +/-5V domain, so 1.0V analog must decode as 1.0V here.
  */
+#ifndef AD7606_FULL_SCALE_VOLTS
+#define AD7606_FULL_SCALE_VOLTS (2.0f * AD7606_VREF_VOLTS)
+#endif
+
 static inline float AD7606_GetFullScaleVolts(void)
 {
-    /* 假设硬件 Range 引脚拉高，固定为 ±10V 量程 */
-    return (4.0f * AD7606_VREF_VOLTS);
+    return AD7606_FULL_SCALE_VOLTS;
 }
 
 /* ==========================================
@@ -179,7 +182,7 @@ DOUTA(DB7)   : PA0  -> DOUTA（串行数据输出，作为 MISO 读取）
 
 // 硬件固定配置
 1) 串行模式：SER = 1（接 3.3V），DB15 = 0（接 GND）
-2) 量程固定：硬件已固定为 ±10V（RANGE 未由 MCU 控制/已移除相关引脚）
+2) 量程：当前 EdgeWind 监测链路按 ±5V 低压模拟域解码；如硬件改为 ±10V，覆盖 AD7606_FULL_SCALE_VOLTS。
 
 // 说明
 - 本工程当前未使用：STBY、FRSTDATA、RD、DOUTB(DB8) 等引脚（若你的硬件接了也不影响本驱动）。

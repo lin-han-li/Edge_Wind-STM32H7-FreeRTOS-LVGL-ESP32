@@ -1,4 +1,5 @@
 #include "esp32_spi_debug.h"
+#include "edgewind_units.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -2127,7 +2128,7 @@ static bool build_wave_chunk_payload(uint8_t *payload, uint16_t payload_len, voi
         if (chunk->source_count == 0U || src_index >= (uint32_t)chunk->source_count) {
             return false;
         }
-        int16_t scaled = scale_float_to_i16(chunk->values[src_index], 200.0f);
+        int16_t scaled = scale_float_to_i16(chunk->values[src_index], EW_UPLOAD_WAVEFORM_SCALE);
         memcpy(payload + sizeof(prefix) + ((uint32_t)i * sizeof(scaled)), &scaled, sizeof(scaled));
     }
     return true;
@@ -2159,7 +2160,7 @@ static bool build_fft_chunk_payload(uint8_t *payload, uint16_t payload_len, void
         if (chunk->source_count == 0U || src_index >= (uint32_t)chunk->source_count) {
             return false;
         }
-        int16_t scaled = scale_float_to_i16(chunk->values[src_index], 10.0f);
+        int16_t scaled = scale_float_to_i16(chunk->values[src_index], EW_UPLOAD_FFT_SCALE);
         memcpy(payload + sizeof(prefix) + ((uint32_t)i * sizeof(scaled)), &scaled, sizeof(scaled));
     }
     return true;

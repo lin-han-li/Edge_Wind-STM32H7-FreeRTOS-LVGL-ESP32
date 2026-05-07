@@ -19,7 +19,6 @@
 
 #include "sdram.h"   
 
-FMC_SDRAM_CommandTypeDef *Command;	// 控制指令
 
 /******************************************************************************************************
 *	函 数 名: SDRAM_Initialization_Sequence
@@ -33,32 +32,33 @@ FMC_SDRAM_CommandTypeDef *Command;	// 控制指令
 void SDRAM_Initialization_Sequence(SDRAM_HandleTypeDef *hsdram)
 {
 	__IO uint32_t tmpmrd = 0;
+    FMC_SDRAM_CommandTypeDef Command = {0};    // 控制指令
 
 
 	/* Configure a clock configuration enable command */
-	Command->CommandMode 				= FMC_SDRAM_CMD_CLK_ENABLE;	// 开启SDRAM时钟 
-	Command->CommandTarget 				= FMC_COMMAND_TARGET_BANK; 	// 选择要控制的区域
-	Command->AutoRefreshNumber 		= 1;
-	Command->ModeRegisterDefinition 	= 0;
+	Command.CommandMode 				= FMC_SDRAM_CMD_CLK_ENABLE;	// 开启SDRAM时钟 
+	Command.CommandTarget 				= FMC_COMMAND_TARGET_BANK; 	// 选择要控制的区域
+	Command.AutoRefreshNumber 		= 1;
+	Command.ModeRegisterDefinition 	= 0;
 
-	HAL_SDRAM_SendCommand(hsdram, Command, SDRAM_TIMEOUT);	// 发送控制指令
+	HAL_SDRAM_SendCommand(hsdram, &Command, SDRAM_TIMEOUT);	// 发送控制指令
 	HAL_Delay(1);		// 延时等待
 
 	/* Configure a PALL (precharge all) command */ 
-	Command->CommandMode 				= FMC_SDRAM_CMD_PALL;		// 预充电命令
-	Command->CommandTarget 				= FMC_COMMAND_TARGET_BANK;	// 选择要控制的区域
-	Command->AutoRefreshNumber 		= 1;
-	Command->ModeRegisterDefinition 	= 0;
+	Command.CommandMode 				= FMC_SDRAM_CMD_PALL;		// 预充电命令
+	Command.CommandTarget 				= FMC_COMMAND_TARGET_BANK;	// 选择要控制的区域
+	Command.AutoRefreshNumber 		= 1;
+	Command.ModeRegisterDefinition 	= 0;
 
-	HAL_SDRAM_SendCommand(hsdram, Command, SDRAM_TIMEOUT);  // 发送控制指令
+	HAL_SDRAM_SendCommand(hsdram, &Command, SDRAM_TIMEOUT);  // 发送控制指令
 
 	/* Configure a Auto-Refresh command */ 
-	Command->CommandMode 				= FMC_SDRAM_CMD_AUTOREFRESH_MODE;	// 使用自动刷新
-	Command->CommandTarget 				= FMC_COMMAND_TARGET_BANK;          // 选择要控制的区域
-	Command->AutoRefreshNumber			= 8;                                // 自动刷新次数
-	Command->ModeRegisterDefinition 	= 0;
+	Command.CommandMode 				= FMC_SDRAM_CMD_AUTOREFRESH_MODE;	// 使用自动刷新
+	Command.CommandTarget 				= FMC_COMMAND_TARGET_BANK;          // 选择要控制的区域
+	Command.AutoRefreshNumber			= 8;                                // 自动刷新次数
+	Command.ModeRegisterDefinition 	= 0;
 
-	HAL_SDRAM_SendCommand(hsdram, Command, SDRAM_TIMEOUT);	// 发送控制指令
+	HAL_SDRAM_SendCommand(hsdram, &Command, SDRAM_TIMEOUT);	// 发送控制指令
 
 	/* Program the external memory mode register */
 	tmpmrd = (uint32_t)SDRAM_MODEREG_BURST_LENGTH_1         |
@@ -67,12 +67,12 @@ void SDRAM_Initialization_Sequence(SDRAM_HandleTypeDef *hsdram)
 							SDRAM_MODEREG_OPERATING_MODE_STANDARD |
 							SDRAM_MODEREG_WRITEBURST_MODE_SINGLE;
 
-	Command->CommandMode					= FMC_SDRAM_CMD_LOAD_MODE;	// 加载模式寄存器命令
-	Command->CommandTarget 				= FMC_COMMAND_TARGET_BANK;	// 选择要控制的区域
-	Command->AutoRefreshNumber 		= 1;
-	Command->ModeRegisterDefinition 	= tmpmrd;
+	Command.CommandMode					= FMC_SDRAM_CMD_LOAD_MODE;	// 加载模式寄存器命令
+	Command.CommandTarget 				= FMC_COMMAND_TARGET_BANK;	// 选择要控制的区域
+	Command.AutoRefreshNumber 		= 1;
+	Command.ModeRegisterDefinition 	= tmpmrd;
 
-	HAL_SDRAM_SendCommand(hsdram, Command, SDRAM_TIMEOUT);	// 发送控制指令
+	HAL_SDRAM_SendCommand(hsdram, &Command, SDRAM_TIMEOUT);	// 发送控制指令
 	
 	HAL_SDRAM_ProgramRefreshRate(hsdram, 1543);  // 配置刷新率
 

@@ -22,6 +22,16 @@ _CHANNEL_LABELS = {
     3: ('漏电流', 'mA'),
 }
 
+_VALUE_SCALE_BY_VERSION = {
+    EWFULL_VERSION_V1: 200.0,
+    EWFULL_VERSION_V2: 10.0,
+}
+_WAVEFORM_SCALE_BY_VERSION = {
+    EWFULL_VERSION_V1: 200.0,
+    EWFULL_VERSION_V2: 10.0,
+}
+_FFT_SCALE = 10.0
+
 
 class FullFrameBinaryError(ValueError):
     pass
@@ -56,6 +66,10 @@ def _downsample_numeric_view(view, limit: int | None, scale: float = 1.0) -> lis
     if scale == 1.0:
         return [int(v) for v in sampled]
     return [float(v) / scale for v in sampled]
+
+
+def _scale_for_version(table: dict[int, float], version: int) -> float:
+    return table.get(version, 1.0) or 1.0
 
 
 def decode_full_frame_binary(body: bytes,
@@ -142,6 +156,8 @@ def decode_full_frame_binary(body: bytes,
             raise FullFrameBinaryError(f'bad fft_count: {fft_count}')
 
         waveform_item_size = 4 if version == EWFULL_VERSION_V1 else 2
+        value_scale = _scale_for_version(_VALUE_SCALE_BY_VERSION, version)
+        waveform_scale = _scale_for_version(_WAVEFORM_SCALE_BY_VERSION, version)
         waveform_bytes = waveform_count * waveform_item_size
         fft_bytes = fft_count * 2
         next_cursor = cursor + waveform_bytes + fft_bytes
@@ -153,11 +169,11 @@ def decode_full_frame_binary(body: bytes,
                 waveform_view = memoryview(raw[cursor:cursor + waveform_bytes]).cast(
                     'i' if version == EWFULL_VERSION_V1 else 'h'
                 )
-                waveform = _downsample_numeric_view(waveform_view, waveform_limit, 1.0)
+                waveform = _downsample_numeric_view(waveform_view, waveform_limit, waveform_scale)
             except Exception:
                 fmt = f'<{waveform_count}i' if version == EWFULL_VERSION_V1 else f'<{waveform_count}h'
-                waveform = list(struct.unpack_from(fmt, raw, cursor))
-                waveform = _downsample_numeric_view(waveform, waveform_limit, 1.0)
+                waveform_raw = struct.unpack_from(fmt, raw, cursor)
+                waveform = _downsample_numeric_view(waveform_raw, waveform_limit, waveform_scale)
         else:
             waveform = []
         cursor += waveform_bytes
@@ -165,10 +181,10 @@ def decode_full_frame_binary(body: bytes,
         if fft_count > 0:
             try:
                 fft_view = memoryview(raw[cursor:cursor + fft_bytes]).cast('h')
-                fft = _downsample_numeric_view(fft_view, fft_limit, 10.0)
+                fft = _downsample_numeric_view(fft_view, fft_limit, _FFT_SCALE)
             except Exception:
-                fft = [value / 10.0 for value in struct.unpack_from(f'<{fft_count}h', raw, cursor)]
-                fft = _downsample_numeric_view(fft, fft_limit, 1.0)
+                fft_raw = struct.unpack_from(f'<{fft_count}h', raw, cursor)
+                fft = _downsample_numeric_view(fft_raw, fft_limit, _FFT_SCALE)
         else:
             fft = []
         cursor += fft_bytes
@@ -182,8 +198,8 @@ def decode_full_frame_binary(body: bytes,
             'label': label,
             'name': label,
             'unit': unit,
-            'value': int(value_scaled),
-            'current_value': int(current_value_scaled),
+            'value': float(value_scaled) / value_scale,
+            'current_value': float(current_value_scaled) / value_scale,
             'waveform_count_raw': int(waveform_count),
             'fft_count_raw': int(fft_count),
             'waveform': waveform,

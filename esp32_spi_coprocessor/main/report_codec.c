@@ -26,6 +26,9 @@ static const char *TAG = "report_codec";
 #define REPORT_HTTP_WRITE_BLOCK_ABORT_MS 1000U
 #define EW_FULL_V1_MAGIC UINT32_C(0x31465745)
 #define EW_FULL_V2_VERSION 2U
+#define EW_REPORT_ENGINEERING_VALUE_SCALE 10U
+#define EW_REPORT_WAVEFORM_SCALE 10U
+#define EW_REPORT_FFT_SCALE 10U
 
 typedef struct __attribute__((packed)) {
     uint32_t magic;
@@ -448,26 +451,30 @@ static void builder_append_json_string(json_builder_t *builder, const char *text
     builder_append(builder, "\"");
 }
 
-static void builder_append_i16_array(json_builder_t *builder, const int16_t *values, size_t count)
+static void builder_append_scaled_i32(json_builder_t *builder, int32_t value, uint32_t scale)
 {
-    builder_append(builder, "[");
-    for (size_t i = 0; i < count; ++i) {
-        builder_append(builder, (i == 0U) ? "%" PRId16 : ",%" PRId16, values[i]);
-    }
-    builder_append(builder, "]");
+    int64_t raw = (int64_t) value;
+    uint64_t abs_raw = (raw < 0) ? (uint64_t) (-raw) : (uint64_t) raw;
+    uint64_t denom = (scale == 0U) ? 1U : (uint64_t) scale;
+
+    builder_append(builder,
+                   "%s%" PRIu64 ".%" PRIu64,
+                   raw < 0 ? "-" : "",
+                   abs_raw / denom,
+                   abs_raw % denom);
 }
 
-static void builder_append_i16_tenths_array(json_builder_t *builder, const int16_t *values, size_t count)
+static void builder_append_i16_scaled_array(json_builder_t *builder,
+                                            const int16_t *values,
+                                            size_t count,
+                                            uint32_t scale)
 {
     builder_append(builder, "[");
     for (size_t i = 0; i < count; ++i) {
-        int32_t raw = values[i];
-        int32_t abs_raw = raw < 0 ? -raw : raw;
-        builder_append(builder,
-                       (i == 0U) ? "%s%" PRId32 ".%" PRId32 : ",%s%" PRId32 ".%" PRId32,
-                       raw < 0 ? "-" : "",
-                       abs_raw / 10,
-                       abs_raw % 10);
+        if (i > 0U) {
+            builder_append(builder, ",");
+        }
+        builder_append_scaled_i32(builder, (int32_t) values[i], scale);
     }
     builder_append(builder, "]");
 }
@@ -520,19 +527,25 @@ static bool emit_heartbeat_json(json_builder_t *builder,
         builder_append_json_string(builder, meta->label);
         builder_append(builder, ",\"name\":");
         builder_append_json_string(builder, meta->label);
-        builder_append(builder, ",\"value\":%" PRId32 ",\"current_value\":%" PRId32 ",", channel->value_scaled, channel->current_value_scaled);
+        builder_append(builder, ",\"value\":");
+        builder_append_scaled_i32(builder, channel->value_scaled, EW_REPORT_ENGINEERING_VALUE_SCALE);
+        builder_append(builder, ",\"current_value\":");
+        builder_append_scaled_i32(builder, channel->current_value_scaled, EW_REPORT_ENGINEERING_VALUE_SCALE);
+        builder_append(builder, ",");
         builder_append(builder, "\"unit\":");
         builder_append_json_string(builder, meta->unit);
 
         if (frame->mode == REPORT_MODE_FULL) {
             builder_append(builder, ",\"waveform\":");
-            builder_append_i16_array(builder,
-                                     channel->waveform_scaled,
-                                     channel->waveform_scaled != NULL ? channel->waveform_count : 0U);
+            builder_append_i16_scaled_array(builder,
+                                            channel->waveform_scaled,
+                                            channel->waveform_scaled != NULL ? channel->waveform_count : 0U,
+                                            EW_REPORT_WAVEFORM_SCALE);
             builder_append(builder, ",\"fft_spectrum\":");
-            builder_append_i16_tenths_array(builder,
+            builder_append_i16_scaled_array(builder,
                                             channel->fft_tenths,
-                                            channel->fft_tenths != NULL ? channel->fft_count : 0U);
+                                            channel->fft_tenths != NULL ? channel->fft_count : 0U,
+                                            EW_REPORT_FFT_SCALE);
         }
 
         builder_append(builder, "}");

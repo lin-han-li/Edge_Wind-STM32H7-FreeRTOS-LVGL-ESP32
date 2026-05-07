@@ -12,6 +12,7 @@ extern "C" {
 #define AD_ACQ_POINTS 4096
 #endif
 
+/* ADSA_B/ADSA_B2 store AD7606 analog input voltage in V. Convert at consumers. */
 extern float ADSA_B[4][AD_ACQ_POINTS];
 extern float ADSA_B2[4][AD_ACQ_POINTS];
 extern float ADS131A04_Buf[4];
@@ -26,4 +27,3 @@ extern int number2;
 #endif
 
 #endif /* AD_ACQ_BUFFERS_H */
-

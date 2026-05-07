@@ -14,6 +14,7 @@
 #include "edge_comm.h"
 #include "SPI_AD7606.h"
 #include "ad_acq_buffers.h"
+#include "edgewind_units.h"
 #include "ESP32SPI/esp32_spi_debug.h"
 #include "usart.h"
 #include "arm_math.h"
@@ -154,8 +155,9 @@ static inline float ESP_SafeFloat(float v)
 /* ========= 上报数值格式（无浮点） =========
  * 用户要求：采集数据 *200 后按整数上传，JSON 里不再出现浮点数。
  * 说明：内部仍用 float 参与 FFT/计算，仅在“序列化到 JSON”阶段做定点缩放。 */
+/* Current scale is 10x engineering units; see edgewind_units.h. */
 #ifndef ESP_UPLOAD_SCALE
-#define ESP_UPLOAD_SCALE 200
+#define ESP_UPLOAD_SCALE EW_UPLOAD_ENGINEERING_VALUE_SCALE
 #endif
 
 /* 串口打印开关（默认关闭，避免影响 UI/上报性能）
@@ -1500,10 +1502,10 @@ void ESP_Update_Data_And_FFT(void)
     double sum0 = 0.0, sum1 = 0.0, sum2 = 0.0, sum3 = 0.0;
     for (int i = 0; i < WAVEFORM_POINTS; i++)
     {
-        float v0 = src[0][i];
-        float v1 = src[1][i];
-        float v2 = src[2][i];
-        float v3 = src[3][i];
+        float v0 = EW_AnalogVToPhysicalEngineering(0U, src[0][i]);
+        float v1 = EW_AnalogVToPhysicalEngineering(1U, src[1][i]);
+        float v2 = EW_AnalogVToPhysicalEngineering(2U, src[2][i]);
+        float v3 = EW_AnalogVToPhysicalEngineering(3U, src[3][i]);
 #if (ESP_PRINT_WAVEFORM_POINTS)
         /* 瞬时值(每点)：默认每点都打；可通过 ESP_PRINT_POINT_STEP 降频 */
         if ((ESP_PRINT_POINT_STEP <= 1) || ((i % ESP_PRINT_POINT_STEP) == 0))
