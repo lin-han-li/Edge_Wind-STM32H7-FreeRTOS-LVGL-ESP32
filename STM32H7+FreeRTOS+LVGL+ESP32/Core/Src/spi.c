@@ -23,7 +23,7 @@
 /* USER CODE BEGIN 0 */
 
 #ifndef ESP32_SPI_STRESS_BAUD_PRESCALER
-#define ESP32_SPI_STRESS_BAUD_PRESCALER SPI_BAUDRATEPRESCALER_32
+#define ESP32_SPI_STRESS_BAUD_PRESCALER SPI_BAUDRATEPRESCALER_16
 #endif
 
 /* USER CODE END 0 */
@@ -50,7 +50,7 @@ void MX_SPI2_Init(void)
   hspi2.Init.CLKPolarity = SPI_POLARITY_LOW;
   hspi2.Init.CLKPhase = SPI_PHASE_1EDGE;
   hspi2.Init.NSS = SPI_NSS_SOFT;
-  hspi2.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_32;
+  hspi2.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_16;
   hspi2.Init.FirstBit = SPI_FIRSTBIT_MSB;
   hspi2.Init.TIMode = SPI_TIMODE_DISABLE;
   hspi2.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
@@ -98,7 +98,7 @@ void HAL_SPI_MspInit(SPI_HandleTypeDef* spiHandle)
   */
     PeriphClkInitStruct.PeriphClockSelection = RCC_PERIPHCLK_SPI2;
     PeriphClkInitStruct.PLL2.PLL2M = 5;
-    PeriphClkInitStruct.PLL2.PLL2N = 160;
+    PeriphClkInitStruct.PLL2.PLL2N = 128;
     PeriphClkInitStruct.PLL2.PLL2P = 5;
     PeriphClkInitStruct.PLL2.PLL2Q = 2;
     PeriphClkInitStruct.PLL2.PLL2R = 2;

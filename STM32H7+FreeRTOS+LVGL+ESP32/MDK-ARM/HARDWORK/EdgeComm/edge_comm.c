@@ -53,7 +53,7 @@
 #endif
 
 #ifndef ESP32_SPI_STRESS_SPI_LABEL
-#define ESP32_SPI_STRESS_SPI_LABEL "5MHz"
+#define ESP32_SPI_STRESS_SPI_LABEL "8MHz"
 #endif
 
 #ifndef ESP32_SPI_RESULT_OK
@@ -230,6 +230,7 @@ static bool ESP_UI_DoApplyConfig(void);
 static bool ESP_UI_DoWiFi(void);
 static bool ESP_UI_DoTCP(void);
 static bool ESP_UI_DoRegister(void);
+static bool ESP_UI_EnsureReportStartedEx(uint8_t mode, const char *reason_tag, uint8_t force_start);
 static bool ESP_UI_EnsureReportStarted(uint8_t mode, const char *reason_tag);
 static void ESP_UI_ScheduleAutoRecover(const char *reason, uint8_t want_report);
 static void ESP_UI_PollAutoRecover(void);
@@ -3255,7 +3256,7 @@ static void ESP_UI_ScheduleAutoRecover(const char *reason, uint8_t want_report)
     }
 }
 
-static bool ESP_UI_EnsureReportStarted(uint8_t mode, const char *reason_tag)
+static bool ESP_UI_EnsureReportStartedEx(uint8_t mode, const char *reason_tag, uint8_t force_start)
 {
     esp32_spi_status_t st;
     uint8_t target_mode = (mode != 0U) ? 1U : 0U;
@@ -3272,9 +3273,12 @@ static bool ESP_UI_EnsureReportStarted(uint8_t mode, const char *reason_tag)
     if (ESP32_SPI_QueryStatus(&st, 500U)) {
         ESP_UI_SyncLinkFlagsFromStatus(&st);
         if (st.reporting_enabled && st.report_mode == target_mode) {
-            g_report_enabled = 1U;
-            (void)ESP_AutoReconnect_SetLastReporting(true);
-            return true;
+            if (force_start == 0U) {
+                g_report_enabled = 1U;
+                (void)ESP_AutoReconnect_SetLastReporting(true);
+                return true;
+            }
+            ESP_Log("[ESP32SPI] report already active on ESP32; force re-arm after recovery.\r\n");
         }
     }
 
@@ -3296,6 +3300,11 @@ static bool ESP_UI_EnsureReportStarted(uint8_t mode, const char *reason_tag)
     return true;
 }
 
+static bool ESP_UI_EnsureReportStarted(uint8_t mode, const char *reason_tag)
+{
+    return ESP_UI_EnsureReportStartedEx(mode, reason_tag, 0U);
+}
+
 static void ESP_UI_PollAutoRecover(void)
 {
     uint32_t now = HAL_GetTick();
@@ -3305,6 +3314,7 @@ static void ESP_UI_PollAutoRecover(void)
     esp32_spi_status_t st;
     bool st_ok;
     bool need_recover = false;
+    uint8_t report_force_start = 0U;
 
     if ((int32_t)(now - g_ui_auto_recover_next_poll_tick) < 0) {
         return;
@@ -3383,6 +3393,7 @@ static void ESP_UI_PollAutoRecover(void)
         memset(&st, 0, sizeof(st));
     }
     if (!st_ok || !st.wifi_connected) {
+        report_force_start = want_report;
         if (!ESP_UI_DoWiFi()) {
             ESP_Log("[ESP32SPI] auto recovery failed at WIFI step.\r\n");
             g_ui_auto_recover_next_attempt_tick = now + ESP32_SPI_AUTO_RECOVER_FAIL_BACKOFF_MS;
@@ -3416,9 +3427,13 @@ static void ESP_UI_PollAutoRecover(void)
         }
     }
     if (want_report != 0U &&
-        (!st_ok || !st.reporting_enabled || st.report_mode != (ESP_ServerReportFull() ? 1U : 0U))) {
-        if (!ESP_UI_EnsureReportStarted(ESP_ServerReportFull() ? 1U : 0U,
-                                        "auto recovery start report failed")) {
+        (report_force_start != 0U ||
+         !st_ok ||
+         !st.reporting_enabled ||
+         st.report_mode != (ESP_ServerReportFull() ? 1U : 0U))) {
+        if (!ESP_UI_EnsureReportStartedEx(ESP_ServerReportFull() ? 1U : 0U,
+                                          "auto recovery start report failed",
+                                          report_force_start)) {
             ESP_Log("[ESP32SPI] auto recovery failed at report start step.\r\n");
             g_ui_auto_recover_next_attempt_tick = now + ESP32_SPI_AUTO_RECOVER_FAIL_BACKOFF_MS;
             return;

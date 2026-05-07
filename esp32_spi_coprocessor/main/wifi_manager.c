@@ -18,6 +18,9 @@
 #define WIFI_FAILED_BIT BIT1
 #define WIFI_MAX_RETRY_COUNT 10
 #define WIFI_SCAN_LOG_MAX_AP 12
+/* 0.25 dBm units. The target AP is very close in field tests, so cap TX
+ * power to reduce RF current spikes during association. */
+#define WIFI_MAX_TX_POWER_QDBM 40
 
 static const char *TAG = "wifi_mgr";
 
@@ -300,6 +303,12 @@ esp_err_t wifi_manager_init(wifi_manager_event_cb_t callback, void *ctx)
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
     ESP_ERROR_CHECK(esp_wifi_start());
+    err = esp_wifi_set_max_tx_power(WIFI_MAX_TX_POWER_QDBM);
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "max tx power capped at %.2f dBm", (double)WIFI_MAX_TX_POWER_QDBM / 4.0);
+    } else {
+        ESP_LOGW(TAG, "set max tx power failed: %s", esp_err_to_name(err));
+    }
 
     s_initialized = true;
     return ESP_OK;
@@ -320,6 +329,8 @@ esp_err_t wifi_manager_apply_config(const app_device_config_t *device)
 esp_err_t wifi_manager_connect(void)
 {
     wifi_config_t cfg = { 0 };
+    wifi_config_t current_cfg = { 0 };
+    wifi_ap_record_t ap_info = { 0 };
     esp_err_t err = ESP_OK;
 
     if (!s_initialized) {
@@ -340,6 +351,19 @@ esp_err_t wifi_manager_connect(void)
     unlock_state();
     if (s_reconnect_timer != NULL) {
         (void) xTimerStop(s_reconnect_timer, 0);
+    }
+
+    if (s_connected &&
+        esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK &&
+        esp_wifi_get_config(WIFI_IF_STA, &current_cfg) == ESP_OK &&
+        strcmp((const char *)ap_info.ssid, (const char *)cfg.sta.ssid) == 0 &&
+        strcmp((const char *)current_cfg.sta.password, (const char *)cfg.sta.password) == 0) {
+        ESP_LOGI(TAG, "already connected to ssid='%s', skip reconnect", (const char *)cfg.sta.ssid);
+        lock_state();
+        update_rssi_locked();
+        unlock_state();
+        post_event(WIFI_MANAGER_EVENT_CONNECTED, ESP_OK, 0);
+        return ESP_OK;
     }
 
     ESP_LOGI(TAG, "connect request ssid='%s'", (const char *)cfg.sta.ssid);

@@ -115,6 +115,10 @@ void HAL_Delay(uint32_t Delay)
 #define ESP32_SPI_AUTOTEST_ON_BOOT 0
 #endif
 
+#ifndef ESP32_SPI_BOOT_AUTO_FALLBACK_MS
+#define ESP32_SPI_BOOT_AUTO_FALLBACK_MS 5000U
+#endif
+
 #define W25Q256_SELFTEST_ADDR   (0x1FF0000u) /* 32MB Flash 末尾附近，避开常用数据区 */
 #define W25Q256_SELFTEST_LEN    (256u)       /* 单页测试 */
 #define W25Q256_CROSS_LEN       (512u)       /* 跨页/跨扇区测试长度 */
@@ -620,6 +624,12 @@ void EdgeComm_Task(void *argument)
           {
             printf("[ESP_BOOT] autoreconnect skipped: SD runtime config invalid\r\n");
           }
+        }
+        else if (sd_runtime_ok && ((now - boot_autoreconnect_start) > ESP32_SPI_BOOT_AUTO_FALLBACK_MS))
+        {
+          boot_autoreconnect_checked = 1U;
+          printf("[ESP_BOOT] autoreconnect cfg unavailable, fallback AUTO from SD runtime\r\n");
+          (void)ESP_UI_SendCmd(ESP_UI_CMD_AUTO_CONNECT);
         }
         else if ((now - boot_autoreconnect_start) > 30000U)
         {
