@@ -31,6 +31,11 @@
             <button class="btn btn-sm btn-light text-primary" onclick="refreshFaultTable()" title="刷新">
                 <i class="bi bi-arrow-clockwise"></i>
             </button>
+
+            <button class="btn btn-sm btn-outline-danger" id="delete-selected-faults-btn" onclick="deleteSelectedFaultLogs()" title="删除选中的故障日志" disabled>
+                <i class="bi bi-trash"></i> 删除选中
+                <span class="badge bg-danger ms-1" id="selected-fault-count">0</span>
+            </button>
             
             <button class="btn btn-sm btn-outline-primary" onclick="exportData()" title="导出数据">
                 <i class="bi bi-download"></i> 导出
@@ -42,6 +47,9 @@
             <table class="table table-hover mb-0">
                 <thead class="table-light">
                     <tr>
+                        <th style="width: 44px;">
+                            <input class="form-check-input" type="checkbox" id="select-all-faults" onchange="toggleSelectAllFaults(this)" title="全选当前列表" aria-label="全选当前列表">
+                        </th>
                         <th>状态</th>
                         <th>严重程度</th>
                         <th>故障描述</th>
@@ -52,7 +60,7 @@
                 </thead>
                 <tbody id="fault-table-body">
                     <tr>
-                        <td colspan="6" class="text-center text-muted py-4">
+                        <td colspan="7" class="text-center text-muted py-4">
                             <i class="bi bi-hourglass-split"></i> 加载中...
                         </td>
                     </tr>
@@ -400,6 +408,7 @@
     let originalGraphData = null;  // 保存原始图谱数据，用于重置
     let expandedNodes = new Set();  // 记录已展开的节点，避免重复展开
     let previousFaultIds = null;  // 存储上一次的故障ID集合，用于检测新故障
+    let selectedFaultIds = new Set();  // 批量删除选择状态
 
     const DEFAULT_GRAPH_ZOOM = 1.35;
     const DEFAULT_GRAPH_CENTER = ['50%', '55%'];
@@ -484,7 +493,7 @@
                 if (hasLoadingHint) {
                     tbody.innerHTML = `
                         <tr>
-                            <td colspan="6" class="text-center text-muted py-4">
+                            <td colspan="7" class="text-center text-muted py-4">
                                 <i class="bi bi-arrow-repeat"></i> 正在获取故障数据...（8秒超时自动提示）
                             </td>
                         </tr>
@@ -520,7 +529,7 @@
                 if (tbody) {
                     tbody.innerHTML = `
                         <tr>
-                            <td colspan="6" class="text-center text-muted py-4">
+                            <td colspan="7" class="text-center text-muted py-4">
                                 <div class="mb-2">
                                     <i class="bi bi-shield-lock"></i> 登录态已失效，无法获取故障日志
                                 </div>
@@ -548,7 +557,7 @@
                     const safeDetails = escapeHtml(details || '');
                     tbody.innerHTML = `
                         <tr>
-                            <td colspan="6" class="text-center text-muted py-4">
+                            <td colspan="7" class="text-center text-muted py-4">
                                 <div class="mb-2">
                                     <i class="bi bi-exclamation-triangle"></i> 获取故障日志失败（HTTP ${response.status}）
                                 </div>
@@ -569,7 +578,7 @@
                 if (tbody) {
                     tbody.innerHTML = `
                         <tr>
-                            <td colspan="6" class="text-center text-muted py-4">
+                            <td colspan="7" class="text-center text-muted py-4">
                                 <div class="mb-2">
                                     <i class="bi bi-exclamation-triangle"></i> 获取故障日志失败（返回格式异常）
                                 </div>
@@ -686,7 +695,7 @@
                 }
                 tbody.innerHTML = `
                     <tr>
-                        <td colspan="6" class="text-center text-muted py-4">
+                        <td colspan="7" class="text-center text-muted py-4">
                             <div class="mb-2">
                                 <i class="bi bi-wifi-off"></i> ${escapeHtml(msg)}
                             </div>
@@ -799,7 +808,8 @@
         const tbody = document.getElementById('fault-table-body');
         
         if (filtered.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted py-4">暂无故障记录</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted py-4">暂无故障记录</td></tr>';
+            updateFaultSelectionState();
             return;
         }
 
@@ -857,6 +867,9 @@
             
             return `
                 <tr>
+                    <td class="text-center">
+                        <input class="form-check-input fault-select-checkbox" type="checkbox" value="${fault.id}" ${selectedFaultIds.has(String(fault.id)) ? 'checked' : ''} onchange="toggleFaultSelection(${fault.id}, this.checked)" onclick="event.stopPropagation()" aria-label="选择故障日志">
+                    </td>
                     <td>${statusDot} ${statusText}</td>
                     <td><span class="badge badge-${severityClass}">${severityText}</span></td>
                     <td>
@@ -881,6 +894,7 @@
         }).join('');
         
         tbody.innerHTML = html;
+        updateFaultSelectionState();
     }
 
     async function showDiagnosis(faultId) {
@@ -1741,6 +1755,142 @@
         }
     }
 
+    function cleanupSelectedFaultIds() {
+        const existingIds = new Set(globalFaultData.map(fault => String(fault.id)));
+        selectedFaultIds = new Set([...selectedFaultIds].filter(id => existingIds.has(id)));
+    }
+
+    function updateFaultSelectionState() {
+        cleanupSelectedFaultIds();
+
+        const checkboxes = Array.from(document.querySelectorAll('.fault-select-checkbox'));
+        checkboxes.forEach(checkbox => {
+            checkbox.checked = selectedFaultIds.has(String(checkbox.value));
+        });
+
+        const visibleIds = checkboxes.map(checkbox => String(checkbox.value));
+        const selectedVisibleCount = visibleIds.filter(id => selectedFaultIds.has(id)).length;
+        const selectAll = document.getElementById('select-all-faults');
+        if (selectAll) {
+            selectAll.checked = visibleIds.length > 0 && selectedVisibleCount === visibleIds.length;
+            selectAll.indeterminate = selectedVisibleCount > 0 && selectedVisibleCount < visibleIds.length;
+            selectAll.disabled = visibleIds.length === 0;
+        }
+
+        const selectedCount = selectedFaultIds.size;
+        const countBadge = document.getElementById('selected-fault-count');
+        if (countBadge) {
+            countBadge.textContent = String(selectedCount);
+        }
+
+        const batchDeleteBtn = document.getElementById('delete-selected-faults-btn');
+        if (batchDeleteBtn) {
+            batchDeleteBtn.disabled = selectedCount === 0;
+        }
+    }
+
+    function toggleFaultSelection(faultId, checked) {
+        const key = String(faultId);
+        if (checked) {
+            selectedFaultIds.add(key);
+        } else {
+            selectedFaultIds.delete(key);
+        }
+        updateFaultSelectionState();
+    }
+
+    function toggleSelectAllFaults(masterCheckbox) {
+        const checked = Boolean(masterCheckbox && masterCheckbox.checked);
+        document.querySelectorAll('.fault-select-checkbox').forEach(checkbox => {
+            const key = String(checkbox.value);
+            if (checked) {
+                selectedFaultIds.add(key);
+            } else {
+                selectedFaultIds.delete(key);
+            }
+        });
+        updateFaultSelectionState();
+    }
+
+    function removeDeletedFaultsFromState(deletedIds) {
+        const deletedSet = new Set(deletedIds.map(id => String(id)));
+        globalFaultData = globalFaultData.filter(fault => !deletedSet.has(String(fault.id)));
+        allFaults = globalFaultData;
+        deletedSet.forEach(id => selectedFaultIds.delete(id));
+        previousFaultIds = new Set(globalFaultData.map(f => f.id));
+
+        if (currentFaultId && deletedSet.has(String(currentFaultId))) {
+            const modalElement = document.getElementById('diagnosisModal');
+            const modal = bootstrap.Modal.getInstance(modalElement);
+            if (modal) {
+                modal.hide();
+            }
+            currentFaultId = null;
+            currentFault = null;
+        }
+
+        updateDeviceFilter(globalFaultData);
+        renderFaultTable();
+    }
+
+    async function deleteSelectedFaultLogs() {
+        const ids = [...selectedFaultIds];
+        if (ids.length === 0) {
+            return;
+        }
+
+        const previewNames = ids.slice(0, 5).map(id => {
+            const fault = allFaults.find(item => String(item.id) === String(id));
+            return fault ? `${fault.device_id || fault.location || '未知设备'} / ${fault.fault_type || '未知故障'}` : `ID ${id}`;
+        }).join('\n');
+        const suffix = ids.length > 5 ? `\n... 另有 ${ids.length - 5} 条` : '';
+
+        if (!confirm(`确认删除选中的 ${ids.length} 条故障日志？\n\n${previewNames}${suffix}\n\n删除后不会下发复位命令，也不会改变设备当前状态。`)) {
+            return;
+        }
+
+        const batchDeleteBtn = document.getElementById('delete-selected-faults-btn');
+        const checkboxes = Array.from(document.querySelectorAll('.fault-select-checkbox'));
+        if (batchDeleteBtn) batchDeleteBtn.disabled = true;
+        checkboxes.forEach(checkbox => checkbox.disabled = true);
+
+        try {
+            const csrfToken = getCsrfToken();
+            const response = await fetch('/api/faults', {
+                method: 'DELETE',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(csrfToken ? { 'X-CSRFToken': csrfToken } : {})
+                },
+                body: JSON.stringify({ ids })
+            });
+            const data = await response.json().catch(() => ({}));
+
+            if (!response.ok || data.success === false) {
+                throw new Error(data.message || data.error || `HTTP ${response.status}`);
+            }
+
+            const deletedIds = Array.isArray(data.deleted_ids) ? data.deleted_ids : ids;
+            const notFoundIds = Array.isArray(data.not_found_ids) ? data.not_found_ids : [];
+            removeDeletedFaultsFromState([...deletedIds, ...notFoundIds]);
+
+            if (typeof window.showToast === 'function') {
+                window.showToast(data.message || `已删除 ${deletedIds.length} 条故障日志`, 'success');
+            } else {
+                alert(data.message || `已删除 ${deletedIds.length} 条故障日志`);
+            }
+        } catch (error) {
+            console.error('批量删除故障日志失败:', error);
+            if (typeof window.showToast === 'function') {
+                window.showToast(`批量删除失败：${error.message}`, 'error');
+            } else {
+                alert(`批量删除失败：${error.message}`);
+            }
+            checkboxes.forEach(checkbox => checkbox.disabled = false);
+            updateFaultSelectionState();
+        }
+    }
+
     async function deleteFaultLog(faultId, event) {
         if (event) {
             event.preventDefault();
@@ -1777,21 +1927,7 @@
                 throw new Error(data.message || data.error || `HTTP ${response.status}`);
             }
 
-            globalFaultData = globalFaultData.filter(f => String(f.id) !== String(faultId));
-            allFaults = globalFaultData;
-            previousFaultIds = new Set(globalFaultData.map(f => f.id));
-            updateDeviceFilter(globalFaultData);
-            renderFaultTable();
-
-            if (String(currentFaultId) === String(faultId)) {
-                const modalElement = document.getElementById('diagnosisModal');
-                const modal = bootstrap.Modal.getInstance(modalElement);
-                if (modal) {
-                    modal.hide();
-                }
-                currentFaultId = null;
-                currentFault = null;
-            }
+            removeDeletedFaultsFromState([faultId]);
 
             if (typeof window.showToast === 'function') {
                 window.showToast(data.message || '故障日志已删除', 'success');

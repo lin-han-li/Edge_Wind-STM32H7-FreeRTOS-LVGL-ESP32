@@ -2503,6 +2503,46 @@ def _delete_work_order_record(order_id):
     return deleted_info
 
 
+def _delete_work_order_records(order_ids):
+    unique_ids = []
+    seen_ids = set()
+    for raw_id in order_ids:
+        try:
+            order_id = int(raw_id)
+        except (TypeError, ValueError):
+            continue
+        if order_id <= 0 or order_id in seen_ids:
+            continue
+        seen_ids.add(order_id)
+        unique_ids.append(order_id)
+
+    if not unique_ids:
+        return [], []
+
+    orders = WorkOrder.query.filter(WorkOrder.id.in_(unique_ids)).all()
+    found_ids = {order.id for order in orders}
+    deleted_infos = []
+
+    for order in orders:
+        deleted_info = {
+            'id': order.id,
+            'device_id': order.device_id,
+            'fault_type': order.fault_type,
+            'status': order.status,
+        }
+        deleted_infos.append(deleted_info)
+        db.session.delete(order)
+
+    db.session.commit()
+    logger.info(
+        "批量删除故障日志: count=%s ids=%s",
+        len(deleted_infos),
+        [item['id'] for item in deleted_infos],
+    )
+    missing_ids = [order_id for order_id in unique_ids if order_id not in found_ids]
+    return deleted_infos, missing_ids
+
+
 @api_bp.route('/work_orders/<int:order_id>', methods=['DELETE'])
 @login_required
 def delete_work_order(order_id):
@@ -2519,6 +2559,43 @@ def delete_work_order(order_id):
     except Exception as e:
         db.session.rollback()
         logger.exception("删除工单失败: %s", e)
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@api_bp.route('/faults', methods=['DELETE'])
+@login_required
+def delete_faults():
+    try:
+        data = request.get_json(silent=True) or {}
+        raw_ids = data.get('ids') or data.get('fault_ids') or []
+        if not isinstance(raw_ids, list):
+            return jsonify({'success': False, 'message': 'ids 必须是数组'}), 400
+
+        unique_count = len({str(item) for item in raw_ids})
+        if unique_count == 0:
+            return jsonify({'success': False, 'message': '未选择要删除的故障日志'}), 400
+        if unique_count > 500:
+            return jsonify({'success': False, 'message': '单次最多删除 500 条故障日志'}), 400
+
+        deleted_infos, missing_ids = _delete_work_order_records(raw_ids)
+        deleted_ids = [item['id'] for item in deleted_infos]
+        if not deleted_ids:
+            return jsonify({
+                'success': False,
+                'message': '选中的故障日志不存在',
+                'deleted_ids': [],
+                'not_found_ids': missing_ids,
+            }), 404
+
+        return jsonify({
+            'success': True,
+            'message': f'已删除 {len(deleted_ids)} 条故障日志',
+            'deleted_ids': deleted_ids,
+            'not_found_ids': missing_ids,
+        }), 200
+    except Exception as e:
+        db.session.rollback()
+        logger.exception("批量删除故障日志失败: %s", e)
         return jsonify({'success': False, 'message': str(e)}), 500
 
 
