@@ -1,6 +1,6 @@
 # EdgeWind 三项目协作关系说明
 
-更新日期：2026-05-07
+更新日期：2026-05-08
 
 当前项目视角：
 
@@ -110,12 +110,21 @@ C:\Users\pengjianzhong\Desktop\MY_Project\EdgeWind_AI_Training
 - 导出 `model_float32.tflite`。
 - 使用 STM32CubeMX / X-CUBE-AI 生成并验证 H750 板端推理代码。
 
-当前推荐模型：
+历史板端验证基线模型：
 
 ```text
 models/dataset_v5_uniform_512_db3/model_float32.tflite
 models/dataset_v5_uniform_512_db3/preprocess.npz
 ```
+
+当前 PC 端 v6.2 部署候选模型：
+
+```text
+models/dataset_v62_accuracy_multiscale_torch_cuda_20260508_224123_keras_tflite/model_float32.tflite
+models/dataset_v62_accuracy_multiscale_torch_cuda_20260508_224123_keras_tflite/preprocess.npz
+```
+
+说明：v5 是已经完成 X-CUBE-AI Analyze 和 H750 golden selftest 的历史板端基线；v6.2 是加入故障子类型和更大数据集后的新候选，正式替换监测端固件前必须重新完成 X-CUBE-AI Analyze/Generate、golden vector 对齐、实时推理耗时和 HIL 混淆矩阵复验。
 
 模型输入：
 
@@ -137,7 +146,7 @@ E05 bus_ground
 E06 pwm_abnormal
 ```
 
-当前模型指标：
+历史 v5 板端基线指标：
 
 ```text
 test accuracy        约 99.10%
@@ -198,11 +207,11 @@ SD 卡 0:/wave/*.bin
 ```text
 normal.bin
 ac_coupling.bin
-bus_ground.bin
 insulation.bin
 cap_aging.bin
-pwm_abnormal.bin
 igbt_fault.bin
+bus_ground.bin
+pwm_abnormal.bin
 ```
 
 波形参数：
@@ -270,11 +279,11 @@ GND 共地
 ```text
 normal
 ac_coupling
-bus_ground
 insulation
 cap_aging
-pwm_abnormal
 igbt_fault
+bus_ground
+pwm_abnormal
 ```
 
 ### 6.3 监测端到服务器/Web
@@ -298,6 +307,88 @@ confidence
 probabilities[7]
 diagnosis_latency_ms
 ```
+
+### 6.4 v6.2 故障子类型同步说明和三端计划
+
+更新时间：2026-05-08
+
+v6.2 只扩展每个主故障类内部的可解释故障形态，不改变监测端和 Web 端的主分类接口。STM32 端模型仍然输出 7 类：
+
+```text
+E00 normal
+E01 ac_coupling
+E02 insulation
+E03 cap_aging
+E04 igbt_fault
+E05 bus_ground
+E06 pwm_abnormal
+```
+
+新增的 `fault_subtype` 先作为数据集元数据、HIL 回放追溯、样本图说明和三端联调解释字段使用，不要求 STM32 端模型直接输出 30 多个子类型。这样可以保持主分类稳定，同时让播放端注入波形、监测端诊断结果和 Web 展示解释有一致来源。
+
+四通道语义固定如下：
+
+| 通道 | 语义 |
+|---|---|
+| A | 正母线电压 |
+| B | 负母线电压 |
+| C | 负载/变流器等效电流 |
+| D | 泄漏/对地电流 |
+
+v6.2 子类型规划如下：
+
+| 主类 | 子类型 |
+|---|---|
+| E00 normal | `normal_light_load`、`normal_high_load`、`normal_grid_ripple`、`normal_sensor_noise`、`normal_load_step_recovered` |
+| E01 ac_coupling | `ac_50hz_common_mode`、`ac_150hz_harmonic`、`intermittent_ac_intrusion`、`branch_coupled_ac` |
+| E02 insulation | `positive_insulation_drop`、`negative_insulation_drop`、`humidity_leakage`、`partial_discharge_pulse` |
+| E03 cap_aging | `esr_increase`、`capacitance_loss`、`thermal_aging`、`load_ripple_sensitive` |
+| E04 igbt_fault | `igbt_open_equiv`、`drive_loss`、`short_overcurrent_equiv`、`protection_clamp_recovery` |
+| E05 bus_ground | `positive_high_res_ground`、`negative_high_res_ground`、`positive_low_res_ground`、`negative_low_res_ground`、`midpoint_or_multi_ground` |
+| E06 pwm_abnormal | `carrier_offset`、`duty_jitter`、`missing_pulse`、`deadtime_abnormal`、`sideband_enhanced` |
+
+当前 v6.2 AI 部署候选为：
+
+```text
+models/dataset_v62_accuracy_multiscale_torch_cuda_20260508_224123_keras_tflite/model_float32.tflite
+```
+
+关键指标：
+
+| 项目 | 数值 |
+|---|---:|
+| 输入 | `116` 工程特征 + `4x512` FFT + `104` db3 DWT |
+| 参数量 | 约 `5.96 万` |
+| Float32 TFLite | `250,024 bytes` |
+| val accuracy | `99.9702%` |
+| test accuracy | `99.9643%` |
+| hil_holdout accuracy | `99.9690%` |
+
+量程和单位必须保持三端一致：
+
+```text
+analog_V       = DAC/ADC 实际低压模拟量，范围约 -5V ~ +5V
+train_mV       = AI 训练和推理输入量，train_mV = analog_V * 1000
+physical_unit  = 云端/Web/答辩展示工程量，A/B 母线 physical_bus_V = train_mV * 0.1 = analog_V * 100
+```
+
+示例：
+
+```text
+AD7606 采样 +3.0V
+AI 输入 +3000mV
+云端母线显示 +300V
+```
+
+播放端 `.bin` 和 DAC8568 仍按低压等效 `analog_V` 输出，不能把回放数据改成物理 `±500V` 或 `±500000mV`。监测端 AD7606 采样得到 `analog_V` 后，进入 AI 特征提取前必须乘 `1000` 变成 `train_mV`；云端/Web 显示 A/B 母线物理量时才按工程比例换算。
+
+三端同步计划：
+
+1. AI 训练端维护 `dataset_v62`、`data_v62_fusion`、`fault_subtype` 元数据、样本图、HIL `summary.json` 和 TFLite 部署候选。
+2. 播放端从 v6.2 HIL 包选择每个主类 2-3 个代表性子类型，`.bin` 仍输出低压模拟量，并在 `summary.json` 保留 `source_fault_subtypes`、`source_observable_channels` 和 `source_window_metadata`。
+3. 监测端只预测主类 `fault_code`、`confidence`、`probabilities[7]`，暂不预测子类型；HIL 联调时可根据播放端 `summary.json` 对照注入子类型。
+4. Web 端先显示主类、置信度、工程量和规则解释；如果处于 HIL 演示模式，可以显示播放端提供的“注入子类型”，但不能伪装成模型预测子类型。
+5. 替换 v6.2 模型前，监测端必须重新执行 X-CUBE-AI Analyze/Generate、golden vector 对齐、实时窗口推理耗时测试和 HIL 混淆矩阵复验。
 
 ## 7. 不要做的事
 
@@ -333,8 +424,7 @@ diagnosis_latency_ms
 
 EdgeWind_STM32_ESP32 是监测诊断端主项目，负责 STM32H750XBH6 采样、FFT、AI诊断、ESP32上传、服务器和Web展示。
 
-EdgeWind_AI_Training 是 PC 端 AI 训练和 STM32Cube.AI 部署准备工程。最终模型是 dataset_v5_uniform_512_db3，输入为 116维工程特征 + 4x512频谱 + 104维db3小波特征，输出 E00 normal + E01 ac_coupling + E02 insulation + E03 cap_aging + E04 igbt_fault + E05 bus_ground + E06 pwm_abnormal。模型已通过 X-CUBE-AI Analyze 和 H750 板端 golden selftest，21/21 pass，推理约 35.7ms。
+EdgeWind_AI_Training 是 PC 端 AI 训练和 STM32Cube.AI 部署准备工程。当前 v6.2 部署候选是 dataset_v62_accuracy_multiscale_torch_cuda_20260508_224123_keras_tflite，输入为 116维工程特征 + 4x512频谱 + 104维db3小波特征，主输出仍为 E00 normal + E01 ac_coupling + E02 insulation + E03 cap_aging + E04 igbt_fault + E05 bus_ground + E06 pwm_abnormal。v6.2 新增 fault_subtype 元数据用于数据集、HIL 回放追溯和 Web/答辩解释，暂不作为 STM32 模型输出。AI raw 输入单位是 train_mV，A/B 为 ±5000mV 低压模拟等效值，对应云端/Web 母线 ±500V 展示；AD7606 analog_V 进 AI 前乘1000。历史板端验证基线是 dataset_v5_uniform_512_db3，v6.2 正式替换前还要重新跑 X-CUBE-AI Analyze/Generate、golden selftest、实时耗时和 HIL 复验。
 
 STM32H750XBH6_DAC8568_FreeRTOS_LVGL9.4.0 是故障播放端，不是监测端。它从 SD:/wave/*.bin 同步 normal + 6 fault 到 W25Q256 七个 4MB 分区，通过 QSPI memory-mapped + TIM12 + SPI1 DMA 驱动 DAC8568 A/B/C/D 四通道输出，作为监测端 ADC 的 HIL 故障注入源。
 ```
-

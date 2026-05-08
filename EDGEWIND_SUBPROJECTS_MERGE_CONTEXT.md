@@ -1,6 +1,6 @@
 # EdgeWind 子项目合并背景说明
 
-更新日期：2026-05-07
+更新日期：2026-05-08
 
 本文档用于说明准备合并进 `EdgeWind_STM32_ESP32` 总项目的两个外部目录：
 
@@ -10,6 +10,30 @@ C:\Users\pengjianzhong\Desktop\MY_Project\STM32H750XBH6_DAC8568_FreeRTOS_LVGL9.4
 ```
 
 目标是让后续接手的 AI 或工程师快速理解：这两个目录分别是什么、已经做过什么、和 `EdgeWind_STM32_ESP32` 监测端主项目是什么关系，以及合并时需要注意哪些风险。
+
+## 0. 2026-05-08 v6.2 故障子类型同步更新
+
+AI 训练端已经新增 v6.2 故障子类型数据集和新部署候选。子类型只用于数据集解释、HIL 回放追溯、Web/答辩展示和分层评估，监测端模型主输出仍保持 7 类：
+
+```text
+E00 normal
+E01 ac_coupling
+E02 insulation
+E03 cap_aging
+E04 igbt_fault
+E05 bus_ground
+E06 pwm_abnormal
+```
+
+当前 PC 端 v6.2 部署候选：
+
+```text
+models/dataset_v62_accuracy_multiscale_torch_cuda_20260508_224123_keras_tflite/model_float32.tflite
+```
+
+历史板端已验证基线仍是 `dataset_v5_uniform_512_db3`。v6.2 正式替换监测端固件前，必须重新完成 X-CUBE-AI Analyze/Generate、golden vector 对齐、实时推理耗时和 HIL 混淆矩阵复验。
+
+三端单位口径保持不变：播放端输出 `analog_V` 低压模拟量；监测端进 AI 前转换为 `train_mV = analog_V * 1000`；Web/云端显示 A/B 母线时再换算为 `physical_bus_V = train_mV * 0.1 = analog_V * 100`。不得把播放端 `.bin` 或 AI 输入改成物理 `±500V` 数值。
 
 ## 1. 三个项目的总体关系
 
@@ -82,18 +106,24 @@ FFT 分辨率：25600 / 4096 = 6.25 Hz
 
 播放端 HIL 验证仍使用 `102400 Hz` 生成 DAC8568 波形，但监测端 AI 不直接吃播放端文件，而是吃监测端实际采样后的 4 通道窗口和特征。
 
-### 2.2 当前推荐模型
+### 2.2 历史 v5 基线模型与 v6.2 候选
 
-当前推荐模型：
+历史板端验证基线模型：
 
 ```text
 models/dataset_v5_uniform_512_db3/model_float32.tflite
 ```
 
-模型名称：
+历史模型名称：
 
 ```text
 dataset_v5_uniform_512_db3
+```
+
+当前 PC 端 v6.2 部署候选：
+
+```text
+models/dataset_v62_accuracy_multiscale_torch_cuda_20260508_224123_keras_tflite/model_float32.tflite
 ```
 
 模型输入：
@@ -370,11 +400,11 @@ DAC8568 A/B/C/D 四通道模拟输出
 ```text
 normal.bin
 ac_coupling.bin
-bus_ground.bin
 insulation.bin
 cap_aging.bin
-pwm_abnormal.bin
 igbt_fault.bin
+bus_ground.bin
+pwm_abnormal.bin
 ```
 
 波形格式：
@@ -396,11 +426,11 @@ W25Q256 前 4MB 保留，后面 7 个 4MB 分区存放 normal + 6 fault：
 ```text
 0x00400000 - 0x007FFFFF  normal
 0x00800000 - 0x00BFFFFF  ac_coupling
-0x00C00000 - 0x00FFFFFF  bus_ground
-0x01000000 - 0x013FFFFF  insulation
-0x01400000 - 0x017FFFFF  cap_aging
-0x01800000 - 0x01BFFFFF  pwm_abnormal
-0x01C00000 - 0x01FFFFFF  igbt_fault
+0x00C00000 - 0x00FFFFFF  insulation
+0x01000000 - 0x013FFFFF  cap_aging
+0x01400000 - 0x017FFFFF  igbt_fault
+0x01800000 - 0x01BFFFFF  bus_ground
+0x01C00000 - 0x01FFFFFF  pwm_abnormal
 ```
 
 启动时从 SD 同步到 W25Q256。当前同步逻辑已经改成幂等同步：
@@ -689,11 +719,11 @@ C:\Users\pengjianzhong\Desktop\MY_Project\EdgeWind_AI_Training\...
    ```text
    normal
    ac_coupling
-   bus_ground
    insulation
    cap_aging
-   pwm_abnormal
    igbt_fault
+   bus_ground
+   pwm_abnormal
    ```
 
 5. 记录：
@@ -712,7 +742,7 @@ C:\Users\pengjianzhong\Desktop\MY_Project\EdgeWind_AI_Training\...
 ```text
 当前我要把 EdgeWind_AI_Training 和 STM32H750XBH6_DAC8568_FreeRTOS_LVGL9.4.0 合并进 EdgeWind_STM32_ESP32。
 
-EdgeWind_AI_Training 是 PC 端 AI 训练和 STM32Cube.AI 部署准备工程。最终模型是 dataset_v5_uniform_512_db3，输入为 116维工程特征 + 4x512频谱 + 104维db3小波特征，输出 E00 normal + E01 ac_coupling + E02 insulation + E03 cap_aging + E04 igbt_fault + E05 bus_ground + E06 pwm_abnormal。模型已通过 X-CUBE-AI Analyze 和 H750 板端 golden selftest，21/21 pass，推理约 35.7ms。
+EdgeWind_AI_Training 是 PC 端 AI 训练和 STM32Cube.AI 部署准备工程。当前 v6.2 部署候选是 dataset_v62_accuracy_multiscale_torch_cuda_20260508_224123_keras_tflite，输入为 116维工程特征 + 4x512频谱 + 104维db3小波特征，主输出仍为 E00 normal + E01 ac_coupling + E02 insulation + E03 cap_aging + E04 igbt_fault + E05 bus_ground + E06 pwm_abnormal。v6.2 新增 fault_subtype 元数据用于数据集、HIL 回放追溯和 Web/答辩解释，暂不作为 STM32 模型输出。历史板端验证基线是 dataset_v5_uniform_512_db3，v6.2 正式替换前还要重新跑 X-CUBE-AI Analyze/Generate、golden selftest、实时耗时和 HIL 复验。
 
 STM32H750XBH6_DAC8568_FreeRTOS_LVGL9.4.0 是故障播放端，不是监测端。它从 SD:/wave/*.bin 同步 normal + 6 fault 到 W25Q256 七个 4MB 分区，通过 QSPI memory-mapped + TIM12 + SPI1 DMA 驱动 DAC8568 A/B/C/D 四通道输出，作为监测端 ADC 的 HIL 故障注入源。播放端已做幂等同步、checksum、QSPI/DAC guard、UI 故障触发和多项启动风险修复。
 
@@ -734,4 +764,3 @@ playback_dac8568\NEXT_AI_PROJECT_HANDOFF.md
 ```
 
 如果文档之间出现冲突，以最新实测日志、Keil rebuild 结果、串口输出和当前源码为准。
-

@@ -1,6 +1,8 @@
 #ifndef AD_ACQ_BUFFERS_H
 #define AD_ACQ_BUFFERS_H
 
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -16,6 +18,11 @@ extern "C" {
 extern float ADSA_B[4][AD_ACQ_POINTS];
 extern float ADSA_B2[4][AD_ACQ_POINTS];
 extern float ADS131A04_Buf[4];
+
+extern volatile uint16_t AD7606_DebugRaw[8];
+extern volatile float AD7606_DebugVolts[4];
+extern volatile uint8_t AD7606_DebugBusy;
+extern volatile uint8_t AD7606_DebugDb7;
 
 extern int ADS131A04_flag;
 extern int ADS131A04_flag2;

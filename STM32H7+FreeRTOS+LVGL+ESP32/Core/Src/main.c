@@ -354,6 +354,16 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
     ADS131A04_Buf[1] = AD7606_RawToVoltsF(g_ad7606_raw[1]);
     ADS131A04_Buf[2] = AD7606_RawToVoltsF(g_ad7606_raw[2]) * 465.95f / 473.20f;
     ADS131A04_Buf[3] = AD7606_RawToVoltsF(g_ad7606_raw[3]);
+    for (uint8_t ch = 0; ch < 8U; ch++)
+    {
+      AD7606_DebugRaw[ch] = g_ad7606_raw[ch];
+    }
+    for (uint8_t ch = 0; ch < 4U; ch++)
+    {
+      AD7606_DebugVolts[ch] = ADS131A04_Buf[ch];
+    }
+    AD7606_DebugBusy = READ_AD7606_BUSY ? 1U : 0U;
+    AD7606_DebugDb7 = READ_AD7606_DB7 ? 1U : 0U;
 
     if (ADS131A04_flag == 0)
     {

@@ -104,7 +104,7 @@
 #define ESP32_SPI_FULL_MAX_HOLDOFF_MS 5000U
 #endif
 #ifndef ESP_ALGO_MIN_INTERVAL_MS
-#define ESP_ALGO_MIN_INTERVAL_MS 0U
+#define ESP_ALGO_MIN_INTERVAL_MS 250U
 #endif
 #ifndef EDGEWIND_AI_RUN_INTERVAL_MS
 #define EDGEWIND_AI_RUN_INTERVAL_MS 1000U
@@ -327,6 +327,26 @@ static void ESP_AI_UpdateFaultCode(const float analog_v[4][AD_ACQ_POINTS])
                 (unsigned long)result.inference_ms,
                 (unsigned long)result.total_ms);
     }
+}
+
+static bool ESP_AcquisitionWindowAllZero(float (*src)[WAVEFORM_POINTS])
+{
+    if (src == NULL)
+    {
+        return false;
+    }
+
+    for (uint8_t ch = 0U; ch < 4U; ch++)
+    {
+        for (int i = 0; i < WAVEFORM_POINTS; i++)
+        {
+            if (src[ch][i] != 0.0f)
+            {
+                return false;
+            }
+        }
+    }
+    return true;
 }
 
 #ifndef AXI_SRAM_SECTION
@@ -1549,6 +1569,7 @@ void ESP_Update_Data_And_FFT(void)
 {
     static uint32_t last_calc_tick = 0;
     static uint32_t last_dsp_log_tick = 0;
+    static uint32_t last_zero_window_log_tick = 0;
     static uint8_t last_ready = 0;
     uint32_t min_itv = ESP_ALGO_MIN_INTERVAL_MS;
     uint32_t now = HAL_GetTick();
@@ -1581,16 +1602,57 @@ void ESP_Update_Data_And_FFT(void)
     }
     last_calc_tick = now;
 
+    if (ESP_AcquisitionWindowAllZero(src))
+    {
+        last_ready = ready;
+        if ((now - last_zero_window_log_tick) >= 1000U)
+        {
+            last_zero_window_log_tick = now;
+            ESP_Log("[AD7606] all-zero acquisition window suppressed ready=%u raw=[%04X,%04X,%04X,%04X] flags=%d/%d idx=%d/%d\r\n",
+                    (unsigned int)ready,
+                    (unsigned int)AD7606_DebugRaw[0],
+                    (unsigned int)AD7606_DebugRaw[1],
+                    (unsigned int)AD7606_DebugRaw[2],
+                    (unsigned int)AD7606_DebugRaw[3],
+                    ADS131A04_flag,
+                    ADS131A04_flag2,
+                    number,
+                    number2);
+        }
+        return;
+    }
+
     ESP_AI_UpdateFaultCode((const float (*)[AD_ACQ_POINTS])src);
     ESP_RtosYield();
 
     double sum0 = 0.0, sum1 = 0.0, sum2 = 0.0, sum3 = 0.0;
+    double ssq0 = 0.0, ssq1 = 0.0, ssq2 = 0.0, ssq3 = 0.0;
+    float min0 = 0.0f, min1 = 0.0f, min2 = 0.0f, min3 = 0.0f;
+    float max0 = 0.0f, max1 = 0.0f, max2 = 0.0f, max3 = 0.0f;
     for (int i = 0; i < WAVEFORM_POINTS; i++)
     {
         float v0 = EW_AnalogVToPhysicalEngineering(0U, src[0][i]);
         float v1 = EW_AnalogVToPhysicalEngineering(1U, src[1][i]);
         float v2 = EW_AnalogVToPhysicalEngineering(2U, src[2][i]);
         float v3 = EW_AnalogVToPhysicalEngineering(3U, src[3][i]);
+        if (i == 0)
+        {
+            min0 = max0 = v0;
+            min1 = max1 = v1;
+            min2 = max2 = v2;
+            min3 = max3 = v3;
+        }
+        else
+        {
+            if (v0 < min0) min0 = v0;
+            if (v0 > max0) max0 = v0;
+            if (v1 < min1) min1 = v1;
+            if (v1 > max1) max1 = v1;
+            if (v2 < min2) min2 = v2;
+            if (v2 > max2) max2 = v2;
+            if (v3 < min3) min3 = v3;
+            if (v3 > max3) max3 = v3;
+        }
 #if (ESP_PRINT_WAVEFORM_POINTS)
         /* 瞬时值(每点)：默认每点都打；可通过 ESP_PRINT_POINT_STEP 降频 */
         if ((ESP_PRINT_POINT_STEP <= 1) || ((i % ESP_PRINT_POINT_STEP) == 0))
@@ -1606,6 +1668,10 @@ void ESP_Update_Data_And_FFT(void)
         sum1 += (double)v1;
         sum2 += (double)v2;
         sum3 += (double)v3;
+        ssq0 += (double)v0 * (double)v0;
+        ssq1 += (double)v1 * (double)v1;
+        ssq2 += (double)v2 * (double)v2;
+        ssq3 += (double)v3 * (double)v3;
         /* 每 1024 点让出 CPU，避免长时间占用导致 UI 卡死（4096 点波形） */
         if ((i + 1) % 1024 == 0)
             ESP_RtosYield();
@@ -1635,12 +1701,54 @@ void ESP_Update_Data_And_FFT(void)
     if ((HAL_GetTick() - last_dsp_log_tick) >= 2000U)
     {
         last_dsp_log_tick = HAL_GetTick();
-        ESP_Log("[DSP] snapshot seq=%lu pub=%lu drop=%lu ready=%u dt=%lums\r\n",
+        float rms0 = sqrtf((float)(ssq0 / (double)WAVEFORM_POINTS));
+        float rms1 = sqrtf((float)(ssq1 / (double)WAVEFORM_POINTS));
+        float rms2 = sqrtf((float)(ssq2 / (double)WAVEFORM_POINTS));
+        float rms3 = sqrtf((float)(ssq3 / (double)WAVEFORM_POINTS));
+        uint16_t raw0 = AD7606_DebugRaw[0];
+        uint16_t raw1 = AD7606_DebugRaw[1];
+        uint16_t raw2 = AD7606_DebugRaw[2];
+        uint16_t raw3 = AD7606_DebugRaw[3];
+        float av0 = AD7606_DebugVolts[0];
+        float av1 = AD7606_DebugVolts[1];
+        float av2 = AD7606_DebugVolts[2];
+        float av3 = AD7606_DebugVolts[3];
+        ESP_Log("[DSP] snapshot seq=%lu pub=%lu drop=%lu ready=%u dt=%lums cv=[%.1f,%.1f,%.1f,%.1f] rms=[%.1f,%.1f,%.1f,%.1f] range=[%.1f..%.1f,%.1f..%.1f,%.1f..%.1f,%.1f..%.1f] adc_raw=[%04X,%04X,%04X,%04X] adc_v=[%.5f,%.5f,%.5f,%.5f] flags=%d/%d idx=%d/%d busy=%u db7=%u\r\n",
                 (unsigned long)g_upload_snapshot_seq,
                 (unsigned long)g_upload_snapshot_publish_count,
                 (unsigned long)g_upload_snapshot_drop_count,
                 (unsigned int)ready,
-                (unsigned long)(HAL_GetTick() - now));
+                (unsigned long)(HAL_GetTick() - now),
+                (double)node_channels[0].current_value,
+                (double)node_channels[1].current_value,
+                (double)node_channels[2].current_value,
+                (double)node_channels[3].current_value,
+                (double)rms0,
+                (double)rms1,
+                (double)rms2,
+                (double)rms3,
+                (double)min0,
+                (double)max0,
+                (double)min1,
+                (double)max1,
+                (double)min2,
+                (double)max2,
+                (double)min3,
+                (double)max3,
+                (unsigned int)raw0,
+                (unsigned int)raw1,
+                (unsigned int)raw2,
+                (unsigned int)raw3,
+                (double)av0,
+                (double)av1,
+                (double)av2,
+                (double)av3,
+                ADS131A04_flag,
+                ADS131A04_flag2,
+                number,
+                number2,
+                (unsigned int)AD7606_DebugBusy,
+                (unsigned int)AD7606_DebugDb7);
     }
 }
 
@@ -2789,6 +2897,11 @@ void ESP_Post_Summary(void)
     ESP_SPI_ServiceDeferredSync();
     /* Full-upload stress mode must not be mixed with summary packets.
        This keeps the 10-minute test as continuous full frames only. */
+    if (!ESP_ServerReportFull() && g_spi_full_continuous) {
+        g_server_report_full = 1U;
+        ESP_Log("[ESP32SPI] full mode self-heal: continuous=1 requested=1\r\n");
+        return;
+    }
     if (ESP_ServerReportFull() || g_spi_full_continuous) {
         return;
     }

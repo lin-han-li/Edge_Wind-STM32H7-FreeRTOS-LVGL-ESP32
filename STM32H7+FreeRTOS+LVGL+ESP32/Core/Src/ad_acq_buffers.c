@@ -8,8 +8,12 @@ float ADSA_B[4][AD_ACQ_POINTS] AXI_SRAM_SECTION DMA_ALIGN32;
 float ADSA_B2[4][AD_ACQ_POINTS] AXI_SRAM_SECTION DMA_ALIGN32;
 float ADS131A04_Buf[4] = {0};
 
+volatile uint16_t AD7606_DebugRaw[8] = {0};
+volatile float AD7606_DebugVolts[4] = {0};
+volatile uint8_t AD7606_DebugBusy = 0;
+volatile uint8_t AD7606_DebugDb7 = 0;
+
 int ADS131A04_flag = 0;
 int ADS131A04_flag2 = 2;
 int number = 0;
 int number2 = 0;
-

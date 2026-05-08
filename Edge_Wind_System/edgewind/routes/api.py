@@ -87,6 +87,21 @@ def _env_float(key, default):
     except Exception:
         return float(default)
 
+def _numeric_series_all_zero(data: dict, keys: tuple[str, ...]) -> bool:
+    saw_value = False
+    for key in keys:
+        values = data.get(key)
+        if not isinstance(values, list) or not values:
+            continue
+        for value in values:
+            saw_value = True
+            try:
+                if float(value) != 0.0:
+                    return False
+            except Exception:
+                return False
+    return saw_value
+
 # 每个节点的状态推送频率（Hz）：影响 node_status_update（概览/列表/指标）
 STATUS_EMIT_HZ = max(1.0, _env_float("EDGEWIND_STATUS_EMIT_HZ", 5))
 # 每个节点的监控推送频率（Hz）：影响 monitor_update（波形/频谱）
@@ -1478,11 +1493,17 @@ def _process_node_report(data: dict,
         float(processed_data.get('current') or 0) == 0.0 and
         float(processed_data.get('leakage') or 0) == 0.0
     )
+    series_all_zero = (
+        metrics_all_zero and
+        has_any_series and
+        _numeric_series_all_zero(processed_data, series_keys)
+    )
     # ESP32 在 full 上传失败/holdoff 期间会发送 ch=0 的轻量 heartbeat。
     # 这类包是合法保活，不应覆盖 active_nodes 中最后一帧 full 波形，也不应被记为坏帧。
     is_empty_keepalive = (request_tag == '/api/node/heartbeat' and len(raw_channels) == 0)
     is_bad_frame = ((len(raw_channels) == 0 and not is_empty_keepalive) or
                     ((not has_any_series) and metrics_all_zero and not is_empty_keepalive) or
+                    (series_all_zero and not is_empty_keepalive) or
                     (bad_wave_type > 0) or
                     (bad_spec_type > 0) or
                     (bad_id_type > 0))
@@ -1494,11 +1515,12 @@ def _process_node_report(data: dict,
             if current_timestamp - last_bad >= 5:
                 _last_bad_frame_log_ts[f'{request_tag}:{node_id}'] = current_timestamp
                 logger.warning(
-                    '[%s][bad-frame] node_id=%s content_length=%s ch=%d bad_id=%d bad_wave=%d bad_spec=%d bad_val=%d',
+                    '[%s][bad-frame] node_id=%s content_length=%s ch=%d all_zero=%s bad_id=%d bad_wave=%d bad_spec=%d bad_val=%d',
                     request_tag,
                     node_id,
                     content_length,
                     len(raw_channels),
+                    int(series_all_zero),
                     bad_id_type,
                     bad_wave_type,
                     bad_spec_type,
