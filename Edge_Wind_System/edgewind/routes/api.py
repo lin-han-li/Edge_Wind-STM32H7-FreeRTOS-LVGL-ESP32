@@ -2480,6 +2480,48 @@ def update_work_order(order_id):
 
 
 # ==================== 兼容接口：故障日志（templates/faults.html 使用）====================
+def _delete_work_order_record(order_id):
+    order = WorkOrder.query.get(order_id)
+    if not order:
+        return None
+
+    deleted_info = {
+        'id': order.id,
+        'device_id': order.device_id,
+        'fault_type': order.fault_type,
+        'status': order.status,
+    }
+    db.session.delete(order)
+    db.session.commit()
+    logger.info(
+        "删除故障日志: id=%s device_id=%s fault_type=%s status=%s",
+        deleted_info['id'],
+        deleted_info['device_id'],
+        deleted_info['fault_type'],
+        deleted_info['status'],
+    )
+    return deleted_info
+
+
+@api_bp.route('/work_orders/<int:order_id>', methods=['DELETE'])
+@login_required
+def delete_work_order(order_id):
+    try:
+        deleted_info = _delete_work_order_record(order_id)
+        if not deleted_info:
+            return jsonify({'success': False, 'message': '工单不存在'}), 404
+
+        return jsonify({
+            'success': True,
+            'message': '故障日志已删除',
+            'deleted_id': deleted_info['id'],
+        })
+    except Exception as e:
+        db.session.rollback()
+        logger.exception("删除工单失败: %s", e)
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
 @api_bp.route('/faults', methods=['GET'])
 @login_required
 def get_faults():
@@ -2625,6 +2667,25 @@ def resolve_fault(fault_id: int):
 
 
 # ==================== 故障快照API ====================
+
+@api_bp.route('/faults/<int:fault_id>', methods=['DELETE'])
+@login_required
+def delete_fault(fault_id: int):
+    try:
+        deleted_info = _delete_work_order_record(fault_id)
+        if not deleted_info:
+            return jsonify({'success': False, 'message': '故障日志不存在'}), 404
+
+        return jsonify({
+            'success': True,
+            'message': '故障日志已删除',
+            'deleted_id': deleted_info['id'],
+        }), 200
+    except Exception as e:
+        db.session.rollback()
+        logger.exception("删除故障日志失败: %s", e)
+        return jsonify({'success': False, 'message': str(e)}), 500
+
 
 @api_bp.route('/snapshots', methods=['GET'])
 @login_required

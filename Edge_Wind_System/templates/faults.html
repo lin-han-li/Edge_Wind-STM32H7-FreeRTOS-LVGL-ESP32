@@ -101,6 +101,9 @@
                 <button type="button" class="btn btn-secondary" id="archived-btn" style="display: none;" disabled>
                     <i class="bi bi-archive"></i> 已归档
                 </button>
+                <button type="button" class="btn btn-outline-danger" id="delete-fault-btn" style="display: none;">
+                    <i class="bi bi-trash"></i> 删除日志
+                </button>
             </div>
         </div>
     </div>
@@ -869,6 +872,9 @@
                         <button class="btn btn-sm btn-outline-secondary ms-1" onclick="jumpToFaultSnapshot(allFaults.find(f => f.id === ${fault.id}))" title="跳转到故障快照">
                             <i class="bi bi-camera"></i> 快照
                         </button>
+                        <button class="btn btn-sm btn-outline-danger ms-1" data-delete-fault-id="${fault.id}" onclick="deleteFaultLog(${fault.id}, event)" title="删除故障日志">
+                            <i class="bi bi-trash"></i> 删除
+                        </button>
                     </td>
                 </tr>
             `;
@@ -931,11 +937,14 @@
         const dispatchBtn = document.getElementById('dispatch-fault-btn');
         const resolveBtn = document.getElementById('resolve-fault-btn');
         const archivedBtn = document.getElementById('archived-btn');
+        const deleteBtn = document.getElementById('delete-fault-btn');
         
         // 重置所有按钮显示状态
         dispatchBtn.style.display = 'none';
         resolveBtn.style.display = 'none';
         archivedBtn.style.display = 'none';
+        deleteBtn.style.display = 'inline-block';
+        deleteBtn.disabled = false;
         
         if (fault.status === 'pending') {
             // 待处理：显示"确认派单"按钮
@@ -1732,6 +1741,77 @@
         }
     }
 
+    async function deleteFaultLog(faultId, event) {
+        if (event) {
+            event.preventDefault();
+            event.stopPropagation();
+        }
+
+        const fault = allFaults.find(f => String(f.id) === String(faultId));
+        const faultName = fault ? (fault.fault_type || '未知故障') : `ID ${faultId}`;
+        const deviceName = fault ? (fault.device_id || fault.location || '未知设备') : '未知设备';
+
+        if (!confirm(`确认删除这条故障日志？\n\n设备：${deviceName}\n故障：${faultName}\n\n删除后不会下发复位命令，也不会改变设备当前状态。`)) {
+            return;
+        }
+
+        const deleteButtons = document.querySelectorAll(`[data-delete-fault-id="${faultId}"]`);
+        const modalDeleteBtn = document.getElementById('delete-fault-btn');
+        deleteButtons.forEach(btn => btn.disabled = true);
+        if (modalDeleteBtn && String(currentFaultId) === String(faultId)) {
+            modalDeleteBtn.disabled = true;
+        }
+
+        try {
+            const csrfToken = getCsrfToken();
+            const response = await fetch(`/api/faults/${faultId}`, {
+                method: 'DELETE',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(csrfToken ? { 'X-CSRFToken': csrfToken } : {})
+                }
+            });
+            const data = await response.json().catch(() => ({}));
+
+            if (!response.ok || data.success === false) {
+                throw new Error(data.message || data.error || `HTTP ${response.status}`);
+            }
+
+            globalFaultData = globalFaultData.filter(f => String(f.id) !== String(faultId));
+            allFaults = globalFaultData;
+            previousFaultIds = new Set(globalFaultData.map(f => f.id));
+            updateDeviceFilter(globalFaultData);
+            renderFaultTable();
+
+            if (String(currentFaultId) === String(faultId)) {
+                const modalElement = document.getElementById('diagnosisModal');
+                const modal = bootstrap.Modal.getInstance(modalElement);
+                if (modal) {
+                    modal.hide();
+                }
+                currentFaultId = null;
+                currentFault = null;
+            }
+
+            if (typeof window.showToast === 'function') {
+                window.showToast(data.message || '故障日志已删除', 'success');
+            } else {
+                alert(data.message || '故障日志已删除');
+            }
+        } catch (error) {
+            console.error('删除故障日志失败:', error);
+            if (typeof window.showToast === 'function') {
+                window.showToast(`删除失败：${error.message}`, 'error');
+            } else {
+                alert(`删除失败：${error.message}`);
+            }
+            deleteButtons.forEach(btn => btn.disabled = false);
+            if (modalDeleteBtn) {
+                modalDeleteBtn.disabled = false;
+            }
+        }
+    }
+
     // ========== 刷新表格函数 ==========
     function refreshFaultTable() {
         loadFaults();
@@ -1834,6 +1914,11 @@
     document.getElementById('resolve-fault-btn').addEventListener('click', function() {
         if (currentFaultId) {
             resolveFault(currentFaultId);
+        }
+    });
+    document.getElementById('delete-fault-btn').addEventListener('click', function(event) {
+        if (currentFaultId) {
+            deleteFaultLog(currentFaultId, event);
         }
     });
 
