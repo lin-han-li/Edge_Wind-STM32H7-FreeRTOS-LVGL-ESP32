@@ -823,7 +823,7 @@
                 const code = String(fault.fault_code || '').trim();
                 const type = String(fault.fault_type || '');
                 if (code === 'E04' || code === 'E05' || type.includes('IGBT') || type.includes('开路') || type.includes('接地')) return 'severe';
-                if (code === 'E01' || code === 'E02' || type.includes('交流窜入') || type.includes('绝缘故障')) return 'major';
+        if (code === 'E01' || code === 'E02' || code === 'E06' || type.includes('交流窜入') || type.includes('绝缘故障') || type.includes('PWM')) return 'major';
                 if (code === 'E03' || type.includes('电容')) return 'general';
                 return 'general';
             })();

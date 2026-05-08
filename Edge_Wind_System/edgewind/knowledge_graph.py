@@ -5,8 +5,8 @@
 from datetime import datetime
 
 # ==================== 故障代码映射 ====================
-# E00=Normal, E01=AC Intrusion, E02=Insulation Fault, E03=DC Capacitor Aging, 
-# E04=IGBT Open Circuit, E05=DC Bus Grounding
+# E00=Normal, E01=AC Intrusion, E02=Insulation Fault, E03=DC Capacitor Aging,
+# E04=IGBT Open Circuit, E05=DC Bus Grounding, E06=PWM Abnormality
 
 FAULT_CODE_MAP = {
     "E00": None,  # Normal - 无故障
@@ -14,7 +14,8 @@ FAULT_CODE_MAP = {
     "E02": "INSULATION_FAULT",
     "E03": "DC_CAPACITOR_AGING",
     "E04": "IGBT_OPEN_CIRCUIT",
-    "E05": "DC_BUS_GROUNDING"
+    "E05": "DC_BUS_GROUNDING",
+    "E06": "PWM_ABNORMAL"
 }
 
 # ==================== 故障诊断知识图谱 ====================
@@ -304,6 +305,64 @@ IMD（绝缘监测设备）检测到正极或负极对地绝缘电阻显著低�
 - [排查] 使用兆欧表（摇表）分段测量母线及支路对地电阻，寻找电阻为零的接地点。
 - [警示] 在故障彻底排除前，严禁再次合闸试送电，防止发生二次爆炸事故。"""
     },
+    "E06": {
+        "name": "PWM异常 (PWM Abnormality)",
+        "root_cause": "PWM调制或驱动链路异常",
+        "solution": "检查PWM控制、驱动板和采样反馈链路",
+        "root_causes": [
+            {"name": "PWM占空比抖动", "description": "控制器调制输出存在异常抖动或周期性扰动"},
+            {"name": "驱动脉冲丢失", "description": "门极驱动链路存在缺脉冲、延迟或干扰"},
+            {"name": "采样反馈异常", "description": "电流/电压反馈噪声导致控制环路输出异常"}
+        ],
+        "solutions": [
+            {"name": "检查PWM波形", "description": "使用示波器确认PWM频率、占空比和互补死区是否稳定"},
+            {"name": "检查驱动板", "description": "检查门极驱动供电、光耦/隔离器和驱动电阻"},
+            {"name": "检查采样反馈", "description": "排查ADC采样、滤波和电流反馈线路的噪声或接触问题"}
+        ],
+        "detailed_report": """【AI 深度诊断报告】
+故障定性：PWM控制异常。
+--------------------------------------------------
+1. 机理分析 (Failure Mechanism):
+监测到直流母线或负载电流中存在与开关控制相关的异常高频分量、占空比抖动、缺脉冲或边带能量升高。这通常指向PWM调制链路、门极驱动链路或采样反馈链路的异常。
+
+2. 风险评估 (Risk Assessment):
+- 输出质量下降：PWM异常会引入额外纹波、谐波和电流调制。
+- 器件应力升高：持续缺脉冲或抖动可能导致桥臂电流不均衡，增加功率器件热应力。
+
+3. 智能运维建议 (Actionable Advice):
+- [诊断] 使用示波器同时观察PWM控制信号、门极驱动信号和负载电流波形。
+- [排查] 检查驱动板供电、隔离器件、采样反馈线路和控制参数。
+- [处置] 若确认存在缺脉冲或异常抖动，应先停机排查驱动链路，避免进一步损伤功率器件。"""
+    },
+    "PWM_ABNORMAL": {
+        "name": "PWM异常",
+        "root_cause": "PWM调制或驱动链路异常",
+        "solution": "检查PWM控制、驱动板和采样反馈链路",
+        "root_causes": [
+            {"name": "PWM占空比抖动", "description": "控制器调制输出存在异常抖动或周期性扰动"},
+            {"name": "驱动脉冲丢失", "description": "门极驱动链路存在缺脉冲、延迟或干扰"},
+            {"name": "采样反馈异常", "description": "电流/电压反馈噪声导致控制环路输出异常"}
+        ],
+        "solutions": [
+            {"name": "检查PWM波形", "description": "使用示波器确认PWM频率、占空比和互补死区是否稳定"},
+            {"name": "检查驱动板", "description": "检查门极驱动供电、光耦/隔离器和驱动电阻"},
+            {"name": "检查采样反馈", "description": "排查ADC采样、滤波和电流反馈线路的噪声或接触问题"}
+        ],
+        "detailed_report": """【AI 深度诊断报告】
+故障定性：PWM控制异常。
+--------------------------------------------------
+1. 机理分析 (Failure Mechanism):
+监测到直流母线或负载电流中存在与开关控制相关的异常高频分量、占空比抖动、缺脉冲或边带能量升高。这通常指向PWM调制链路、门极驱动链路或采样反馈链路的异常。
+
+2. 风险评估 (Risk Assessment):
+- 输出质量下降：PWM异常会引入额外纹波、谐波和电流调制。
+- 器件应力升高：持续缺脉冲或抖动可能导致桥臂电流不均衡，增加功率器件热应力。
+
+3. 智能运维建议 (Actionable Advice):
+- [诊断] 使用示波器同时观察PWM控制信号、门极驱动信号和负载电流波形。
+- [排查] 检查驱动板供电、隔离器件、采样反馈线路和控制参数。
+- [处置] 若确认存在缺脉冲或异常抖动，应先停机排查驱动链路，避免进一步损伤功率器件。"""
+    },
     "OVERVOLTAGE": {
         "name": "过电压",
         "root_causes": [
@@ -486,4 +545,3 @@ def get_fault_knowledge_graph(fault_code):
             {"name": "解决方案"}
         ]
     }
-

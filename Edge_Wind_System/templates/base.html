@@ -868,7 +868,8 @@
             { name: 'E02 绝缘故障', url: '/faults?search=E02', category: '故障查询', icon: 'bi-bug', keywords: ['绝缘', 'insulation'] },
             { name: 'E03 电容老化', url: '/faults?search=E03', category: '故障查询', icon: 'bi-bug', keywords: ['电容', 'capacitor'] },
             { name: 'E04 IGBT开路', url: '/faults?search=E04', category: '故障查询', icon: 'bi-bug', keywords: ['IGBT', '开路', 'open circuit'] },
-            { name: 'E05 接地故障', url: '/faults?search=E05', category: '故障查询', icon: 'bi-bug', keywords: ['接地', 'ground fault'] }
+            { name: 'E05 接地故障', url: '/faults?search=E05', category: '故障查询', icon: 'bi-bug', keywords: ['接地', 'ground fault'] },
+            { name: 'E06 PWM异常', url: '/faults?search=E06', category: '故障查询', icon: 'bi-bug', keywords: ['PWM', 'pwm abnormal'] }
         ];
 
         // 从API获取活动节点并更新建议
@@ -1677,7 +1678,8 @@
                 'E02': '绝缘故障',
                 'E03': '直流母线电容老化',
                 'E04': '变流器IGBT开路',
-                'E05': '直流母线接地故障'
+        'E05': '直流母线接地故障',
+        'E06': 'PWM异常'
             };
             return faultNames[faultCode] || `故障 ${faultCode}`;
         }

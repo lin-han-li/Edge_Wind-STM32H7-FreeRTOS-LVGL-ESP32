@@ -2178,6 +2178,8 @@ def _infer_fault_code_from_fault_type(fault_type: str | None) -> str:
         return 'E04'
     if '接地故障' in fault_type or '接地' in fault_type:
         return 'E05'
+    if 'PWM' in fault_type or 'pwm' in fault_type or '调制' in fault_type:
+        return 'E06'
     return 'E00'
 
 
@@ -2484,6 +2486,8 @@ def get_faults():
                 return 'E04'
             if '接地故障' in fault_type or '接地' in fault_type:
                 return 'E05'
+            if 'PWM' in fault_type or 'pwm' in fault_type or '调制' in fault_type:
+                return 'E06'
             return 'E00'
 
         def _infer_severity(fault_code: str | None, fault_type: str | None = None) -> str:
@@ -2502,8 +2506,8 @@ def get_faults():
             if fc in ('E04', 'E05'):
                 return 'severe'
 
-            # 主要：交流窜入 / 绝缘故障
-            if fc in ('E01', 'E02'):
+            # 主要：交流窜入 / 绝缘故障 / PWM 异常
+            if fc in ('E01', 'E02', 'E06'):
                 return 'major'
 
             # 一般：电容老化
@@ -2513,7 +2517,7 @@ def get_faults():
             # 兜底：根据中文名称再判断一次（兼容历史/异常数据）
             if 'IGBT' in ft or '开路' in ft or '接地' in ft:
                 return 'severe'
-            if '交流窜入' in ft or '绝缘故障' in ft:
+            if '交流窜入' in ft or '绝缘故障' in ft or 'PWM' in ft or 'pwm' in ft:
                 return 'major'
             if '电容' in ft:
                 return 'general'
@@ -2529,9 +2533,11 @@ def get_faults():
             if status == 'fixed':
                 status = 'resolved'
 
-            # 优先使用设备当前故障码；若设备已恢复为E00，则根据工单故障类型推断
+            # 历史工单必须优先使用自身故障类型推断故障码，不能被设备当前故障码覆盖。
             device_fault_code = getattr(device, 'fault_code', None) if device else None
-            fault_code = device_fault_code if (device_fault_code and device_fault_code != 'E00') else _infer_fault_code(order.fault_type)
+            fault_code = _infer_fault_code(order.fault_type)
+            if fault_code == 'E00' and device_fault_code and device_fault_code != 'E00':
+                fault_code = device_fault_code
             severity = _infer_severity(fault_code, order.fault_type)
 
             # 时间统一口径：返回“北京时间”

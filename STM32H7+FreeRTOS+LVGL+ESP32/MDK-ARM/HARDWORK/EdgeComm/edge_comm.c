@@ -14,6 +14,7 @@
 #include "edge_comm.h"
 #include "SPI_AD7606.h"
 #include "ad_acq_buffers.h"
+#include "edgewind_ai.h"
 #include "edgewind_units.h"
 #include "ESP32SPI/esp32_spi_debug.h"
 #include "usart.h"
@@ -105,6 +106,9 @@
 #ifndef ESP_ALGO_MIN_INTERVAL_MS
 #define ESP_ALGO_MIN_INTERVAL_MS 0U
 #endif
+#ifndef EDGEWIND_AI_RUN_INTERVAL_MS
+#define EDGEWIND_AI_RUN_INTERVAL_MS 1000U
+#endif
 #ifndef ESP32_SPI_FULL_PACKETS_PER_POLL
 #define ESP32_SPI_FULL_PACKETS_PER_POLL 8U
 #endif
@@ -112,7 +116,10 @@
 #define ESP32_SPI_FULL_YIELD_EVERY 2U
 #endif
 #ifndef ESP32_SPI_FULL_PACKET_ACCEPT_TIMEOUT_MS
-#define ESP32_SPI_FULL_PACKET_ACCEPT_TIMEOUT_MS 500U
+#define ESP32_SPI_FULL_PACKET_ACCEPT_TIMEOUT_MS 200U
+#endif
+#ifndef ESP32_SPI_FULL_END_ACCEPT_TIMEOUT_MS
+#define ESP32_SPI_FULL_END_ACCEPT_TIMEOUT_MS 500U
 #endif
 #ifndef ESP_SERVER_CMD_DEDUPE_WINDOW_MS
 #define ESP_SERVER_CMD_DEDUPE_WINDOW_MS 120000U
@@ -246,6 +253,81 @@ static void ESP_SPI_ServiceDeferredSync(void);
 
 // 当前上报的故障码（默认正常 E00），可通过串口控制台动态修改
 static char g_fault_code[4] = "E00";
+
+static uint8_t g_ai_reported_class = 0U;
+static uint8_t g_ai_fault_code_initialized = 0U;
+
+static uint8_t ESP_AI_SelectReportedClass(const EdgeWind_AI_Result_t *result)
+{
+    if (result == NULL)
+    {
+        return g_ai_reported_class;
+    }
+
+    if ((result->class_id >= EDGEWIND_AI_CLASS_COUNT) ||
+        (result->confidence < EDGEWIND_AI_CONFIDENCE_MIN))
+    {
+        g_ai_reported_class = 0U;
+        return g_ai_reported_class;
+    }
+
+    g_ai_reported_class = result->class_id;
+    return g_ai_reported_class;
+}
+
+static void ESP_AI_UpdateFaultCode(const float analog_v[4][AD_ACQ_POINTS])
+{
+    static uint32_t last_ai_log_tick = 0U;
+    static uint32_t last_ai_run_tick = 0U;
+    EdgeWind_AI_Result_t result;
+    int ret;
+    uint8_t reported_class;
+    const char *reported_code;
+    uint32_t now_tick = HAL_GetTick();
+
+    if (g_ai_fault_code_initialized != 0U &&
+        EDGEWIND_AI_RUN_INTERVAL_MS > 0U &&
+        (uint32_t)(now_tick - last_ai_run_tick) < EDGEWIND_AI_RUN_INTERVAL_MS)
+    {
+        return;
+    }
+    last_ai_run_tick = now_tick;
+
+    ret = EdgeWind_AI_RunOnAnalogWindow(analog_v, &result);
+    if (ret != 0)
+    {
+        if ((uint32_t)(now_tick - last_ai_log_tick) >= 2000U)
+        {
+            last_ai_log_tick = now_tick;
+            ESP_Log("[AI] runtime error ret=%d; keep fault=%s\r\n", ret, g_fault_code);
+        }
+        return;
+    }
+
+    reported_class = ESP_AI_SelectReportedClass(&result);
+    reported_code = EdgeWind_AI_ClassCode(reported_class);
+    if ((g_ai_fault_code_initialized == 0U) || (strncmp(g_fault_code, reported_code, 3U) != 0))
+    {
+        strncpy(g_fault_code, reported_code, sizeof(g_fault_code) - 1U);
+        g_fault_code[sizeof(g_fault_code) - 1U] = '\0';
+        ESP_Log("[AI] fault_code updated: %s\r\n", g_fault_code);
+        g_ai_fault_code_initialized = 1U;
+    }
+
+    if ((uint32_t)(now_tick - last_ai_log_tick) >= 2000U)
+    {
+        last_ai_log_tick = now_tick;
+        ESP_Log("[AI] pred=%s/%s conf=%d.%03d report=%s feat=%lums infer=%lums total=%lums\r\n",
+                result.fault_code,
+                EdgeWind_AI_ClassName(result.class_id),
+                (int)result.confidence,
+                (int)((result.confidence - (float)((int)result.confidence)) * 1000.0f),
+                reported_code,
+                (unsigned long)result.feature_ms,
+                (unsigned long)result.inference_ms,
+                (unsigned long)result.total_ms);
+    }
+}
 
 #ifndef AXI_SRAM_SECTION
 #define AXI_SRAM_SECTION __attribute__((section(".axi_sram")))
@@ -1499,6 +1581,9 @@ void ESP_Update_Data_And_FFT(void)
     }
     last_calc_tick = now;
 
+    ESP_AI_UpdateFaultCode((const float (*)[AD_ACQ_POINTS])src);
+    ESP_RtosYield();
+
     double sum0 = 0.0, sum1 = 0.0, sum2 = 0.0, sum3 = 0.0;
     for (int i = 0; i < WAVEFORM_POINTS; i++)
     {
@@ -2675,7 +2760,8 @@ static bool ESP_FullTx_StepPacket(uint32_t timeout_ms)
         return true;
 
     case ESP_FULL_TX_END:
-        ok = ESP32_SPI_ReportFullEnd(g_full_tx_sm.frame_id, timeout_ms);
+        ok = ESP32_SPI_ReportFullEnd(g_full_tx_sm.frame_id,
+                                      ESP32_SPI_FULL_END_ACCEPT_TIMEOUT_MS);
         if (!ok)
         {
             return false;

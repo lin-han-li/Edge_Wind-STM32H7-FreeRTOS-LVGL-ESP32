@@ -408,9 +408,14 @@
               <FilePath>../Core/Src/ad_acq_buffers.c</FilePath>
             </File>
             <File>
-              <FileName>edgewind_ai_selftest.c</FileName>
+              <FileName>edgewind_ai.c</FileName>
               <FileType>1</FileType>
-              <FilePath>../Core/Src/edgewind_ai_selftest.c</FilePath>
+              <FilePath>../Core/Src/edgewind_ai.c</FilePath>
+            </File>
+            <File>
+              <FileName>edgewind_ai_preprocess_params.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../Core/Src/edgewind_ai_preprocess_params.c</FilePath>
             </File>
             <File>
               <FileName>main.c</FileName>

@@ -55,7 +55,6 @@
 #include "edge_comm.h"
 #include "SPI_AD7606.h"
 #include "ad_acq_buffers.h"
-#include "edgewind_ai_selftest.h"
 
 /* USER CODE END Includes */
 
@@ -167,9 +166,6 @@ int main(void)
 
   LED_Init();                              //
   SDRAM_Initialization_Sequence(&hsdram1); //
-  printf("[AI] golden selftest begin\r\n");
-  int ai_selftest_result = EdgeWind_AI_RunGoldenSelfTest();
-  printf("[AI] golden selftest result=%d\r\n", ai_selftest_result);
   LCD_RGB_Init();                          //
   Touch_Init();                            //
 

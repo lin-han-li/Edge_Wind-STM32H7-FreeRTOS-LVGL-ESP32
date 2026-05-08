@@ -2002,6 +2002,15 @@ static bool send_report_packet_wait(uint8_t msg_type,
                 spi_op_unlock();
                 return true;
             }
+            if (msg_type == ESP32_MSG_REPORT_FULL_END &&
+                s_last_nack_ref_seq != ref_seq) {
+                s_last_report_full_end_ref_seq = ref_seq;
+                printf("[ESP32SPI] full end accept missing; wait result frame=%lu ref=%lu\r\n",
+                       (unsigned long)frame_id,
+                       (unsigned long)ref_seq);
+                spi_op_unlock();
+                return true;
+            }
             if (!report_nack_is_retryable(ref_seq)) {
                 spi_op_unlock();
                 return false;
