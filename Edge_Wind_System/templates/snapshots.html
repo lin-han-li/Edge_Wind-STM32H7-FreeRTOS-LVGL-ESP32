@@ -288,7 +288,7 @@
 
 {% block extra_js %}
 <!-- 加版本号避免浏览器缓存导致“改了没效果” -->
-<script src="{{ url_for('static', filename='js/chart-zoom-utils.js') }}?v=20260107_5"></script>
+<script src="{{ url_for('static', filename='js/chart-zoom-utils.js') }}?v=20260107_6"></script>
 <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
 <script>
     let currentEvents = [];
@@ -892,11 +892,29 @@
         const pad = Math.max(span * 0.1, 0.1);
         fullMin -= pad;
         fullMax += pad;
+        let autoMin = fullMin;
+        let autoMax = fullMax;
+        const engineeringY = (typeof window.getEdgeWindChartYBounds === 'function')
+            ? window.getEdgeWindChartYBounds(snapshot.channel_type, unit, snapshot.channel_label)
+            : null;
+        if (engineeringY && typeof window.edgeWindClampChartWindowToBounds === 'function') {
+            const clampedAuto = window.edgeWindClampChartWindowToBounds(autoMin, autoMax, engineeringY, {
+                mode: 'clip',
+                minSpan: Math.max((engineeringY.max - engineeringY.min) * 0.02, 1)
+            });
+            if (clampedAuto) {
+                autoMin = clampedAuto.min;
+                autoMax = clampedAuto.max;
+            }
+            fullMin = engineeringY.min;
+            fullMax = engineeringY.max;
+        }
 
         // 显式提供全量范围，保证缩放能回到完整窗口
         try {
             chart.__edgewindFullExtentX = { min: 0, max: (len > 0 ? seriesData[len - 1][0] : EDGEWIND_WAVEFORM_LAST_MS) };
             chart.__edgewindFullExtentY = { min: fullMin, max: fullMax };
+            chart.__edgewindAutoWindowY = { min: autoMin, max: autoMax };
         } catch (e) {}
 
         const option = {
@@ -932,7 +950,9 @@
                     filterMode: 'none',
                     zoomOnMouseWheel: false,
                     moveOnMouseMove: false,
-                    moveOnMouseWheel: false
+                    moveOnMouseWheel: false,
+                    startValue: autoMin,
+                    endValue: autoMax
                 }
             ],
             xAxis: {

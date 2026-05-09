@@ -308,7 +308,7 @@
 
 {% block extra_js %}
 <!-- 加版本号避免浏览器缓存导致“改了没效果” -->
-<script src="{{ url_for('static', filename='js/chart-zoom-utils.js') }}?v=20260107_7"></script>
+<script src="{{ url_for('static', filename='js/chart-zoom-utils.js') }}?v=20260107_8"></script>
 <script>
     // ========== 动态边缘节点配置 (从后端实时获取) ==========
     let NODE_CONFIGS = {};  // 从后端API动态获取
@@ -3209,15 +3209,33 @@
             autoMax += pad;
         }
 
-        // 计算“可缩放全量范围”(用于滚轮缩放上限)：比自动窗口更大
-        const fullSpan = Math.max((autoMax - autoMin) * 10, 10);
-        let fullMin = autoMin - (fullSpan - (autoMax - autoMin)) / 2;
-        let fullMax = autoMax + (fullSpan - (autoMax - autoMin)) / 2;
-        fullMin = Math.min(fullMin, 0);
-        fullMax = Math.max(fullMax, 0);
-        if (!(fullMax > fullMin)) {
-            fullMin = autoMin;
-            fullMax = autoMax + 1;
+        // 计算“可缩放全量范围”：优先使用工程物理量程，避免缩小到远超信号范围。
+        const engineeringY = (typeof window.getEdgeWindChartYBounds === 'function')
+            ? window.getEdgeWindChartYBounds(currentSource, channel.unit, channel.label, channel.type)
+            : null;
+        let fullMin;
+        let fullMax;
+        if (engineeringY && typeof window.edgeWindClampChartWindowToBounds === 'function') {
+            const clampedAuto = window.edgeWindClampChartWindowToBounds(autoMin, autoMax, engineeringY, {
+                mode: 'clip',
+                minSpan: Math.max((engineeringY.max - engineeringY.min) * 0.02, 1)
+            });
+            if (clampedAuto) {
+                autoMin = clampedAuto.min;
+                autoMax = clampedAuto.max;
+            }
+            fullMin = engineeringY.min;
+            fullMax = engineeringY.max;
+        } else {
+            const fullSpan = Math.max((autoMax - autoMin) * 10, 10);
+            fullMin = autoMin - (fullSpan - (autoMax - autoMin)) / 2;
+            fullMax = autoMax + (fullSpan - (autoMax - autoMin)) / 2;
+            fullMin = Math.min(fullMin, 0);
+            fullMax = Math.max(fullMax, 0);
+            if (!(fullMax > fullMin)) {
+                fullMin = autoMin;
+                fullMax = autoMax + 1;
+            }
         }
 
         // 把“全量X范围”显式写入图表实例，供缩放工具使用（保证滚轮缩小一定能回到全范围）

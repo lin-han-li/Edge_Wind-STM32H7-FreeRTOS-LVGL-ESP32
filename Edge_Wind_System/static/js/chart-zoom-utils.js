@@ -21,6 +21,101 @@
  * @param {number} options.zoomFactor - 缩放因子（默认1.10）
  * @param {number} options.panSpeed - 拖拽速度（默认0.5）
  */
+(function(root) {
+    const engineeringRanges = Object.freeze({
+        voltage: Object.freeze({ min: -500, max: 500 }),
+        voltage_neg: Object.freeze({ min: -500, max: 500 }),
+        current: Object.freeze({ min: -500, max: 500 }),
+        leakage: Object.freeze({ min: -500, max: 500 })
+    });
+
+    function _normalizeRangeKey(source, unit, label, type) {
+        const text = [source, unit, label, type]
+            .map(v => (v === undefined || v === null) ? '' : String(v).toLowerCase())
+            .join(' ');
+
+        if (text.includes('voltage_neg') || text.includes('negative') || text.includes('母线(-)') || text.includes('母线 -') || text.includes('dc-')) {
+            return 'voltage_neg';
+        }
+        if (text.includes('voltage') || text.includes('dc') || text.includes('母线') || /\bv\b/.test(text)) {
+            return 'voltage';
+        }
+        if (text.includes('leakage') || text.includes('漏') || text.includes('ma')) {
+            return 'leakage';
+        }
+        if (text.includes('current') || text.includes('电流') || /\ba\b/.test(text)) {
+            return 'current';
+        }
+        return null;
+    }
+
+    function getEdgeWindChartYBounds(source, unit, label, type) {
+        const key = _normalizeRangeKey(source, unit, label, type);
+        const range = key ? engineeringRanges[key] : null;
+        return range ? { min: range.min, max: range.max, key } : null;
+    }
+
+    function edgeWindClampChartWindowToBounds(startValue, endValue, bounds, options = {}) {
+        if (!bounds) return null;
+        const lo = Number(bounds.min);
+        const hi = Number(bounds.max);
+        let start = Number(startValue);
+        let end = Number(endValue);
+        if (!Number.isFinite(lo) || !Number.isFinite(hi) || !(hi > lo)) return null;
+        if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+
+        let min = Math.min(start, end);
+        let max = Math.max(start, end);
+        const fullSpan = hi - lo;
+        const minSpan = Math.max(0, Number(options.minSpan) || 0);
+        const mode = options.mode || 'shift';
+
+        if (mode === 'clip') {
+            min = Math.max(lo, Math.min(hi, min));
+            max = Math.max(lo, Math.min(hi, max));
+        } else {
+            let span = max - min;
+            if (!(span > 0)) span = Math.max(minSpan, fullSpan * 0.02);
+            if (span >= fullSpan) return { min: lo, max: hi };
+
+            if (min < lo) {
+                max += (lo - min);
+                min = lo;
+            }
+            if (max > hi) {
+                min -= (max - hi);
+                max = hi;
+            }
+            min = Math.max(lo, min);
+            max = Math.min(hi, max);
+        }
+
+        if (!(max > min) || (minSpan > 0 && (max - min) < minSpan)) {
+            const centerRaw = (Number.isFinite(start) && Number.isFinite(end)) ? ((start + end) / 2) : ((lo + hi) / 2);
+            const center = Math.max(lo, Math.min(hi, centerRaw));
+            const span = Math.min(fullSpan, Math.max(minSpan, fullSpan * 0.02));
+            min = center - span / 2;
+            max = center + span / 2;
+            if (min < lo) {
+                max += (lo - min);
+                min = lo;
+            }
+            if (max > hi) {
+                min -= (max - hi);
+                max = hi;
+            }
+            min = Math.max(lo, min);
+            max = Math.min(hi, max);
+        }
+
+        return (max > min) ? { min, max } : { min: lo, max: hi };
+    }
+
+    root.EDGEWIND_CHART_ENGINEERING_RANGES = engineeringRanges;
+    root.getEdgeWindChartYBounds = getEdgeWindChartYBounds;
+    root.edgeWindClampChartWindowToBounds = edgeWindClampChartWindowToBounds;
+})(typeof window !== 'undefined' ? window : globalThis);
+
 function setupChartZoom(chartInstance, chartDom, options = {}) {
     if (!chartInstance || !chartDom) {
         console.warn('[setupChartZoom] 图表实例或DOM元素不存在');
@@ -300,11 +395,23 @@ function setupChartZoom(chartInstance, chartDom, options = {}) {
         const e = Number(endValue);
         if (!Number.isFinite(s) || !Number.isFinite(e) || s === e) return;
         const idx = (axis === 'x') ? config.xDataZoomIndex : config.yDataZoomIndex;
+        const ext = _getAxisExtent(axis);
+        let start = Math.min(s, e);
+        let end = Math.max(s, e);
+        const root = (typeof globalThis !== 'undefined') ? globalThis : (typeof window !== 'undefined' ? window : null);
+        const clampWindow = root ? root.edgeWindClampChartWindowToBounds : null;
+        if (ext && typeof clampWindow === 'function') {
+            const clamped = clampWindow(start, end, ext, { mode: 'shift' });
+            if (clamped) {
+                start = clamped.min;
+                end = clamped.max;
+            }
+        }
         chartInstance.dispatchAction({
             type: 'dataZoom',
             dataZoomIndex: idx,
-            startValue: Math.min(s, e),
-            endValue: Math.max(s, e)
+            startValue: start,
+            endValue: end
         });
     }
 
@@ -519,4 +626,3 @@ function resetChartZoom(chartInstance) {
         lazyUpdate: false
     });
 }
-
