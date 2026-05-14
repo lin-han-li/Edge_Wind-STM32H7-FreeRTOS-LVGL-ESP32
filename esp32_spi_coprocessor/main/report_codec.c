@@ -22,8 +22,11 @@ static const char *TAG = "report_codec";
 #define REPORT_HTTP_WRITE_RETRY_DELAY_MS 5U
 #define REPORT_HTTP_WRITE_CHUNK_AUTO 512U
 #define REPORT_HTTP_WRITE_CHUNK_MIN 512U
-#define REPORT_HTTP_WRITE_CHUNK_MAX 1024U
+#define REPORT_HTTP_WRITE_CHUNK_MAX 4096U
 #define REPORT_HTTP_WRITE_BLOCK_ABORT_MS 1000U
+#ifndef REPORT_HTTP_BINARY_WRITE_DELAY_MAX_MS
+#define REPORT_HTTP_BINARY_WRITE_DELAY_MAX_MS 0U
+#endif
 #define EW_FULL_V1_MAGIC UINT32_C(0x31465745)
 #define EW_FULL_V2_VERSION 2U
 #define EW_REPORT_ENGINEERING_VALUE_SCALE 10U
@@ -171,7 +174,7 @@ static bool stream_deadline_expired(int64_t deadline_us, size_t pending_len)
     return true;
 }
 
-static size_t http_write_chunk_limit(const app_config_snapshot_t *config)
+size_t report_codec_full_binary_write_chunk_limit(const app_config_snapshot_t *config)
 {
     uint32_t chunk_kb = 0U;
     size_t chunk_bytes;
@@ -193,12 +196,18 @@ static size_t http_write_chunk_limit(const app_config_snapshot_t *config)
     return chunk_bytes;
 }
 
-static uint32_t http_write_chunk_delay_ms(const app_config_snapshot_t *config)
+uint32_t report_codec_full_binary_write_delay_ms(const app_config_snapshot_t *config)
 {
+    uint32_t delay_ms;
+
     if (config == NULL) {
         return 0U;
     }
-    return config->comm.chunk_delay_ms;
+    delay_ms = config->comm.chunk_delay_ms;
+    if (delay_ms > REPORT_HTTP_BINARY_WRITE_DELAY_MAX_MS) {
+        delay_ms = REPORT_HTTP_BINARY_WRITE_DELAY_MAX_MS;
+    }
+    return delay_ms;
 }
 
 static bool http_write_should_abort_socket(int saved_errno, int64_t write_ms)
@@ -237,8 +246,8 @@ static esp_err_t http_write_all(esp_http_client_handle_t client,
 {
     const uint8_t *bytes = (const uint8_t *) data;
     size_t offset = 0U;
-    const size_t write_chunk_limit = http_write_chunk_limit(config);
-    const uint32_t write_delay_ms = http_write_chunk_delay_ms(config);
+    const size_t write_chunk_limit = report_codec_full_binary_write_chunk_limit(config);
+    const uint32_t write_delay_ms = report_codec_full_binary_write_delay_ms(config);
     uint32_t retry_count = 0U;
 
     if (client == NULL || (data == NULL && data_len > 0U)) {

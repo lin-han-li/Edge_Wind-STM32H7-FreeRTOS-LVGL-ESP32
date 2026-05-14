@@ -64,11 +64,11 @@ extern "C" {
 #endif
 
 #ifndef ESP_CHUNK_DELAY_MS_DEFAULT
-#define ESP_CHUNK_DELAY_MS_DEFAULT 10
+#define ESP_CHUNK_DELAY_MS_DEFAULT 0
 #endif
 
 #ifndef ESP_CHUNK_DELAY_MS_MAX
-#define ESP_CHUNK_DELAY_MS_MAX 20
+#define ESP_CHUNK_DELAY_MS_MAX 0
 #endif
 
 typedef struct {

@@ -406,6 +406,10 @@ static esp_err_t post_report_request(const app_config_snapshot_t *snapshot,
     int64_t fetch_ms = 0;
     int64_t read_ms = 0;
     const bool use_full_binary = (frame->mode == REPORT_MODE_FULL);
+    const size_t full_write_chunk = use_full_binary ?
+                                    report_codec_full_binary_write_chunk_limit(snapshot) : 0U;
+    const uint32_t full_effective_delay_ms = use_full_binary ?
+                                             report_codec_full_binary_write_delay_ms(snapshot) : 0U;
     /*
      * On WAN/full-binary uploads the HTTP client is created and destroyed very
      * frequently.  4KB RX/TX buffers look attractive for throughput, but after
@@ -515,7 +519,7 @@ static esp_err_t post_report_request(const app_config_snapshot_t *snapshot,
 
     t0_us = esp_timer_get_time();
     ESP_LOGI(TAG,
-             "report start frame=%" PRIu32 " ref=%" PRIu32 " mode=%u transport=%s len=%u timeout=%ums budget=%ums scratch=%u httpbuf=%u heap=%u largest=%u q=%u",
+             "report start frame=%" PRIu32 " ref=%" PRIu32 " mode=%u transport=%s len=%u timeout=%ums budget=%ums scratch=%u httpbuf=%u chunk_kb=%u chunk_delay=%u effective_delay=%u write_chunk=%u heap=%u largest=%u q=%u",
              frame->frame_id,
              frame->ref_seq,
              (unsigned int) frame->mode,
@@ -525,6 +529,10 @@ static esp_err_t post_report_request(const app_config_snapshot_t *snapshot,
              (unsigned int) total_budget_ms,
              (unsigned int) CLOUD_JSON_SCRATCH_LEN,
              (unsigned int) http_buffer_size_tx,
+             (unsigned int) snapshot->comm.chunk_kb,
+             (unsigned int) snapshot->comm.chunk_delay_ms,
+             (unsigned int) full_effective_delay_ms,
+             (unsigned int) full_write_chunk,
              (unsigned int) heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
              (unsigned int) heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
              (unsigned int) (s_queue != NULL ? uxQueueMessagesWaiting(s_queue) : 0U));

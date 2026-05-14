@@ -32,6 +32,8 @@ esp_err_t report_codec_stream_heartbeat_json(const app_config_snapshot_t *config
 esp_err_t report_codec_measure_full_binary(const app_config_snapshot_t *config,
                                            const report_frame_t *frame,
                                            report_full_binary_info_t *out_info);
+size_t report_codec_full_binary_write_chunk_limit(const app_config_snapshot_t *config);
+uint32_t report_codec_full_binary_write_delay_ms(const app_config_snapshot_t *config);
 esp_err_t report_codec_stream_full_binary(const app_config_snapshot_t *config,
                                           const report_frame_t *frame,
                                           uint32_t data_crc32,
