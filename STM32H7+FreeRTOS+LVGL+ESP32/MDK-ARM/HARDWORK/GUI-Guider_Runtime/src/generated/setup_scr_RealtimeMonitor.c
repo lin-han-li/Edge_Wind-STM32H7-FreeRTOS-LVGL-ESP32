@@ -39,7 +39,7 @@ static rtmon_view_t s_view_mode = RTMON_VIEW_WAVE;
 #define RTMON_H 480
 #define RTMON_HEADER_H 60
 #define RTMON_CH_COUNT 4U
-#define RTMON_WAVE_SOURCE_POINTS 1024U
+#define RTMON_WAVE_SOURCE_POINTS 4096U
 #define RTMON_FFT_SOURCE_POINTS 2048U
 #define RTMON_CHART_POINTS 256U
 #define RTMON_REFRESH_MS 1000U
@@ -82,11 +82,11 @@ static const uint32_t s_ch_soft_colors[RTMON_CH_COUNT] = {
 };
 
 static const float s_ch_wave_axis_min[RTMON_CH_COUNT] = {
-    -10.0f, -10.0f, -10.0f, -10.0f
+    -500.0f, -500.0f, -500.0f, -500.0f
 };
 
 static const float s_ch_wave_axis_max[RTMON_CH_COUNT] = {
-    10.0f, 10.0f, 10.0f, 10.0f
+    500.0f, 500.0f, 500.0f, 500.0f
 };
 
 static void rtmon_update_wave_chart(void);
@@ -368,6 +368,94 @@ static void rtmon_clamp_current_window(uint32_t source_count)
     }
 }
 
+static void rtmon_fill_wave_series(uint32_t ch,
+                                   uint32_t source_count,
+                                   uint32_t window_start,
+                                   uint32_t visible)
+{
+    if (ch >= RTMON_CH_COUNT) {
+        ch = 0U;
+    }
+    if (source_count == 0U) {
+        source_count = 1U;
+    }
+    if (window_start >= source_count) {
+        window_start = source_count - 1U;
+    }
+
+    uint32_t max_visible = source_count - window_start;
+    if (visible == 0U || visible > max_visible) {
+        visible = max_visible;
+    }
+    if (visible == 0U) {
+        visible = 1U;
+    }
+
+    if (visible <= RTMON_CHART_POINTS) {
+        for (uint32_t i = 0; i < RTMON_CHART_POINTS; i++) {
+            uint32_t src_i = window_start + ((i < visible) ? i : (visible - 1U));
+            if (src_i >= source_count) {
+                src_i = source_count - 1U;
+            }
+            float raw = rtmon_safe_float(node_channels[ch].waveform[src_i]);
+            s_wave_y[i] = rtmon_to_axis_i32(raw);
+        }
+        return;
+    }
+
+    uint32_t bins = RTMON_CHART_POINTS / 2U;
+    if (bins == 0U) {
+        bins = 1U;
+    }
+
+    for (uint32_t bin = 0; bin < bins; bin++) {
+        uint32_t start = window_start + (uint32_t)(((uint64_t)bin * (uint64_t)visible) / (uint64_t)bins);
+        uint32_t end = window_start + (uint32_t)((((uint64_t)bin + 1ULL) * (uint64_t)visible) / (uint64_t)bins);
+        uint32_t hard_end = window_start + visible;
+        if (end <= start) {
+            end = start + 1U;
+        }
+        if (end > hard_end) {
+            end = hard_end;
+        }
+        if (start >= source_count) {
+            start = source_count - 1U;
+        }
+        if (end > source_count) {
+            end = source_count;
+        }
+        if (end <= start) {
+            end = start + 1U;
+        }
+
+        float mn = rtmon_safe_float(node_channels[ch].waveform[start]);
+        float mx = mn;
+        uint32_t mn_i = start;
+        uint32_t mx_i = start;
+        for (uint32_t i = start + 1U; i < end; i++) {
+            float v = rtmon_safe_float(node_channels[ch].waveform[i]);
+            if (v < mn) {
+                mn = v;
+                mn_i = i;
+            }
+            if (v > mx) {
+                mx = v;
+                mx_i = i;
+            }
+        }
+
+        float first = (mn_i <= mx_i) ? mn : mx;
+        float second = (mn_i <= mx_i) ? mx : mn;
+        uint32_t out = bin * 2U;
+        if (out < RTMON_CHART_POINTS) {
+            s_wave_y[out] = rtmon_to_axis_i32(first);
+        }
+        if ((out + 1U) < RTMON_CHART_POINTS) {
+            s_wave_y[out + 1U] = rtmon_to_axis_i32(second);
+        }
+    }
+}
+
 static void rtmon_reset_view(void)
 {
     s_rtmon_manual_view = false;
@@ -423,6 +511,12 @@ static void rtmon_chart_event_cb(lv_event_t *e)
         chart_h = 1;
     }
 
+    if (s_view_mode == RTMON_VIEW_WAVE) {
+        s_drag_x_accum_px = 0;
+        s_drag_y_accum_px = 0;
+        return;
+    }
+
     s_rtmon_manual_view = true;
 
     /* Finger left means later samples; finger right means earlier samples. */
@@ -436,25 +530,7 @@ static void rtmon_chart_event_cb(lv_event_t *e)
         s_drag_x_accum_px -= (step_points * chart_w) / (int32_t)visible;
     }
 
-    if (s_view_mode == RTMON_VIEW_WAVE) {
-        float axis_min = 0.0f;
-        float axis_max = 1.0f;
-        rtmon_wave_axis_range(s_active_ch, &axis_min, &axis_max);
-        int32_t axis_span = rtmon_to_axis_i32(axis_max) - rtmon_to_axis_i32(axis_min);
-        if (axis_span <= 0) {
-            axis_span = 1;
-        }
-
-        s_drag_y_accum_px += vect.y;
-        int32_t step_axis = (s_drag_y_accum_px * axis_span) / chart_h;
-        if (step_axis != 0) {
-            s_wave_axis_offset += step_axis;
-            s_wave_axis_offset = rtmon_clamp_i32(s_wave_axis_offset, -axis_span, axis_span);
-            s_drag_y_accum_px -= (step_axis * chart_h) / axis_span;
-        }
-    } else {
-        s_drag_y_accum_px = 0;
-    }
+    s_drag_y_accum_px = 0;
 
     rtmon_update_wave_chart();
 }
@@ -625,19 +701,13 @@ static void rtmon_update_wave_chart(void)
         if (source_count == 0U) {
             source_count = 1U;
         }
-        rtmon_clamp_current_window(source_count);
-        visible = rtmon_visible_points(source_count);
-        window_start = s_wave_window_start;
+        s_rtmon_manual_view = false;
+        s_wave_window_start = 0U;
+        visible = source_count;
+        window_start = 0U;
         window_end = window_start + visible - 1U;
 
-        for (uint32_t i = 0; i < RTMON_CHART_POINTS; i++) {
-            uint32_t src_i = window_start + ((i < visible) ? i : (visible - 1U));
-            if (src_i >= source_count) {
-                src_i = source_count - 1U;
-            }
-            float raw = rtmon_safe_float(node_channels[ch].waveform[src_i]);
-            s_wave_y[i] = rtmon_to_axis_i32(raw);
-        }
+        rtmon_fill_wave_series(ch, source_count, window_start, visible);
         lv_chart_set_axis_range(s_wave_chart, LV_CHART_AXIS_PRIMARY_Y,
                                 rtmon_to_axis_i32(axis_min) + s_wave_axis_offset,
                                 rtmon_to_axis_i32(axis_max) + s_wave_axis_offset);
@@ -889,7 +959,9 @@ void setup_scr_RealtimeMonitor(lv_ui *ui)
     lv_obj_add_event_cb(s_wave_chart, rtmon_chart_event_cb, LV_EVENT_ALL, NULL);
     lv_chart_set_type(s_wave_chart, LV_CHART_TYPE_LINE);
     lv_chart_set_point_count(s_wave_chart, RTMON_CHART_POINTS);
-    lv_chart_set_axis_range(s_wave_chart, LV_CHART_AXIS_PRIMARY_Y, -100, 100);
+    lv_chart_set_axis_range(s_wave_chart, LV_CHART_AXIS_PRIMARY_Y,
+                            rtmon_to_axis_i32(s_ch_wave_axis_min[0]),
+                            rtmon_to_axis_i32(s_ch_wave_axis_max[0]));
     lv_chart_set_div_line_count(s_wave_chart, 5, 8);
     for (uint32_t i = 0; i < RTMON_CHART_POINTS; i++) {
         s_wave_y[i] = 0;

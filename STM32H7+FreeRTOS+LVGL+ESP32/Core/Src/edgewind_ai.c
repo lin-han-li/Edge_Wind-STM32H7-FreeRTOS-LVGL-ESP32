@@ -31,6 +31,11 @@
 #define EDGEWIND_AI_WAVELET_BLOCKS        (EDGEWIND_AI_WINDOW_POINTS / EDGEWIND_AI_WAVELET_BLOCK_POINTS)
 #define EDGEWIND_AI_WAVELET_FEATURES_CH   (26U)
 #define EDGEWIND_AI_EPS                   (1.0e-6f)
+#define EDGEWIND_AI_ZERO_AB_MAX_V         (0.18f)
+#define EDGEWIND_AI_ZERO_C_MAX_V          (0.16f)
+#define EDGEWIND_AI_ZERO_D_MAX_V          (0.08f)
+#define EDGEWIND_AI_ZERO_AB_MEAN_V        (0.075f)
+#define EDGEWIND_AI_ZERO_CD_MEAN_V        (0.045f)
 
 #ifndef AXI_SRAM_SECTION
 #define AXI_SRAM_SECTION __attribute__((section(".axi_sram")))
@@ -142,6 +147,49 @@ const char *EdgeWind_AI_ClassName(uint8_t class_id)
         class_id = 0U;
     }
     return s_class_names[class_id];
+}
+
+static uint8_t EdgeWind_AI_IsPowerOnZeroWindow(const float analog_v[4][AD_ACQ_POINTS])
+{
+    float max_abs[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    float sum_abs[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+
+    for (uint32_t i = 0U; i < AD_ACQ_POINTS; ++i)
+    {
+        for (uint32_t ch = 0U; ch < 4U; ++ch)
+        {
+            float v = fabsf(analog_v[ch][i]);
+            if (v > max_abs[ch])
+            {
+                max_abs[ch] = v;
+            }
+            sum_abs[ch] += v;
+        }
+    }
+
+    if ((max_abs[0] <= EDGEWIND_AI_ZERO_AB_MAX_V) &&
+        (max_abs[1] <= EDGEWIND_AI_ZERO_AB_MAX_V) &&
+        (max_abs[2] <= EDGEWIND_AI_ZERO_C_MAX_V) &&
+        (max_abs[3] <= EDGEWIND_AI_ZERO_D_MAX_V) &&
+        ((sum_abs[0] / (float)AD_ACQ_POINTS) <= EDGEWIND_AI_ZERO_AB_MEAN_V) &&
+        ((sum_abs[1] / (float)AD_ACQ_POINTS) <= EDGEWIND_AI_ZERO_AB_MEAN_V) &&
+        ((sum_abs[2] / (float)AD_ACQ_POINTS) <= EDGEWIND_AI_ZERO_CD_MEAN_V) &&
+        ((sum_abs[3] / (float)AD_ACQ_POINTS) <= EDGEWIND_AI_ZERO_CD_MEAN_V))
+    {
+        return 1U;
+    }
+    return 0U;
+}
+
+static void EdgeWind_AI_SetNormalResult(EdgeWind_AI_Result_t *result, uint32_t elapsed_ms)
+{
+    memset(result, 0, sizeof(*result));
+    result->class_id = 0U;
+    result->confidence = 1.0f;
+    result->probabilities[0] = 1.0f;
+    result->total_ms = elapsed_ms;
+    strncpy(result->fault_code, EdgeWind_AI_ClassCode(0U), sizeof(result->fault_code) - 1U);
+    result->fault_code[sizeof(result->fault_code) - 1U] = '\0';
 }
 
 static void EdgeWind_AI_PrintError(const char *stage, ai_error err)
@@ -600,6 +648,13 @@ int EdgeWind_AI_RunOnAnalogWindow(const float analog_v[4][AD_ACQ_POINTS], EdgeWi
     if ((analog_v == NULL) || (result == NULL))
     {
         return -1;
+    }
+
+    total_start = HAL_GetTick();
+    if (EdgeWind_AI_IsPowerOnZeroWindow(analog_v) != 0U)
+    {
+        EdgeWind_AI_SetNormalResult(result, HAL_GetTick() - total_start);
+        return 0;
     }
 
     if (EdgeWind_AI_Init() != 0)

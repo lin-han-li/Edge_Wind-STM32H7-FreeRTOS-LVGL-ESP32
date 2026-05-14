@@ -320,14 +320,14 @@ osThreadId_t DSPAlgoHandle;
 const osThreadAttr_t DSPAlgo_attributes = {
   .name = "DSPAlgo",
   .stack_size = 3072 * 4,
-  .priority = (osPriority_t) osPriorityNormal,
+  .priority = (osPriority_t) osPriorityAboveNormal,
 };
 /* Definitions for Upload */
 osThreadId_t UploadHandle;
 const osThreadAttr_t Upload_attributes = {
   .name = "Upload",
   .stack_size = 3072 * 4,
-  .priority = (osPriority_t) osPriorityAboveNormal,
+  .priority = (osPriority_t) osPriorityBelowNormal,
 };
 
 /* Private function prototypes -----------------------------------------------*/
