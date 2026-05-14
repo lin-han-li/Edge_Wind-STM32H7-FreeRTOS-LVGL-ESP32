@@ -55,7 +55,7 @@
 #endif
 
 #ifndef ESP32_SPI_STRESS_SPI_LABEL
-#define ESP32_SPI_STRESS_SPI_LABEL "8MHz"
+#define ESP32_SPI_STRESS_SPI_LABEL "10MHz"
 #endif
 
 #ifndef ESP32_SPI_RESULT_OK
@@ -97,6 +97,9 @@
 #ifndef ESP32_SPI_FULL_TIMEOUT_HOLDOFF_MS
 #define ESP32_SPI_FULL_TIMEOUT_HOLDOFF_MS 1000U
 #endif
+#ifndef ESP32_SPI_FULL_HTTP_FAIL_HOLDOFF_MS
+#define ESP32_SPI_FULL_HTTP_FAIL_HOLDOFF_MS 500U
+#endif
 #ifndef ESP32_SPI_FULL_BUSY_HOLDOFF_MS
 #define ESP32_SPI_FULL_BUSY_HOLDOFF_MS 3000U
 #endif
@@ -135,6 +138,9 @@
 #endif
 #ifndef ESP_UPLOAD_SNAPSHOT_SLOT_COUNT
 #define ESP_UPLOAD_SNAPSHOT_SLOT_COUNT 2U
+#endif
+#ifndef EW_FULL_PIPELINE_EXPERIMENT
+#define EW_FULL_PIPELINE_EXPERIMENT 0
 #endif
 
 /* 引用 usart.c 中定义的句柄 */
@@ -3060,7 +3066,7 @@ void ESP_Post_Data(void)
                     g_spi_full_http_fail_count++;
                 }
                 ESP_SPI_FullEnterHoldoff("full http result failed",
-                                         ESP32_SPI_FULL_TIMEOUT_HOLDOFF_MS * g_spi_full_http_fail_count);
+                                         ESP32_SPI_FULL_HTTP_FAIL_HOLDOFF_MS);
             }
             if (g_spi_full_manual_frames == 0U && g_spi_full_continuous == 0U) {
                 ESP_SetServerReportMode(0U);
@@ -3516,6 +3522,13 @@ static void ESP_UI_PollAutoRecover(void)
     bool st_ok;
     bool need_recover = false;
     uint8_t report_force_start = 0U;
+    uint8_t target_report_mode = ESP_ServerReportFull() ? 1U : 0U;
+
+#if (ESP32_SPI_ENABLE_FULL_UPLOAD)
+    if (g_spi_full_continuous != 0U) {
+        target_report_mode = 1U;
+    }
+#endif
 
     if ((int32_t)(now - g_ui_auto_recover_next_poll_tick) < 0) {
         return;
@@ -3524,6 +3537,9 @@ static void ESP_UI_PollAutoRecover(void)
 
     (void)ESP_AutoReconnect_Read(&auto_reconnect_en, &last_reporting);
     if (g_report_enabled != 0U || g_ui_auto_recover_want_report != 0U ||
+#if (ESP32_SPI_ENABLE_FULL_UPLOAD)
+        g_spi_full_continuous != 0U ||
+#endif
         (auto_reconnect_en && last_reporting)) {
         want_report = 1U;
     }
@@ -3551,7 +3567,8 @@ static void ESP_UI_PollAutoRecover(void)
         if (want_report != 0U) {
             if (!st.wifi_connected ||
                 !st.registered_with_cloud ||
-                !st.reporting_enabled) {
+                !st.reporting_enabled ||
+                st.report_mode != target_report_mode) {
                 need_recover = true;
             }
         }
@@ -3577,6 +3594,9 @@ static void ESP_UI_PollAutoRecover(void)
 
     g_ui_auto_recover_next_attempt_tick = now + ESP32_SPI_AUTO_RECOVER_RETRY_MS;
     want_report = (g_ui_auto_recover_want_report != 0U || g_report_enabled != 0U ||
+#if (ESP32_SPI_ENABLE_FULL_UPLOAD)
+                   g_spi_full_continuous != 0U ||
+#endif
                    (auto_reconnect_en && last_reporting)) ? 1U : 0U;
 
     ESP_Log("[ESP32SPI] auto recovery start want_report=%u auto=%u last=%u\r\n",
@@ -3589,6 +3609,13 @@ static void ESP_UI_PollAutoRecover(void)
         g_ui_auto_recover_next_attempt_tick = now + ESP32_SPI_AUTO_RECOVER_FAIL_BACKOFF_MS;
         return;
     }
+    target_report_mode = ESP_ServerReportFull() ? 1U : 0U;
+#if (ESP32_SPI_ENABLE_FULL_UPLOAD)
+    if (g_spi_full_continuous != 0U) {
+        target_report_mode = 1U;
+        g_server_report_full = 1U;
+    }
+#endif
 
     if (!st_ok) {
         memset(&st, 0, sizeof(st));
@@ -3631,8 +3658,11 @@ static void ESP_UI_PollAutoRecover(void)
         (report_force_start != 0U ||
          !st_ok ||
          !st.reporting_enabled ||
-         st.report_mode != (ESP_ServerReportFull() ? 1U : 0U))) {
-        if (!ESP_UI_EnsureReportStartedEx(ESP_ServerReportFull() ? 1U : 0U,
+         st.report_mode != target_report_mode)) {
+        if (target_report_mode != 0U) {
+            g_server_report_full = 1U;
+        }
+        if (!ESP_UI_EnsureReportStartedEx(target_report_mode,
                                           "auto recovery start report failed",
                                           report_force_start)) {
             ESP_Log("[ESP32SPI] auto recovery failed at report start step.\r\n");
@@ -3731,13 +3761,14 @@ static bool ESP_UI_SPI_LoadAndApplyConfig(void)
 static void ESP_UI_SPI_LogStatus(const char *prefix)
 {
     const esp32_spi_status_t *st = ESP32_SPI_GetStatus();
-    ESP_Log("[ESP32SPI] %s ready=%u wifi=%u cloud=%u reg=%u report=%u ip=%s err=%s\r\n",
+    ESP_Log("[ESP32SPI] %s ready=%u wifi=%u cloud=%u reg=%u report=%u mode=%u ip=%s err=%s\r\n",
             prefix ? prefix : "status",
             (unsigned int)st->ready,
             (unsigned int)st->wifi_connected,
             (unsigned int)st->cloud_connected,
             (unsigned int)st->registered_with_cloud,
             (unsigned int)st->reporting_enabled,
+            (unsigned int)st->report_mode,
             st->ip_address,
             st->last_error);
 }

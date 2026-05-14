@@ -4,6 +4,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -12,10 +13,16 @@ import serial
 
 
 FULL_HTTP_DONE_RE = re.compile(r"full http done frame=(\d+).*?elapsed=(\d+)ms http=(\d+) result=(-?\d+)")
+NACK_REASON_RE = re.compile(r"NACK ref_seq=\d+ reason=(\d+)")
+STM_RX_INVALID_RE = re.compile(r"RX invalid:\s+([a-zA-Z0-9_]+)")
 ESP_REPORT_START_RE = re.compile(r"report start frame=(\d+).*?\blen=(\d+)")
+ESP_REPORT_START_OPTIONS_RE = re.compile(
+    r"chunk_kb=(\d+).*?chunk_delay=(\d+).*?effective_delay=(\d+).*?write_chunk=(\d+)"
+)
 ESP_REPORT_READ_RE = re.compile(
     r"report stage=read frame=(\d+).*?\blen=(\d+).*?err=([A-Z_]+).*?http=(\d+).*?total=(\d+).*?open=(\d+).*?stream=(\d+).*?fetch=(\d+).*?read=(\d+)"
 )
+ESP_DROPPED_INVALID_RE = re.compile(r"Dropped invalid RX packet,\s+reason=(\d+)")
 
 
 def is_cloud_error_line(line):
@@ -45,15 +52,41 @@ class Monitor:
             "esp_report_read_fail": 0,
             "cloud_full_series": 0,
             "cloud_raw_4096_2048": 0,
+            "cloud_reconnects": 0,
             "cloud_errors": 0,
             "serial_errors": [],
             "cloud_errors_text": [],
+            "stm_nack_reasons": {},
+            "stm_spi_invalid": {},
+            "stm_hal_spi_fail": 0,
+            "esp_spi_invalid_reasons": {},
         }
+        self.start_time = None
         self.stm_begin_times = []
         self.stm_http_elapsed_ms = []
+        self.stm_http_elapsed_timed = []
         self.esp_http_total_ms = []
+        self.esp_http_total_timed = []
+        self.esp_http_open_ms = []
+        self.esp_http_stream_ms = []
+        self.esp_http_fetch_ms = []
+        self.esp_http_read_ms = []
         self.esp_payload_lengths = set()
+        self.esp_start_chunk_kb = set()
+        self.esp_start_chunk_delay_ms = set()
+        self.esp_start_effective_delay_ms = set()
+        self.esp_start_write_chunk_bytes = set()
         self.cloud_proc = None
+
+    @staticmethod
+    def inc_counter(mapping, key):
+        key = str(key)
+        mapping[key] = int(mapping.get(key, 0)) + 1
+
+    @staticmethod
+    def success_rate(ok, fail):
+        total = ok + fail
+        return None if total <= 0 else ok / total
 
     def log_line(self, path, source, line):
         now = time.time()
@@ -74,7 +107,9 @@ class Monitor:
                 m = FULL_HTTP_DONE_RE.search(line)
                 if m:
                     self.stats["stm_http_done"] += 1
-                    self.stm_http_elapsed_ms.append(int(m.group(2)))
+                    elapsed_ms = int(m.group(2))
+                    self.stm_http_elapsed_ms.append(elapsed_ms)
+                    self.stm_http_elapsed_timed.append((now, elapsed_ms))
                     if m.group(3) != "200" or m.group(4) != "0":
                         self.stats["stm_http_fail"] += 1
                 lower = line.lower()
@@ -82,29 +117,52 @@ class Monitor:
                     self.stats["stm_full_timeout"] += 1
                 if "NACK" in line:
                     self.stats["stm_nack_lines"] += 1
+                    m_nack = NACK_REASON_RE.search(line)
+                    if m_nack:
+                        self.inc_counter(self.stats["stm_nack_reasons"], m_nack.group(1))
                 if "READY timeout" in line:
                     self.stats["stm_ready_timeout_lines"] += 1
                 if "holdoff" in lower:
                     self.stats["stm_holdoff"] += 1
+                m_invalid = STM_RX_INVALID_RE.search(line)
+                if m_invalid:
+                    self.inc_counter(self.stats["stm_spi_invalid"], m_invalid.group(1))
+                if "HAL_SPI_TransmitReceive failed" in line:
+                    self.stats["stm_hal_spi_fail"] += 1
             elif source == "esp":
                 m = ESP_REPORT_START_RE.search(line)
                 if m:
                     self.stats["esp_report_starts"] += 1
                     self.esp_payload_lengths.add(int(m.group(2)))
+                    m_start_options = ESP_REPORT_START_OPTIONS_RE.search(line)
+                    if m_start_options:
+                        self.esp_start_chunk_kb.add(int(m_start_options.group(1)))
+                        self.esp_start_chunk_delay_ms.add(int(m_start_options.group(2)))
+                        self.esp_start_effective_delay_ms.add(int(m_start_options.group(3)))
+                        self.esp_start_write_chunk_bytes.add(int(m_start_options.group(4)))
                 m = ESP_REPORT_READ_RE.search(line)
                 if m:
                     self.esp_payload_lengths.add(int(m.group(2)))
-                    self.esp_http_total_ms.append(int(m.group(5)))
+                    total_ms = int(m.group(5))
+                    self.esp_http_total_ms.append(total_ms)
+                    self.esp_http_total_timed.append((now, total_ms))
+                    self.esp_http_open_ms.append(int(m.group(6)))
+                    self.esp_http_stream_ms.append(int(m.group(7)))
+                    self.esp_http_fetch_ms.append(int(m.group(8)))
+                    self.esp_http_read_ms.append(int(m.group(9)))
                     if m.group(3) == "ESP_OK" and m.group(4) == "200":
                         self.stats["esp_report_read_ok"] += 1
                     else:
                         self.stats["esp_report_read_fail"] += 1
-                if (
+                elif (
                     "report stage=" in line
                     and "err=ESP_OK" not in line
                     and any(k in line.lower() for k in ["fail", "timeout", "error", "esp_err"])
                 ):
                     self.stats["esp_report_read_fail"] += 1
+                m_invalid = ESP_DROPPED_INVALID_RE.search(line)
+                if m_invalid:
+                    self.inc_counter(self.stats["esp_spi_invalid_reasons"], m_invalid.group(1))
             elif source == "cloud":
                 if "[/api/node/full_frame_bin][series]" in line:
                     self.stats["cloud_full_series"] += 1
@@ -132,36 +190,44 @@ class Monitor:
                 self.stats["serial_errors"].append(f"{source}:{port}:{exc}")
 
     def cloud_thread(self, path):
-        cmd = [
-            "ssh",
-            "-F",
-            self.args.ssh_config,
-            "aliyun-ubuntu",
-            "journalctl -u edge_wind.service -n 0 -f --no-pager",
-        ]
-        try:
-            self.cloud_proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-            )
-            while not self.stop.is_set():
-                if self.cloud_proc.stdout is None:
-                    break
-                line = self.cloud_proc.stdout.readline()
-                if line:
-                    self.log_line(path, "cloud", line)
-                elif self.cloud_proc.poll() is not None:
-                    break
-                else:
-                    time.sleep(0.1)
-        except Exception as exc:
-            with self.lock:
-                self.stats["cloud_errors_text"].append(f"cloud_ssh_error:{exc}")
-                self.stats["cloud_errors"] += 1
+        while not self.stop.is_set():
+            cmd = [
+                "ssh",
+                "-F",
+                self.args.ssh_config,
+                "aliyun-ubuntu",
+                "journalctl -u edge_wind.service -n 0 -f --no-pager",
+            ]
+            try:
+                self.cloud_proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                )
+                while not self.stop.is_set():
+                    if self.cloud_proc.stdout is None:
+                        break
+                    line = self.cloud_proc.stdout.readline()
+                    if line:
+                        self.log_line(path, "cloud", line)
+                    elif self.cloud_proc.poll() is not None:
+                        break
+                    else:
+                        time.sleep(0.1)
+            except Exception as exc:
+                with self.lock:
+                    self.stats["cloud_errors_text"].append(f"cloud_ssh_error:{exc}")
+                    self.stats["cloud_errors"] += 1
+            finally:
+                if self.cloud_proc and self.cloud_proc.poll() is None:
+                    self.cloud_proc.terminate()
+            if not self.stop.is_set():
+                with self.lock:
+                    self.stats["cloud_reconnects"] += 1
+                time.sleep(2.0)
 
     @staticmethod
     def percentiles(values):
@@ -180,13 +246,91 @@ class Monitor:
             "max": vals[-1],
         }
 
-    def write_progress(self, path, elapsed):
+    def timed_percentiles(self, items, max_elapsed_s=None):
+        if self.start_time is None:
+            return {}
+        values = []
+        for ts, value in items:
+            if max_elapsed_s is None or (ts - self.start_time) <= max_elapsed_s:
+                values.append(value)
+        return self.percentiles(values)
+
+    def interval_percentiles(self, times, max_elapsed_s=None):
+        if self.start_time is None:
+            return {}
+        intervals = []
+        for prev, cur in zip(times, times[1:]):
+            if max_elapsed_s is None or (cur - self.start_time) <= max_elapsed_s:
+                intervals.append((cur - prev) * 1000.0)
+        return self.percentiles(intervals)
+
+    def fetch_cloud_journal_counts(self, since_epoch):
+        cmd = [
+            "ssh",
+            "-F",
+            self.args.ssh_config,
+            "aliyun-ubuntu",
+            f"journalctl -u edge_wind.service --since @{int(since_epoch)} --no-pager",
+        ]
+        result = {
+            "cloud_journal_full_series": 0,
+            "cloud_journal_raw_4096_2048": 0,
+            "cloud_journal_errors": 0,
+            "cloud_journal_error_text": "",
+        }
+        try:
+            proc = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=30,
+            )
+            text = proc.stdout or ""
+            for line in text.splitlines():
+                if "[/api/node/full_frame_bin][series]" in line:
+                    result["cloud_journal_full_series"] += 1
+                if "raw_lens=[(0, 4096, 2048)" in line and "emit_lens=[(0, 4096, 2048)" in line:
+                    result["cloud_journal_raw_4096_2048"] += 1
+            if proc.returncode != 0:
+                result["cloud_journal_errors"] = 1
+                result["cloud_journal_error_text"] = (proc.stderr or proc.stdout or "").strip()[:500]
+        except Exception as exc:
+            result["cloud_journal_errors"] = 1
+            result["cloud_journal_error_text"] = str(exc)
+        return result
+
+    def build_common_metrics(self, elapsed=None):
         with self.lock:
             payload = dict(self.stats)
-            payload["elapsed_s"] = round(elapsed, 1)
-            payload["esp_payload_lengths"] = sorted(self.esp_payload_lengths)
-            payload["stm_http_elapsed_ms"] = self.percentiles(self.stm_http_elapsed_ms)
-            payload["esp_http_total_ms"] = self.percentiles(self.esp_http_total_ms)
+            times = list(self.stm_begin_times)
+            stm_http_timed = list(self.stm_http_elapsed_timed)
+            esp_http_timed = list(self.esp_http_total_timed)
+        payload["elapsed_s"] = round(elapsed, 1) if elapsed is not None else None
+        payload["esp_payload_lengths"] = sorted(self.esp_payload_lengths)
+        payload["esp_start_chunk_kb_values"] = sorted(self.esp_start_chunk_kb)
+        payload["esp_start_chunk_delay_ms_values"] = sorted(self.esp_start_chunk_delay_ms)
+        payload["esp_start_effective_delay_ms_values"] = sorted(self.esp_start_effective_delay_ms)
+        payload["esp_start_write_chunk_bytes_values"] = sorted(self.esp_start_write_chunk_bytes)
+        payload["stm_frame_interval_ms"] = self.interval_percentiles(times)
+        payload["stm_frame_interval_ms_first60"] = self.interval_percentiles(times, 60.0)
+        payload["stm_long_frame_intervals_gt5s"] = sum(1 for prev, cur in zip(times, times[1:]) if (cur - prev) * 1000.0 > 5000.0)
+        payload["stm_long_frame_intervals_gt8s"] = sum(1 for prev, cur in zip(times, times[1:]) if (cur - prev) * 1000.0 > 8000.0)
+        payload["stm_http_elapsed_ms"] = self.percentiles(self.stm_http_elapsed_ms)
+        payload["stm_http_elapsed_ms_first60"] = self.timed_percentiles(stm_http_timed, 60.0)
+        payload["esp_http_total_ms"] = self.percentiles(self.esp_http_total_ms)
+        payload["esp_http_total_ms_first60"] = self.timed_percentiles(esp_http_timed, 60.0)
+        payload["esp_http_open_ms"] = self.percentiles(self.esp_http_open_ms)
+        payload["esp_http_stream_ms"] = self.percentiles(self.esp_http_stream_ms)
+        payload["esp_http_fetch_ms"] = self.percentiles(self.esp_http_fetch_ms)
+        payload["esp_http_read_ms"] = self.percentiles(self.esp_http_read_ms)
+        payload["esp_http_success_rate"] = self.success_rate(payload["esp_report_read_ok"], payload["esp_report_read_fail"])
+        return payload
+
+    def write_progress(self, path, elapsed):
+        payload = self.build_common_metrics(elapsed)
         with open(path, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
 
@@ -215,6 +359,7 @@ class Monitor:
             thread.start()
 
         start = time.time()
+        self.start_time = start
         next_progress = 0.0
         while True:
             elapsed = time.time() - start
@@ -231,15 +376,8 @@ class Monitor:
         for thread in threads:
             thread.join(timeout=3)
 
-        intervals_ms = []
-        with self.lock:
-            times = list(self.stm_begin_times)
-        for prev, cur in zip(times, times[1:]):
-            intervals_ms.append((cur - prev) * 1000.0)
-
-        with self.lock:
-            summary = dict(self.stats)
-            summary.update({
+        summary = self.build_common_metrics(self.args.duration)
+        summary.update({
                 "duration_s": self.args.duration,
                 "logs": {
                     "stm": str(stm_log),
@@ -248,13 +386,17 @@ class Monitor:
                     "progress": str(progress_json),
                     "summary": str(summary_json),
                 },
-                "esp_payload_lengths": sorted(self.esp_payload_lengths),
-                "stm_frame_interval_ms": self.percentiles(intervals_ms),
-                "stm_long_frame_intervals_gt5s": sum(1 for v in intervals_ms if v > 5000.0),
-                "stm_long_frame_intervals_gt8s": sum(1 for v in intervals_ms if v > 8000.0),
-                "stm_http_elapsed_ms": self.percentiles(self.stm_http_elapsed_ms),
-                "esp_http_total_ms": self.percentiles(self.esp_http_total_ms),
             })
+        journal_counts = self.fetch_cloud_journal_counts(start - 5.0)
+        summary.update(journal_counts)
+        summary["cloud_effective_full_series"] = max(
+            summary.get("cloud_full_series", 0),
+            summary.get("cloud_journal_full_series", 0),
+        )
+        summary["cloud_effective_raw_4096_2048"] = max(
+            summary.get("cloud_raw_4096_2048", 0),
+            summary.get("cloud_journal_raw_4096_2048", 0),
+        )
         with open(summary_json, "w", encoding="utf-8") as f:
             json.dump(summary, f, ensure_ascii=False, indent=2)
         self.write_progress(progress_json, self.args.duration)
@@ -262,6 +404,8 @@ class Monitor:
 
 
 def main():
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser()
     parser.add_argument("--duration", type=int, default=300)
     parser.add_argument("--out-dir", default="test_logs")

@@ -984,12 +984,13 @@ static bool handle_rx_packet(const esp32_spi_packet_t *packet)
             update_status_from_payload(status);
             s_last_response_type = ESP32_MSG_STATUS_RESP;
             s_last_result_code = ESP32_RESULT_OK;
-            printf("[ESP32SPI] STATUS ready=%u wifi=%u cloud=%u reg=%u report=%u ip=%s node=%s err=%s\r\n",
+            printf("[ESP32SPI] STATUS ready=%u wifi=%u cloud=%u reg=%u report=%u mode=%u ip=%s node=%s err=%s\r\n",
                    (unsigned int)s_status.ready,
                    (unsigned int)s_status.wifi_connected,
                    (unsigned int)s_status.cloud_connected,
                    (unsigned int)s_status.registered_with_cloud,
                    (unsigned int)s_status.reporting_enabled,
+                   (unsigned int)s_status.report_mode,
                    s_status.ip_address,
                    s_status.node_id,
                    s_status.last_error);
