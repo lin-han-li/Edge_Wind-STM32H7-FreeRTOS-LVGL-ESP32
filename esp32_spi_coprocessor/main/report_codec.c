@@ -308,6 +308,15 @@ static esp_err_t http_write_all(esp_http_client_handle_t client,
     return ESP_OK;
 }
 
+static esp_err_t http_write_all_adapter(void *ctx,
+                                        const app_config_snapshot_t *config,
+                                        const void *data,
+                                        size_t data_len,
+                                        int64_t deadline_us)
+{
+    return http_write_all((esp_http_client_handle_t) ctx, config, data, data_len, deadline_us);
+}
+
 static bool builder_flush(json_builder_t *builder)
 {
     size_t offset = 0;
@@ -754,17 +763,18 @@ esp_err_t report_codec_measure_full_binary(const app_config_snapshot_t *config,
     return ESP_OK;
 }
 
-esp_err_t report_codec_stream_full_binary(const app_config_snapshot_t *config,
-                                          const report_frame_t *frame,
-                                          uint32_t data_crc32,
-                                          esp_http_client_handle_t client,
-                                          uint32_t total_budget_ms)
+esp_err_t report_codec_stream_full_binary_with_writer(const app_config_snapshot_t *config,
+                                                      const report_frame_t *frame,
+                                                      uint32_t data_crc32,
+                                                      report_codec_write_all_fn_t write_all,
+                                                      void *write_ctx,
+                                                      uint32_t total_budget_ms)
 {
     ew_full_v1_header_t header;
     int64_t deadline_us = 0;
     esp_err_t err;
 
-    if (config == NULL || frame == NULL || client == NULL) {
+    if (config == NULL || frame == NULL || write_all == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
     if (!report_frame_validate_full(frame)) {
@@ -796,7 +806,7 @@ esp_err_t report_codec_stream_full_binary(const app_config_snapshot_t *config,
         deadline_us = esp_timer_get_time() + ((int64_t) total_budget_ms * 1000LL);
     }
 
-    err = http_write_all(client, config, &header, sizeof(header), deadline_us);
+    err = write_all(write_ctx, config, &header, sizeof(header), deadline_us);
     if (err != ESP_OK) {
         return err;
     }
@@ -804,7 +814,7 @@ esp_err_t report_codec_stream_full_binary(const app_config_snapshot_t *config,
     for (size_t i = 0; i < frame->channel_count; ++i) {
         ew_full_v1_channel_meta_t meta;
         fill_full_channel_meta(&meta, &frame->channels[i]);
-        err = http_write_all(client, config, &meta, sizeof(meta), deadline_us);
+        err = write_all(write_ctx, config, &meta, sizeof(meta), deadline_us);
         if (err != ESP_OK) {
             return err;
         }
@@ -813,21 +823,21 @@ esp_err_t report_codec_stream_full_binary(const app_config_snapshot_t *config,
     for (size_t i = 0; i < frame->channel_count; ++i) {
         const report_channel_data_t *channel = &frame->channels[i];
         if (channel->waveform_count > 0U) {
-            err = http_write_all(client,
-                                 config,
-                                 channel->waveform_scaled,
-                                 channel->waveform_count * sizeof(int16_t),
-                                 deadline_us);
+            err = write_all(write_ctx,
+                            config,
+                            channel->waveform_scaled,
+                            channel->waveform_count * sizeof(int16_t),
+                            deadline_us);
             if (err != ESP_OK) {
                 return err;
             }
         }
         if (channel->fft_count > 0U) {
-            err = http_write_all(client,
-                                 config,
-                                 channel->fft_tenths,
-                                 channel->fft_count * sizeof(int16_t),
-                                 deadline_us);
+            err = write_all(write_ctx,
+                            config,
+                            channel->fft_tenths,
+                            channel->fft_count * sizeof(int16_t),
+                            deadline_us);
             if (err != ESP_OK) {
                 return err;
             }
@@ -835,6 +845,23 @@ esp_err_t report_codec_stream_full_binary(const app_config_snapshot_t *config,
     }
 
     return ESP_OK;
+}
+
+esp_err_t report_codec_stream_full_binary(const app_config_snapshot_t *config,
+                                          const report_frame_t *frame,
+                                          uint32_t data_crc32,
+                                          esp_http_client_handle_t client,
+                                          uint32_t total_budget_ms)
+{
+    if (client == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    return report_codec_stream_full_binary_with_writer(config,
+                                                       frame,
+                                                       data_crc32,
+                                                       http_write_all_adapter,
+                                                       client,
+                                                       total_budget_ms);
 }
 
 static cJSON *find_key_recursive(cJSON *node, const char *key)

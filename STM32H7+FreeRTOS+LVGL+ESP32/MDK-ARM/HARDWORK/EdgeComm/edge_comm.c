@@ -88,6 +88,9 @@
 #ifndef ESP32_SPI_FULL_RESULT_TIMEOUT_MS
 #define ESP32_SPI_FULL_RESULT_TIMEOUT_MS 8000U
 #endif
+#ifndef ESP32_SPI_FULL_TX_STALE_MS
+#define ESP32_SPI_FULL_TX_STALE_MS 8000U
+#endif
 #ifndef ESP32_SPI_FULL_WAIT_LOG_MS
 #define ESP32_SPI_FULL_WAIT_LOG_MS 2000U
 #endif
@@ -135,6 +138,12 @@
 #endif
 #ifndef ESP32_SPI_AUTO_RECOVER_FAIL_BACKOFF_MS
 #define ESP32_SPI_AUTO_RECOVER_FAIL_BACKOFF_MS 5000U
+#endif
+#ifndef ESP32_SPI_WIFI_CONNECT_SETTLE_MS
+#define ESP32_SPI_WIFI_CONNECT_SETTLE_MS 30000U
+#endif
+#ifndef ESP32_SPI_WIFI_STATUS_POLL_MS
+#define ESP32_SPI_WIFI_STATUS_POLL_MS 500U
 #endif
 #ifndef ESP_UPLOAD_SNAPSHOT_SLOT_COUNT
 #define ESP_UPLOAD_SNAPSHOT_SLOT_COUNT 2U
@@ -225,6 +234,8 @@ static void ESP_SetServerReportMode(uint8_t full);
 static void ESP_SPI_ResetLocalReportState(const char *reason);
 #if (ESP32_SPI_ENABLE_FULL_UPLOAD)
 static void ESP_SPI_FullClearWaitState(void);
+static uint8_t ESP_SPI_FullClearStaleWaitState(const char *context);
+static uint8_t ESP_SPI_FullClearBlockedTxState(const char *context, uint8_t link_not_ready);
 static void ESP_SPI_FullResetUploadRuntimeState(void);
 static void ESP_SPI_FullEnterHoldoff(const char *reason, uint32_t holdoff_ms);
 static bool ESP_SPI_FullHoldoffActive(uint32_t now_tick);
@@ -1828,12 +1839,16 @@ static void ESP_SPI_FullSetContinuous(uint8_t enable)
 static void ESP_SPI_FullPrintStatus(void)
 {
 #if (ESP32_SPI_ENABLE_FULL_UPLOAD)
-    ESP_Log("[ESP32SPI] full status: requested=%u continuous=%u pending=%u reporting=%u ready=%u\r\n",
+    (void)ESP_SPI_FullClearStaleWaitState("status");
+    (void)ESP_SPI_FullClearBlockedTxState("status", (g_esp_ready == 0U) ? 1U : 0U);
+    ESP_Log("[ESP32SPI] full status: requested=%u continuous=%u pending=%u reporting=%u ready=%u active=%u phase=%u\r\n",
             (unsigned int)g_server_report_full,
             (unsigned int)g_spi_full_continuous,
             (unsigned int)g_spi_full_manual_frames,
             (unsigned int)ESP_UI_IsReporting(),
-            (unsigned int)g_esp_ready);
+            (unsigned int)g_esp_ready,
+            (unsigned int)g_full_tx_sm.active,
+            (unsigned int)g_full_tx_sm.phase);
     if (g_spi_full_waiting_result != 0U) {
         ESP_Log("[ESP32SPI] full waiting: frame=%lu ref=%lu elapsed=%lums\r\n",
                 (unsigned long)g_spi_full_result_frame_id,
@@ -2027,6 +2042,80 @@ static void ESP_SPI_FullClearWaitState(void)
     g_spi_full_result_last_poll_tick = 0U;
 }
 
+static uint8_t ESP_SPI_FullClearStaleWaitState(const char *context)
+{
+    const char *reason = NULL;
+    uint32_t now;
+    uint32_t elapsed;
+
+    if (g_spi_full_waiting_result == 0U) {
+        return 0U;
+    }
+
+    now = HAL_GetTick();
+    elapsed = now - g_spi_full_result_start_tick;
+    if (g_spi_full_result_frame_id == 0U ||
+        g_spi_full_result_ref_seq == 0U ||
+        g_spi_full_result_start_tick == 0U) {
+        reason = "invalid_ref";
+    } else if (elapsed >= ESP32_SPI_FULL_RESULT_TIMEOUT_MS) {
+        reason = "timeout";
+    }
+
+    if (reason == NULL) {
+        return 0U;
+    }
+
+    ESP_Log("[ESP32SPI] stale full wait cleared ctx=%s frame=%lu ref=%lu elapsed=%lums reason=%s\r\n",
+            (context != NULL) ? context : "unknown",
+            (unsigned long)g_spi_full_result_frame_id,
+            (unsigned long)g_spi_full_result_ref_seq,
+            (unsigned long)elapsed,
+            reason);
+    ESP_SPI_FullClearWaitState();
+    if (g_spi_full_timeout_count < 1000000UL) {
+        g_spi_full_timeout_count++;
+    }
+    return 1U;
+}
+
+static uint8_t ESP_SPI_FullClearBlockedTxState(const char *context, uint8_t link_not_ready)
+{
+    const char *reason = NULL;
+    uint32_t now;
+    uint32_t elapsed;
+
+    if (g_full_tx_sm.active == 0U) {
+        return 0U;
+    }
+
+    now = HAL_GetTick();
+    elapsed = now - g_full_tx_sm.start_tick;
+    if (link_not_ready != 0U) {
+        reason = "link_not_ready";
+    } else if (g_full_tx_sm.start_tick == 0U || elapsed >= ESP32_SPI_FULL_TX_STALE_MS) {
+        reason = "tx_stale";
+    }
+
+    if (reason == NULL) {
+        return 0U;
+    }
+
+    ESP_Log("[ESP32SPI] blocked full tx cleared ctx=%s frame=%lu snap=%lu elapsed=%lums phase=%u pkt=%lu reason=%s\r\n",
+            (context != NULL) ? context : "unknown",
+            (unsigned long)g_full_tx_sm.frame_id,
+            (unsigned long)g_full_tx_sm.snapshot_seq,
+            (unsigned long)elapsed,
+            (unsigned int)g_full_tx_sm.phase,
+            (unsigned long)g_full_tx_sm.packet_count,
+            reason);
+    ESP_FullTx_ClearAndRelease();
+    if (g_spi_full_busy_nack_count < 1000000UL) {
+        g_spi_full_busy_nack_count++;
+    }
+    return 1U;
+}
+
 static void ESP_SPI_FullResetUploadRuntimeState(void)
 {
     ESP_SPI_FullClearWaitState();
@@ -2077,6 +2166,8 @@ static bool ESP_SPI_FullHoldoffActive(uint32_t now_tick)
 static uint8_t ESP_SPI_FullControlBusy(void)
 {
 #if (ESP32_SPI_ENABLE_FULL_UPLOAD)
+    (void)ESP_SPI_FullClearStaleWaitState("control");
+    (void)ESP_SPI_FullClearBlockedTxState("control", (g_esp_ready == 0U) ? 1U : 0U);
     if (g_spi_full_holdoff_until_tick != 0U) {
         (void)ESP_SPI_FullHoldoffActive(HAL_GetTick());
     }
@@ -2985,11 +3076,16 @@ void ESP_Post_Summary(void)
  */
 void ESP_Post_Data(void)
 {
-    if (g_esp_ready == 0)
+    if (g_esp_ready == 0) {
+#if (ESP32_SPI_ENABLE_FULL_UPLOAD)
+        (void)ESP_SPI_FullClearBlockedTxState("post_not_ready", 1U);
+#endif
         return;
+    }
 
 #if (ESP32_SPI_ENABLE_FULL_UPLOAD)
     ESP_SPI_ServiceDeferredSync();
+    (void)ESP_SPI_FullClearStaleWaitState("post");
     {
     static uint32_t last_full_send_time = 0;
     static uint32_t full_try = 0, full_ok = 0, full_err = 0;
@@ -3211,10 +3307,30 @@ void ESP_Post_Data(void)
         uint16_t done_wave_points = (g_full_tx_sm.channel_count > 0U) ?
                                     g_full_tx_sm.channels[0].waveform_count : 0U;
         uint32_t elapsed_ms = HAL_GetTick() - g_full_tx_sm.start_tick;
+        uint32_t done_ref_seq = ESP32_SPI_GetLastFullEndRefSeq();
+        uint32_t last_nack_ref = ESP32_SPI_GetLastNackRefSeq();
+        uint16_t last_nack_reason = ESP32_SPI_GetLastNackReason();
         full_ok++;
         g_spi_full_busy_nack_count = 0U;
+        ESP_UploadSnapshot_Release(done_seq);
+        memset(&g_full_tx_sm, 0, sizeof(g_full_tx_sm));
+
+        if (done_ref_seq == 0U ||
+            (last_nack_ref == done_ref_seq && last_nack_reason == ESP32_SPI_NACK_INVALID_STATE)) {
+            full_err++;
+            ESP_Log("[ESP32SPI] full end ref rejected frame=%lu ref=%lu nack_ref=%lu reason=%u elapsed=%lums; skip http wait\r\n",
+                    (unsigned long)done_frame,
+                    (unsigned long)done_ref_seq,
+                    (unsigned long)last_nack_ref,
+                    (unsigned int)last_nack_reason,
+                    (unsigned long)elapsed_ms);
+            ESP_SPI_FullEnterHoldoff("full end ref rejected",
+                                     ESP32_SPI_FULL_BUSY_HOLDOFF_MS);
+            return;
+        }
+
         g_spi_full_waiting_result = 1U;
-        g_spi_full_result_ref_seq = ESP32_SPI_GetLastFullEndRefSeq();
+        g_spi_full_result_ref_seq = done_ref_seq;
         g_spi_full_result_frame_id = done_frame;
         g_spi_full_result_start_tick = HAL_GetTick();
         {
@@ -3223,8 +3339,6 @@ void ESP_Post_Data(void)
         }
         g_spi_full_result_last_log_tick = g_spi_full_result_start_tick;
         g_spi_full_result_last_poll_tick = 0U;
-        ESP_UploadSnapshot_Release(done_seq);
-        memset(&g_full_tx_sm, 0, sizeof(g_full_tx_sm));
 
         if ((HAL_GetTick() - last_full_log) >= 1000U) {
             last_full_log = HAL_GetTick();
@@ -3441,6 +3555,7 @@ static void ESP_UI_SyncLinkFlagsFromStatus(const esp32_spi_status_t *st)
     g_ui_tcp_ok = (st->cloud_connected || st->registered_with_cloud || st->reporting_enabled) ? 1U : 0U;
     g_ui_reg_ok = (st->registered_with_cloud || st->reporting_enabled) ? 1U : 0U;
     g_esp_ready = (st->registered_with_cloud || st->reporting_enabled) ? 1U : 0U;
+    g_report_enabled = st->reporting_enabled ? 1U : 0U;
 }
 
 static void ESP_UI_ScheduleAutoRecover(const char *reason, uint8_t want_report)
@@ -3797,8 +3912,31 @@ static bool ESP_UI_DoApplyConfig(void)
     return true;
 }
 
+static bool ESP_UI_WaitForWifiConnected(uint32_t timeout_ms)
+{
+    uint32_t start = HAL_GetTick();
+    esp32_spi_status_t st;
+
+    do {
+        if (ESP32_SPI_QueryStatus(&st, 1000U)) {
+            ESP_UI_SyncLinkFlagsFromStatus(&st);
+            if (st.wifi_connected) {
+                return true;
+            }
+        }
+        if (osKernelGetState() == osKernelRunning && __get_IPSR() == 0U) {
+            osDelay(ESP32_SPI_WIFI_STATUS_POLL_MS);
+        }
+    } while ((HAL_GetTick() - start) < timeout_ms);
+
+    ESP_UI_SPI_LogStatus("wifi failed");
+    return false;
+}
+
 static bool ESP_UI_DoWiFi(void)
 {
+    bool connect_resp_ok;
+
     ESP_Log("[UI] Executing WIFI via ESP32 SPI...\r\n");
     g_esp_ready = 0;
     g_report_enabled = 0;
@@ -3816,13 +3954,12 @@ static bool ESP_UI_DoWiFi(void)
     if (!ESP_UI_SPI_LoadAndApplyConfig()) {
         return false;
     }
-    if (!ESP32_SPI_ConnectWifi(30000U)) {
-        esp32_spi_status_t st;
-        if (!ESP32_SPI_QueryStatus(&st, 1000U) || !st.wifi_connected) {
-            ESP_UI_SPI_LogStatus("wifi failed");
-            g_ui_wifi_ok = 0;
-            return false;
-        }
+    connect_resp_ok = ESP32_SPI_ConnectWifi(30000U);
+    if (!ESP_UI_WaitForWifiConnected(ESP32_SPI_WIFI_CONNECT_SETTLE_MS)) {
+        g_ui_wifi_ok = 0;
+        return false;
+    }
+    if (!connect_resp_ok) {
         ESP_Log("[ESP32SPI] wifi connect response missed, but status is connected; continue.\r\n");
     }
 

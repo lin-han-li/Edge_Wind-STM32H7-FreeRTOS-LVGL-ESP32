@@ -23,6 +23,7 @@ ESP_REPORT_READ_RE = re.compile(
     r"report stage=read frame=(\d+).*?\blen=(\d+).*?err=([A-Z_]+).*?http=(\d+).*?total=(\d+).*?open=(\d+).*?stream=(\d+).*?fetch=(\d+).*?read=(\d+)"
 )
 ESP_DROPPED_INVALID_RE = re.compile(r"Dropped invalid RX packet,\s+reason=(\d+)")
+JOURNAL_SHORT_UNIX_RE = re.compile(r"^(\d+(?:\.\d+)?)\s")
 
 
 def is_cloud_error_line(line):
@@ -76,6 +77,7 @@ class Monitor:
         self.esp_start_chunk_delay_ms = set()
         self.esp_start_effective_delay_ms = set()
         self.esp_start_write_chunk_bytes = set()
+        self.cloud_series_times = []
         self.cloud_proc = None
 
     @staticmethod
@@ -166,6 +168,8 @@ class Monitor:
             elif source == "cloud":
                 if "[/api/node/full_frame_bin][series]" in line:
                     self.stats["cloud_full_series"] += 1
+                    m_ts = JOURNAL_SHORT_UNIX_RE.match(line)
+                    self.cloud_series_times.append(float(m_ts.group(1)) if m_ts else now)
                 if "raw_lens=[(0, 4096, 2048)" in line and "emit_lens=[(0, 4096, 2048)" in line:
                     self.stats["cloud_raw_4096_2048"] += 1
                 if is_cloud_error_line(line):
@@ -175,7 +179,17 @@ class Monitor:
 
     def serial_thread(self, port, baud, path, source):
         try:
-            with serial.Serial(port, baudrate=baud, timeout=0.2) as ser:
+            ser = serial.Serial()
+            ser.port = port
+            ser.baudrate = baud
+            ser.timeout = 0.2
+            ser.rtscts = False
+            ser.dsrdtr = False
+            # Avoid toggling ESP32 EN/BOOT through USB-UART auto-reset while
+            # starting a passive monitor.
+            ser.dtr = False
+            ser.rts = False
+            with ser:
                 try:
                     ser.reset_input_buffer()
                 except Exception:
@@ -190,13 +204,20 @@ class Monitor:
                 self.stats["serial_errors"].append(f"{source}:{port}:{exc}")
 
     def cloud_thread(self, path):
+        reconnect_delay_s = 2.0
         while not self.stop.is_set():
             cmd = [
                 "ssh",
+                "-o",
+                "ConnectTimeout=8",
+                "-o",
+                "ServerAliveInterval=15",
+                "-o",
+                "ServerAliveCountMax=2",
                 "-F",
                 self.args.ssh_config,
                 "aliyun-ubuntu",
-                "journalctl -u edge_wind.service -n 0 -f --no-pager",
+                "journalctl -u edge_wind.service -n 0 -f -o short-unix --no-pager",
             ]
             try:
                 self.cloud_proc = subprocess.Popen(
@@ -213,6 +234,8 @@ class Monitor:
                     line = self.cloud_proc.stdout.readline()
                     if line:
                         self.log_line(path, "cloud", line)
+                        if "[/api/node/full_frame_bin][series]" in line:
+                            reconnect_delay_s = 2.0
                     elif self.cloud_proc.poll() is not None:
                         break
                     else:
@@ -227,7 +250,8 @@ class Monitor:
             if not self.stop.is_set():
                 with self.lock:
                     self.stats["cloud_reconnects"] += 1
-                time.sleep(2.0)
+                time.sleep(reconnect_delay_s)
+                reconnect_delay_s = min(30.0, reconnect_delay_s * 2.0)
 
     @staticmethod
     def percentiles(values):
@@ -270,11 +294,12 @@ class Monitor:
             "-F",
             self.args.ssh_config,
             "aliyun-ubuntu",
-            f"journalctl -u edge_wind.service --since @{int(since_epoch)} --no-pager",
+            f"journalctl -u edge_wind.service --since @{int(since_epoch)} -o short-unix --no-pager",
         ]
         result = {
             "cloud_journal_full_series": 0,
             "cloud_journal_raw_4096_2048": 0,
+            "cloud_journal_series_interval_ms": {},
             "cloud_journal_errors": 0,
             "cloud_journal_error_text": "",
         }
@@ -289,11 +314,18 @@ class Monitor:
                 timeout=30,
             )
             text = proc.stdout or ""
+            journal_series_times = []
             for line in text.splitlines():
                 if "[/api/node/full_frame_bin][series]" in line:
                     result["cloud_journal_full_series"] += 1
+                    m_ts = JOURNAL_SHORT_UNIX_RE.match(line)
+                    if m_ts:
+                        journal_series_times.append(float(m_ts.group(1)))
                 if "raw_lens=[(0, 4096, 2048)" in line and "emit_lens=[(0, 4096, 2048)" in line:
                     result["cloud_journal_raw_4096_2048"] += 1
+            result["cloud_journal_series_interval_ms"] = self.percentiles([
+                (cur - prev) * 1000.0 for prev, cur in zip(journal_series_times, journal_series_times[1:])
+            ])
             if proc.returncode != 0:
                 result["cloud_journal_errors"] = 1
                 result["cloud_journal_error_text"] = (proc.stderr or proc.stdout or "").strip()[:500]
@@ -308,6 +340,7 @@ class Monitor:
             times = list(self.stm_begin_times)
             stm_http_timed = list(self.stm_http_elapsed_timed)
             esp_http_timed = list(self.esp_http_total_timed)
+            cloud_series_times = list(self.cloud_series_times)
         payload["elapsed_s"] = round(elapsed, 1) if elapsed is not None else None
         payload["esp_payload_lengths"] = sorted(self.esp_payload_lengths)
         payload["esp_start_chunk_kb_values"] = sorted(self.esp_start_chunk_kb)
@@ -326,6 +359,8 @@ class Monitor:
         payload["esp_http_stream_ms"] = self.percentiles(self.esp_http_stream_ms)
         payload["esp_http_fetch_ms"] = self.percentiles(self.esp_http_fetch_ms)
         payload["esp_http_read_ms"] = self.percentiles(self.esp_http_read_ms)
+        payload["cloud_series_interval_ms"] = self.interval_percentiles(cloud_series_times)
+        payload["cloud_series_interval_ms_first60"] = self.interval_percentiles(cloud_series_times, 60.0)
         payload["esp_http_success_rate"] = self.success_rate(payload["esp_report_read_ok"], payload["esp_report_read_fail"])
         return payload
 

@@ -1,10 +1,14 @@
 #include "cloud_client.h"
 
 #include <inttypes.h>
+#include <ctype.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "esp_err.h"
 #include "esp_heap_caps.h"
@@ -14,6 +18,9 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
+#include "lwip/netdb.h"
+#include "lwip/sockets.h"
+#include "lwip/tcp.h"
 
 #include "report_buffer.h"
 #include "report_codec.h"
@@ -39,6 +46,14 @@ static const char *TAG = "cloud_client";
 #define CLOUD_REPORT_WIFI_RECONNECT_SETTLE_MS 500U
 #define CLOUD_FULL_LOW_HEAP_FREE_BYTES 20000U
 #define CLOUD_FULL_LOW_HEAP_LARGEST_BYTES 4096U
+#define CLOUD_FULL_RAW_KEEPALIVE_ENABLE 1
+#define CLOUD_FULL_RAW_HEADER_MAX_LEN 512U
+#define CLOUD_FULL_RAW_RESPONSE_HEADER_MAX_LEN 768U
+#define CLOUD_FULL_RAW_IO_TIMEOUT_MS 1200U
+#define CLOUD_FULL_RAW_MAX_REUSE 24U
+#define CLOUD_FULL_RAW_WRITE_BLOCK_ABORT_MS 1200U
+#define CLOUD_FULL_RAW_WRITE_RETRY_MAX 0U
+#define CLOUD_FULL_RAW_WRITE_RETRY_DELAY_MS 20U
 
 typedef enum {
     CLOUD_MSG_APPLY_SNAPSHOT = 1,
@@ -68,6 +83,12 @@ static bool s_registered;
 static int64_t s_last_request_us;
 static uint32_t s_report_transport_fail_streak;
 static int64_t s_last_wifi_recover_us;
+static int s_full_raw_sock = -1;
+static char s_full_raw_host[96];
+static uint16_t s_full_raw_port;
+static uint32_t s_full_raw_reuse_count;
+
+static uint32_t report_request_timeout_ms(const app_config_snapshot_t *snapshot, const report_frame_t *frame);
 
 static void post_event(cloud_client_event_id_t id,
                        esp_err_t error,
@@ -165,6 +186,510 @@ static void apply_request_interval(const app_config_snapshot_t *snapshot)
     if (delta_us < min_interval_us) {
         vTaskDelay(pdMS_TO_TICKS((uint32_t) ((min_interval_us - delta_us) / 1000LL)));
     }
+}
+
+static bool raw_deadline_expired(int64_t deadline_us)
+{
+    return deadline_us > 0 && esp_timer_get_time() >= deadline_us;
+}
+
+static const char *ascii_strcasestr_local(const char *haystack, const char *needle)
+{
+    size_t needle_len;
+
+    if (haystack == NULL || needle == NULL) {
+        return NULL;
+    }
+    needle_len = strlen(needle);
+    if (needle_len == 0U) {
+        return haystack;
+    }
+    for (const char *p = haystack; *p != '\0'; ++p) {
+        size_t i = 0U;
+        while (i < needle_len && p[i] != '\0' &&
+               (char) tolower((unsigned char) p[i]) == (char) tolower((unsigned char) needle[i])) {
+            ++i;
+        }
+        if (i == needle_len) {
+            return p;
+        }
+    }
+    return NULL;
+}
+
+static void full_raw_close(const char *reason)
+{
+    if (s_full_raw_sock >= 0) {
+        ESP_LOGW(TAG,
+                 "full raw socket close reason=%s host=%s port=%u reuse=%u",
+                 reason != NULL ? reason : "unknown",
+                 s_full_raw_host,
+                 (unsigned int) s_full_raw_port,
+                 (unsigned int) s_full_raw_reuse_count);
+        close(s_full_raw_sock);
+        s_full_raw_sock = -1;
+    }
+    s_full_raw_reuse_count = 0U;
+}
+
+static void full_raw_set_timeouts(int sock, uint32_t timeout_ms)
+{
+    struct timeval tv = {
+        .tv_sec = (long) (timeout_ms / 1000U),
+        .tv_usec = (long) ((timeout_ms % 1000U) * 1000U),
+    };
+    int yes = 1;
+
+    (void) setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    (void) setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+    (void) setsockopt(sock, SOL_SOCKET, SO_KEEPALIVE, &yes, sizeof(yes));
+#ifdef TCP_NODELAY
+    (void) setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
+#endif
+}
+
+static uint32_t full_raw_io_timeout_ms(uint32_t timeout_ms)
+{
+    if (timeout_ms == 0U || timeout_ms > CLOUD_FULL_RAW_IO_TIMEOUT_MS) {
+        return CLOUD_FULL_RAW_IO_TIMEOUT_MS;
+    }
+    return timeout_ms;
+}
+
+static esp_err_t full_raw_connect_socket(const char *host, uint16_t port, uint32_t timeout_ms, int *out_sock)
+{
+    char port_text[8];
+    struct addrinfo hints;
+    struct addrinfo *res = NULL;
+    struct addrinfo *it = NULL;
+    int ret;
+    esp_err_t result = ESP_ERR_HTTP_CONNECT;
+
+    if (host == NULL || out_sock == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *out_sock = -1;
+
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    snprintf(port_text, sizeof(port_text), "%u", (unsigned int) port);
+
+    ret = getaddrinfo(host, port_text, &hints, &res);
+    if (ret != 0 || res == NULL) {
+        ESP_LOGW(TAG, "full raw getaddrinfo failed host=%s port=%u ret=%d", host, (unsigned int) port, ret);
+        return ESP_ERR_HTTP_CONNECT;
+    }
+
+    for (it = res; it != NULL; it = it->ai_next) {
+        int sock = socket(it->ai_family, it->ai_socktype, it->ai_protocol);
+        int flags;
+        int so_error = 0;
+        socklen_t so_error_len = sizeof(so_error);
+
+        if (sock < 0) {
+            continue;
+        }
+        full_raw_set_timeouts(sock, timeout_ms);
+
+        flags = fcntl(sock, F_GETFL, 0);
+        if (flags >= 0) {
+            (void) fcntl(sock, F_SETFL, flags | O_NONBLOCK);
+        }
+
+        ret = connect(sock, it->ai_addr, it->ai_addrlen);
+        if (ret < 0 && errno == EINPROGRESS) {
+            fd_set wfds;
+            struct timeval tv = {
+                .tv_sec = (long) (timeout_ms / 1000U),
+                .tv_usec = (long) ((timeout_ms % 1000U) * 1000U),
+            };
+            FD_ZERO(&wfds);
+            FD_SET(sock, &wfds);
+            ret = select(sock + 1, NULL, &wfds, NULL, &tv);
+            if (ret > 0) {
+                ret = getsockopt(sock, SOL_SOCKET, SO_ERROR, &so_error, &so_error_len);
+                if (ret == 0 && so_error == 0) {
+                    ret = 0;
+                } else {
+                    errno = so_error;
+                    ret = -1;
+                }
+            } else {
+                errno = ETIMEDOUT;
+                ret = -1;
+            }
+        }
+
+        if (flags >= 0) {
+            (void) fcntl(sock, F_SETFL, flags);
+        }
+
+        if (ret == 0) {
+            full_raw_set_timeouts(sock, full_raw_io_timeout_ms(timeout_ms));
+            *out_sock = sock;
+            result = ESP_OK;
+            break;
+        }
+
+        close(sock);
+    }
+
+    freeaddrinfo(res);
+    return result;
+}
+
+static esp_err_t full_raw_send_plain(int sock, const void *data, size_t data_len, int64_t deadline_us)
+{
+    const uint8_t *bytes = (const uint8_t *) data;
+    size_t offset = 0U;
+#if CLOUD_FULL_RAW_WRITE_RETRY_MAX > 0
+    uint32_t retry_count = 0U;
+#endif
+
+    if (sock < 0 || (data == NULL && data_len > 0U)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    while (offset < data_len) {
+        ssize_t written;
+        if (raw_deadline_expired(deadline_us)) {
+            return ESP_ERR_TIMEOUT;
+        }
+        written = send(sock, bytes + offset, data_len - offset, 0);
+        if (written <= 0) {
+            int saved_errno = errno;
+#if CLOUD_FULL_RAW_WRITE_RETRY_MAX == 0
+            ESP_LOGW(TAG,
+                     "full raw send failed ret=%d errno=%d offset=%u len=%u",
+                     (int) written,
+                     saved_errno,
+                     (unsigned int) offset,
+                     (unsigned int) data_len);
+            return ESP_FAIL;
+#else
+            if (retry_count >= CLOUD_FULL_RAW_WRITE_RETRY_MAX) {
+                ESP_LOGW(TAG,
+                         "full raw send failed ret=%d errno=%d offset=%u len=%u",
+                         (int) written,
+                         saved_errno,
+                         (unsigned int) offset,
+                         (unsigned int) data_len);
+                return ESP_FAIL;
+            }
+            ++retry_count;
+            vTaskDelay(pdMS_TO_TICKS(CLOUD_FULL_RAW_WRITE_RETRY_DELAY_MS));
+            continue;
+#endif
+        }
+        offset += (size_t) written;
+#if CLOUD_FULL_RAW_WRITE_RETRY_MAX > 0
+        retry_count = 0U;
+#endif
+    }
+    return ESP_OK;
+}
+
+static esp_err_t full_raw_write_all(void *ctx,
+                                    const app_config_snapshot_t *config,
+                                    const void *data,
+                                    size_t data_len,
+                                    int64_t deadline_us)
+{
+    int sock = (int) (intptr_t) ctx;
+    const uint8_t *bytes = (const uint8_t *) data;
+    size_t offset = 0U;
+#if CLOUD_FULL_RAW_WRITE_RETRY_MAX > 0
+    uint32_t retry_count = 0U;
+#endif
+    const size_t write_chunk_limit = report_codec_full_binary_write_chunk_limit(config);
+    const uint32_t write_delay_ms = report_codec_full_binary_write_delay_ms(config);
+    const int64_t write_abort_us = esp_timer_get_time() + ((int64_t) CLOUD_FULL_RAW_WRITE_BLOCK_ABORT_MS * 1000LL);
+
+    if (sock < 0 || (data == NULL && data_len > 0U)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    while (offset < data_len) {
+        size_t write_len = data_len - offset;
+        ssize_t written;
+        if (write_len > write_chunk_limit) {
+            write_len = write_chunk_limit;
+        }
+        if (raw_deadline_expired(deadline_us) || raw_deadline_expired(write_abort_us)) {
+            return ESP_ERR_TIMEOUT;
+        }
+        written = send(sock, bytes + offset, write_len, 0);
+        if (raw_deadline_expired(write_abort_us)) {
+            ESP_LOGW(TAG,
+                     "full raw body write abort offset=%u len=%u limit_ms=%u",
+                     (unsigned int) offset,
+                     (unsigned int) data_len,
+                     (unsigned int) CLOUD_FULL_RAW_WRITE_BLOCK_ABORT_MS);
+            return ESP_ERR_TIMEOUT;
+        }
+        if (written <= 0) {
+            int saved_errno = errno;
+#if CLOUD_FULL_RAW_WRITE_RETRY_MAX == 0
+            ESP_LOGW(TAG,
+                     "full raw body send failed ret=%d errno=%d offset=%u len=%u",
+                     (int) written,
+                     saved_errno,
+                     (unsigned int) offset,
+                     (unsigned int) data_len);
+            return ESP_FAIL;
+#else
+            if (retry_count >= CLOUD_FULL_RAW_WRITE_RETRY_MAX) {
+                ESP_LOGW(TAG,
+                         "full raw body send failed ret=%d errno=%d offset=%u len=%u",
+                         (int) written,
+                         saved_errno,
+                         (unsigned int) offset,
+                         (unsigned int) data_len);
+                return ESP_FAIL;
+            }
+            ++retry_count;
+            vTaskDelay(pdMS_TO_TICKS(CLOUD_FULL_RAW_WRITE_RETRY_DELAY_MS));
+            continue;
+#endif
+        }
+        offset += (size_t) written;
+#if CLOUD_FULL_RAW_WRITE_RETRY_MAX > 0
+        retry_count = 0U;
+#endif
+        if (write_delay_ms > 0U && offset < data_len) {
+            vTaskDelay(pdMS_TO_TICKS(write_delay_ms));
+        }
+    }
+
+    return ESP_OK;
+}
+
+static const char *find_http_header_end(const char *buffer, size_t len)
+{
+    if (buffer == NULL || len < 4U) {
+        return NULL;
+    }
+    for (size_t i = 0U; i + 3U < len; ++i) {
+        if (buffer[i] == '\r' && buffer[i + 1U] == '\n' && buffer[i + 2U] == '\r' && buffer[i + 3U] == '\n') {
+            return buffer + i + 4U;
+        }
+    }
+    return NULL;
+}
+
+static int parse_http_content_length(const char *headers)
+{
+    const char *p = ascii_strcasestr_local(headers, "content-length:");
+    if (p == NULL) {
+        return -1;
+    }
+    p += strlen("content-length:");
+    while (*p == ' ' || *p == '\t') {
+        ++p;
+    }
+    return (int) strtol(p, NULL, 10);
+}
+
+static esp_err_t full_raw_read_response(int sock,
+                                        char *response,
+                                        size_t response_len,
+                                        int *out_http_status,
+                                        bool *out_keepalive)
+{
+    char headers[CLOUD_FULL_RAW_RESPONSE_HEADER_MAX_LEN];
+    size_t used = 0U;
+    const char *body_start = NULL;
+    int status = 0;
+    int content_len;
+    size_t copied = 0U;
+
+    if (sock < 0 || response == NULL || response_len == 0U || out_http_status == NULL || out_keepalive == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    response[0] = '\0';
+    *out_http_status = 0;
+    *out_keepalive = false;
+
+    while (used + 1U < sizeof(headers)) {
+        ssize_t n = recv(sock, headers + used, sizeof(headers) - used - 1U, 0);
+        if (n <= 0) {
+            return ESP_FAIL;
+        }
+        used += (size_t) n;
+        headers[used] = '\0';
+        body_start = find_http_header_end(headers, used);
+        if (body_start != NULL) {
+            break;
+        }
+    }
+    if (body_start == NULL) {
+        return ESP_FAIL;
+    }
+
+    if (sscanf(headers, "HTTP/%*s %d", &status) != 1) {
+        return ESP_FAIL;
+    }
+    *out_http_status = status;
+    *out_keepalive = (ascii_strcasestr_local(headers, "connection: close") == NULL);
+    content_len = parse_http_content_length(headers);
+
+    {
+        size_t header_len = (size_t) (body_start - headers);
+        size_t already = used > header_len ? used - header_len : 0U;
+        size_t take = already;
+        if (take >= response_len) {
+            take = response_len - 1U;
+        }
+        if (take > 0U) {
+            memcpy(response, body_start, take);
+            copied = take;
+            response[copied] = '\0';
+        }
+        if (content_len >= 0) {
+            size_t consumed = already;
+            char drain[128];
+            while (consumed < (size_t) content_len) {
+                size_t want = (size_t) content_len - consumed;
+                ssize_t n;
+                if (copied < response_len - 1U) {
+                    size_t room = response_len - 1U - copied;
+                    if (want > room) {
+                        want = room;
+                    }
+                    n = recv(sock, response + copied, want, 0);
+                    if (n <= 0) {
+                        return ESP_FAIL;
+                    }
+                    copied += (size_t) n;
+                    consumed += (size_t) n;
+                    response[copied] = '\0';
+                } else {
+                    if (want > sizeof(drain)) {
+                        want = sizeof(drain);
+                    }
+                    n = recv(sock, drain, want, 0);
+                    if (n <= 0) {
+                        return ESP_FAIL;
+                    }
+                    consumed += (size_t) n;
+                }
+            }
+        }
+    }
+
+    return ESP_OK;
+}
+
+static esp_err_t post_full_binary_raw_keepalive(const app_config_snapshot_t *snapshot,
+                                                const report_frame_t *frame,
+                                                const report_full_binary_info_t *binary_info,
+                                                char *response,
+                                                size_t response_len,
+                                                int *out_http_status,
+                                                int64_t *out_open_ms,
+                                                int64_t *out_stream_ms,
+                                                int64_t *out_read_ms,
+                                                const char **out_stage)
+{
+    char header[CLOUD_FULL_RAW_HEADER_MAX_LEN];
+    int header_len;
+    int64_t t_stage_us;
+    int64_t deadline_us;
+    uint32_t timeout_ms;
+    uint32_t raw_io_timeout_ms;
+    bool keepalive = false;
+    esp_err_t err;
+
+    if (snapshot == NULL || frame == NULL || binary_info == NULL || response == NULL ||
+        out_http_status == NULL || out_open_ms == NULL || out_stream_ms == NULL ||
+        out_read_ms == NULL || out_stage == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    *out_http_status = 0;
+    *out_open_ms = 0;
+    *out_stream_ms = 0;
+    *out_read_ms = 0;
+    *out_stage = "raw_open";
+    timeout_ms = report_request_timeout_ms(snapshot, frame);
+    raw_io_timeout_ms = full_raw_io_timeout_ms(timeout_ms);
+    deadline_us = esp_timer_get_time() + ((int64_t) CLOUD_FULL_HTTP_TOTAL_BUDGET_MS * 1000LL);
+
+    t_stage_us = esp_timer_get_time();
+    if (s_full_raw_sock >= 0 && s_full_raw_reuse_count >= CLOUD_FULL_RAW_MAX_REUSE) {
+        full_raw_close("max_reuse");
+    }
+    if (s_full_raw_sock < 0 ||
+        s_full_raw_port != snapshot->device.server_port ||
+        strncmp(s_full_raw_host, snapshot->device.server_host, sizeof(s_full_raw_host)) != 0) {
+        full_raw_close("host_change");
+        err = full_raw_connect_socket(snapshot->device.server_host,
+                                      snapshot->device.server_port,
+                                      raw_io_timeout_ms,
+                                      &s_full_raw_sock);
+        if (err != ESP_OK) {
+            *out_open_ms = (esp_timer_get_time() - t_stage_us) / 1000LL;
+            return err;
+        }
+        snprintf(s_full_raw_host, sizeof(s_full_raw_host), "%s", snapshot->device.server_host);
+        s_full_raw_port = snapshot->device.server_port;
+        s_full_raw_reuse_count = 0U;
+    } else {
+        ++s_full_raw_reuse_count;
+        full_raw_set_timeouts(s_full_raw_sock, raw_io_timeout_ms);
+    }
+
+    header_len = snprintf(header,
+                          sizeof(header),
+                          "POST /api/node/full_frame_bin HTTP/1.1\r\n"
+                          "Host: %s:%u\r\n"
+                          "User-Agent: EdgeWind-ESP32\r\n"
+                          "Content-Type: application/octet-stream\r\n"
+                          "X-EdgeWind-Proto: ewfull/2\r\n"
+                          "Content-Length: %u\r\n"
+                          "Connection: keep-alive\r\n"
+                          "\r\n",
+                          snapshot->device.server_host,
+                          (unsigned int) snapshot->device.server_port,
+                          (unsigned int) binary_info->body_len);
+    if (header_len <= 0 || (size_t) header_len >= sizeof(header)) {
+        full_raw_close("header_overflow");
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    err = full_raw_send_plain(s_full_raw_sock, header, (size_t) header_len, deadline_us);
+    *out_open_ms = (esp_timer_get_time() - t_stage_us) / 1000LL;
+    if (err != ESP_OK) {
+        full_raw_close("header_send_fail");
+        return err;
+    }
+
+    *out_stage = "stream";
+    t_stage_us = esp_timer_get_time();
+    err = report_codec_stream_full_binary_with_writer(snapshot,
+                                                      frame,
+                                                      binary_info->data_crc32,
+                                                      full_raw_write_all,
+                                                      (void *) (intptr_t) s_full_raw_sock,
+                                                      CLOUD_FULL_HTTP_TOTAL_BUDGET_MS);
+    *out_stream_ms = (esp_timer_get_time() - t_stage_us) / 1000LL;
+    if (err != ESP_OK) {
+        full_raw_close("body_send_fail");
+        return err;
+    }
+
+    *out_stage = "read";
+    t_stage_us = esp_timer_get_time();
+    err = full_raw_read_response(s_full_raw_sock, response, response_len, out_http_status, &keepalive);
+    *out_read_ms = (esp_timer_get_time() - t_stage_us) / 1000LL;
+    if (err != ESP_OK) {
+        full_raw_close("response_fail");
+        return err;
+    }
+    if (!keepalive) {
+        full_raw_close("server_close");
+    }
+    return ESP_OK;
 }
 
 static esp_err_t post_register_request(const app_config_snapshot_t *snapshot)
@@ -339,8 +864,19 @@ static void maybe_force_wifi_recover(const report_frame_t *frame, esp_err_t err,
          * consecutive full POST failures should not immediately tear down WiFi,
          * otherwise the node keeps oscillating between register and reconnect.
          */
-        fail_threshold = CLOUD_REPORT_FULL_WIFI_RECOVER_FAIL_STREAK;
+        fail_threshold = CLOUD_REPORT_FULL_WIFI_RECOVER_FAIL_STREAK * 3U;
         if (err == ESP_OK && http_status >= 500) {
+            return;
+        }
+        if ((err == ESP_ERR_HTTP_CONNECT || err == ESP_ERR_TIMEOUT || err == ESP_FAIL) &&
+            wifi_manager_is_connected()) {
+            if (s_report_transport_fail_streak >= fail_threshold) {
+                ESP_LOGW(TAG,
+                         "full report transport failures streak=%u err=%s http=%d; keep WiFi up and retry HTTP socket",
+                         (unsigned int) s_report_transport_fail_streak,
+                         esp_err_to_name(err),
+                         http_status);
+            }
             return;
         }
     }
@@ -537,6 +1073,52 @@ static esp_err_t post_report_request(const app_config_snapshot_t *snapshot,
              (unsigned int) heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
              (unsigned int) (s_queue != NULL ? uxQueueMessagesWaiting(s_queue) : 0U));
 
+#if CLOUD_FULL_RAW_KEEPALIVE_ENABLE
+    if (use_full_binary) {
+        const char *raw_stage = "raw_open";
+        stage = raw_stage;
+        err = post_full_binary_raw_keepalive(snapshot,
+                                             frame,
+                                             &binary_info,
+                                             response,
+                                             sizeof(response),
+                                             &http_status,
+                                             &open_ms,
+                                             &stream_ms,
+                                             &read_ms,
+                                             &raw_stage);
+        stage = raw_stage;
+        if (err == ESP_OK) {
+            if (report_codec_parse_server_command(response, &server_command)) {
+                post_event(CLOUD_CLIENT_EVENT_SERVER_COMMAND,
+                           ESP_OK,
+                           http_status,
+                           frame->ref_seq,
+                           frame->frame_id,
+                           &server_command,
+                           "server_command");
+            }
+            post_event(CLOUD_CLIENT_EVENT_REPORT_RESULT,
+                       ESP_OK,
+                       http_status,
+                       frame->ref_seq,
+                       frame->frame_id,
+                       NULL,
+                       (http_status >= 200 && http_status < 300) ? "report_ok" : "report_http_fail");
+            if (http_status == 401 || http_status == 404) {
+                s_registered = false;
+            }
+        } else {
+            char detail[64];
+            format_err_message(detail, sizeof(detail), "report_raw_fail", err);
+            if (!defer_failure_event) {
+                post_event(CLOUD_CLIENT_EVENT_REPORT_RESULT, err, 0, frame->ref_seq, frame->frame_id, NULL, detail);
+            }
+        }
+        goto cleanup;
+    }
+#endif
+
     client = esp_http_client_init(&cfg);
     if (client == NULL) {
         if (!defer_failure_event) {
@@ -637,12 +1219,16 @@ cleanup:
         touch_request_timestamp();
     } else if (err != ESP_OK || http_status == 0 || http_status >= 500) {
         /*
-         * Do not let a failed full POST suppress all cloud traffic until the
-         * next full frame.  Clearing the timestamp lets the idle branch send a
-         * lightweight register/heartbeat during STM32's recovery holdoff, so
-         * the node remains online even while full snapshots are being skipped.
+         * Full-mode failures are usually short raw-socket/connect transients.
+         * Treat them as recent traffic so the idle heartbeat path does not
+         * immediately open another TCP connection while the next full frame is
+         * already queued to retry.
          */
-        clear_request_timestamp();
+        if (frame->mode == REPORT_MODE_FULL && s_registered) {
+            touch_request_timestamp();
+        } else {
+            clear_request_timestamp();
+        }
         if (!defer_failure_event) {
             if (s_report_transport_fail_streak < 1000000U) {
                 ++s_report_transport_fail_streak;
@@ -775,11 +1361,10 @@ static void cloud_task(void *arg)
                 snapshot.comm.heartbeat_ms > 0U &&
                 (s_last_request_us == 0 || (esp_timer_get_time() - s_last_request_us) >= ((int64_t) snapshot.comm.heartbeat_ms * 1000LL))) {
                 /*
-                 * In full mode this idle keepalive is critical: when STM32 is in
-                 * holdoff or the last full-frame POST just failed, we still need
-                 * lightweight cloud traffic to keep the node online and carry
-                 * server commands.  If the cloud session was invalidated, retry
-                 * a register first; otherwise send an empty heartbeat.
+                 * This idle path keeps the node registered when no report frame
+                 * has been posted for a heartbeat interval.  Full POST failures
+                 * refresh s_last_request_us above, so this path does not race the
+                 * next full-frame reconnect attempt.
                  */
                 if (!s_registered) {
                     (void) post_register_request(&snapshot);
