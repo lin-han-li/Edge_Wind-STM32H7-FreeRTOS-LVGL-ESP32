@@ -115,6 +115,12 @@
 #ifndef EDGEWIND_AI_RUN_INTERVAL_MS
 #define EDGEWIND_AI_RUN_INTERVAL_MS 1000U
 #endif
+#ifndef EDGEWIND_AI_STATS_LOG_MS
+#define EDGEWIND_AI_STATS_LOG_MS 5000U
+#endif
+#ifndef EDGEWIND_DSP_SNAPSHOT_LOG_MS
+#define EDGEWIND_DSP_SNAPSHOT_LOG_MS 5000U
+#endif
 #ifndef ESP32_SPI_FULL_PACKETS_PER_POLL
 #define ESP32_SPI_FULL_PACKETS_PER_POLL 8U
 #endif
@@ -123,6 +129,9 @@
 #endif
 #ifndef ESP32_SPI_FULL_PACKET_ACCEPT_TIMEOUT_MS
 #define ESP32_SPI_FULL_PACKET_ACCEPT_TIMEOUT_MS 200U
+#endif
+#ifndef ESP32_SPI_FULL_PROGRESS_LOG_MS
+#define ESP32_SPI_FULL_PROGRESS_LOG_MS 5000U
 #endif
 #ifndef ESP32_SPI_FULL_END_ACCEPT_TIMEOUT_MS
 #define ESP32_SPI_FULL_END_ACCEPT_TIMEOUT_MS 500U
@@ -313,7 +322,7 @@ static void ESP_AI_UpdateFaultCode(const float analog_v[4][AD_ACQ_POINTS])
     ret = EdgeWind_AI_RunOnAnalogWindow(analog_v, &result);
     if (ret != 0)
     {
-        if ((uint32_t)(now_tick - last_ai_log_tick) >= 2000U)
+        if ((uint32_t)(now_tick - last_ai_log_tick) >= EDGEWIND_AI_STATS_LOG_MS)
         {
             last_ai_log_tick = now_tick;
             ESP_Log("[AI] runtime error ret=%d; keep fault=%s\r\n", ret, g_fault_code);
@@ -331,7 +340,7 @@ static void ESP_AI_UpdateFaultCode(const float analog_v[4][AD_ACQ_POINTS])
         g_ai_fault_code_initialized = 1U;
     }
 
-    if ((uint32_t)(now_tick - last_ai_log_tick) >= 2000U)
+    if ((uint32_t)(now_tick - last_ai_log_tick) >= EDGEWIND_AI_STATS_LOG_MS)
     {
         last_ai_log_tick = now_tick;
         ESP_Log("[AI] pred=%s/%s conf=%d.%03d report=%s feat=%lums infer=%lums total=%lums\r\n",
@@ -1715,7 +1724,7 @@ void ESP_Update_Data_And_FFT(void)
 
     last_ready = ready;
     ESP_UploadSnapshot_PublishFromNodeChannels(ready);
-    if ((HAL_GetTick() - last_dsp_log_tick) >= 2000U)
+    if ((HAL_GetTick() - last_dsp_log_tick) >= EDGEWIND_DSP_SNAPSHOT_LOG_MS)
     {
         last_dsp_log_tick = HAL_GetTick();
         float rms0 = sqrtf((float)(ssq0 / (double)WAVEFORM_POINTS));
@@ -3090,6 +3099,7 @@ void ESP_Post_Data(void)
     static uint32_t last_full_send_time = 0;
     static uint32_t full_try = 0, full_ok = 0, full_err = 0;
     static uint32_t last_full_log = 0;
+    static uint32_t last_full_progress_log = 0;
     static uint32_t last_not_armed_log = 0;
     static uint32_t last_no_snapshot_log = 0;
     static uint32_t s_full_frame_id = 0;
@@ -3356,8 +3366,8 @@ void ESP_Post_Data(void)
                     (unsigned int)FFT_POINTS,
                     (unsigned long)g_upload_snapshot_drop_count);
         }
-    } else if ((HAL_GetTick() - last_full_log) >= 1000U) {
-        last_full_log = HAL_GetTick();
+    } else if ((HAL_GetTick() - last_full_progress_log) >= ESP32_SPI_FULL_PROGRESS_LOG_MS) {
+        last_full_progress_log = HAL_GetTick();
         ESP_Log("[ESP32SPI] full tx progress frame=%lu snap=%lu phase=%u ch=%u off=%u pkt=%lu drop=%lu\r\n",
                 (unsigned long)g_full_tx_sm.frame_id,
                 (unsigned long)g_full_tx_sm.snapshot_seq,

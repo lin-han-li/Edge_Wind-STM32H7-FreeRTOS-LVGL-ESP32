@@ -15,6 +15,7 @@ import serial
 FULL_HTTP_DONE_RE = re.compile(r"full http done frame=(\d+).*?elapsed=(\d+)ms http=(\d+) result=(-?\d+)")
 NACK_REASON_RE = re.compile(r"NACK ref_seq=\d+ reason=(\d+)")
 STM_RX_INVALID_RE = re.compile(r"RX invalid:\s+([a-zA-Z0-9_]+)")
+STM_SPI_STATS_RE = re.compile(r"\[ESP32SPI\]\[spi_stats\]\s+(.*)")
 ESP_REPORT_START_RE = re.compile(r"report start frame=(\d+).*?\blen=(\d+)")
 ESP_REPORT_START_OPTIONS_RE = re.compile(
     r"chunk_kb=(\d+).*?chunk_delay=(\d+).*?effective_delay=(\d+).*?write_chunk=(\d+)"
@@ -23,12 +24,43 @@ ESP_REPORT_READ_RE = re.compile(
     r"report stage=read frame=(\d+).*?\blen=(\d+).*?err=([A-Z_]+).*?http=(\d+).*?total=(\d+).*?open=(\d+).*?stream=(\d+).*?fetch=(\d+).*?read=(\d+)"
 )
 ESP_DROPPED_INVALID_RE = re.compile(r"Dropped invalid RX packet,\s+reason=(\d+)")
+ESP_SPI_STATS_RE = re.compile(r"\bspi_stats\s+(.*)")
+KV_INT_RE = re.compile(r"([A-Za-z0-9_]+)=(-?\d+)")
 JOURNAL_SHORT_UNIX_RE = re.compile(r"^(\d+(?:\.\d+)?)\s")
+
+NACK_REASON_NAMES = {
+    "1": "CRC_FAIL",
+    "2": "BAD_LENGTH",
+    "3": "UNSUPPORTED_VERSION",
+    "4": "QUEUE_FULL",
+    "5": "BUSY",
+    "6": "SESSION_MISMATCH",
+    "7": "INVALID_STATE",
+    "8": "INVALID_PAYLOAD",
+}
+
+SPI_BASELINE_10M = {
+    "stm_nack_lines": 437,
+    "stm_spi_invalid": 154,
+    "stm_hal_spi_fail": 37,
+    "esp_spi_invalid": 270,
+}
 
 
 def is_cloud_error_line(line):
     lower = line.lower().replace("error=none", "")
     return any(k in lower for k in ["node_timeout", "offline", "bad-frame", "traceback", "error", " 500 ", " 502 ", "timeout"])
+
+
+def parse_int_kv(text):
+    return {key: int(value) for key, value in KV_INT_RE.findall(text)}
+
+
+def named_counter(counter, names):
+    return {
+        names.get(str(key), str(key)): value
+        for key, value in sorted(counter.items(), key=lambda item: int(item[0]) if str(item[0]).isdigit() else str(item[0]))
+    }
 
 
 class Monitor:
@@ -78,6 +110,10 @@ class Monitor:
         self.esp_start_effective_delay_ms = set()
         self.esp_start_write_chunk_bytes = set()
         self.cloud_series_times = []
+        self.stm_spi_stats_first = {}
+        self.stm_spi_stats_last = {}
+        self.esp_spi_stats_first = {}
+        self.esp_spi_stats_last = {}
         self.cloud_proc = None
 
     @staticmethod
@@ -106,6 +142,12 @@ class Monitor:
                     self.stm_begin_times.append(now)
                 if "TX REPORT_FULL_END" in line:
                     self.stats["stm_full_ends"] += 1
+                m_stats = STM_SPI_STATS_RE.search(line)
+                if m_stats:
+                    parsed = parse_int_kv(m_stats.group(1))
+                    if not self.stm_spi_stats_first:
+                        self.stm_spi_stats_first = dict(parsed)
+                    self.stm_spi_stats_last = parsed
                 m = FULL_HTTP_DONE_RE.search(line)
                 if m:
                     self.stats["stm_http_done"] += 1
@@ -165,6 +207,12 @@ class Monitor:
                 m_invalid = ESP_DROPPED_INVALID_RE.search(line)
                 if m_invalid:
                     self.inc_counter(self.stats["esp_spi_invalid_reasons"], m_invalid.group(1))
+                m_stats = ESP_SPI_STATS_RE.search(line)
+                if m_stats:
+                    parsed = parse_int_kv(m_stats.group(1))
+                    if not self.esp_spi_stats_first:
+                        self.esp_spi_stats_first = dict(parsed)
+                    self.esp_spi_stats_last = parsed
             elif source == "cloud":
                 if "[/api/node/full_frame_bin][series]" in line:
                     self.stats["cloud_full_series"] += 1
@@ -288,6 +336,16 @@ class Monitor:
                 intervals.append((cur - prev) * 1000.0)
         return self.percentiles(intervals)
 
+    @staticmethod
+    def counter_delta(first, last):
+        if not first or not last:
+            return {}
+        keys = set(first) | set(last)
+        return {
+            key: max(0, int(last.get(key, 0)) - int(first.get(key, 0)))
+            for key in keys
+        }
+
     def fetch_cloud_journal_counts(self, since_epoch):
         cmd = [
             "ssh",
@@ -341,7 +399,14 @@ class Monitor:
             stm_http_timed = list(self.stm_http_elapsed_timed)
             esp_http_timed = list(self.esp_http_total_timed)
             cloud_series_times = list(self.cloud_series_times)
+            stm_spi_stats_first = dict(self.stm_spi_stats_first)
+            stm_spi_stats_last = dict(self.stm_spi_stats_last)
+            esp_spi_stats_first = dict(self.esp_spi_stats_first)
+            esp_spi_stats_last = dict(self.esp_spi_stats_last)
         payload["elapsed_s"] = round(elapsed, 1) if elapsed is not None else None
+        elapsed_min = ((elapsed if elapsed is not None else 0) / 60.0) or None
+        stm_spi_stats_delta = self.counter_delta(stm_spi_stats_first, stm_spi_stats_last)
+        esp_spi_stats_delta = self.counter_delta(esp_spi_stats_first, esp_spi_stats_last)
         payload["esp_payload_lengths"] = sorted(self.esp_payload_lengths)
         payload["esp_start_chunk_kb_values"] = sorted(self.esp_start_chunk_kb)
         payload["esp_start_chunk_delay_ms_values"] = sorted(self.esp_start_chunk_delay_ms)
@@ -362,6 +427,32 @@ class Monitor:
         payload["cloud_series_interval_ms"] = self.interval_percentiles(cloud_series_times)
         payload["cloud_series_interval_ms_first60"] = self.interval_percentiles(cloud_series_times, 60.0)
         payload["esp_http_success_rate"] = self.success_rate(payload["esp_report_read_ok"], payload["esp_report_read_fail"])
+        payload["stm_nack_reasons_named"] = named_counter(payload["stm_nack_reasons"], NACK_REASON_NAMES)
+        payload["esp_spi_invalid_reasons_named"] = named_counter(payload["esp_spi_invalid_reasons"], NACK_REASON_NAMES)
+        payload["stm_spi_stats_first"] = stm_spi_stats_first
+        payload["stm_spi_stats_last"] = stm_spi_stats_last
+        payload["stm_spi_stats_delta"] = stm_spi_stats_delta
+        payload["esp_spi_stats_first"] = esp_spi_stats_first
+        payload["esp_spi_stats_last"] = esp_spi_stats_last
+        payload["esp_spi_stats_delta"] = esp_spi_stats_delta
+        frame_count = max(1, payload["stm_full_starts"])
+        stm_rx_invalid_lines = sum(int(v) for v in payload["stm_spi_invalid"].values())
+        esp_invalid_lines = sum(int(v) for v in payload["esp_spi_invalid_reasons"].values())
+        stm_rx_invalid = max(stm_spi_stats_delta.get("rx_invalid", 0), stm_rx_invalid_lines)
+        stm_nack_total = max(stm_spi_stats_delta.get("nack_total", 0), payload["stm_nack_lines"])
+        stm_hal_fail = max(stm_spi_stats_delta.get("hal_fail", 0), payload["stm_hal_spi_fail"])
+        esp_invalid_total = max(esp_spi_stats_delta.get("invalid_total", 0), esp_invalid_lines)
+        payload["spi_retry_per_frame"] = round(stm_nack_total / frame_count, 4)
+        payload["spi_rx_invalid_per_frame"] = round(stm_rx_invalid / frame_count, 4)
+        payload["spi_hal_fail_per_frame"] = round(stm_hal_fail / frame_count, 4)
+        payload["spi_baseline_10m"] = SPI_BASELINE_10M
+        if elapsed_min:
+            payload["spi_rates_per_min"] = {
+                "stm_nack": stm_nack_total / elapsed_min,
+                "stm_rx_invalid": stm_rx_invalid / elapsed_min,
+                "stm_hal_fail": stm_hal_fail / elapsed_min,
+                "esp_invalid": esp_invalid_total / elapsed_min,
+            }
         return payload
 
     def write_progress(self, path, elapsed):

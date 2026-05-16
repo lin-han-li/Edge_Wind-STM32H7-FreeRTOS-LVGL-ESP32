@@ -20,11 +20,12 @@ extern void ESP_UI_Internal_OnLog(const char *line);
 #define ESP32_SPI_MAX_PAYLOAD 1536U
 #define ESP32_SPI_FRAME_SIZE 1564U
 #define ESP32_SPI_READY_TIMEOUT_MS 3000U
-#define ESP32_SPI_READY_RELEASE_TIMEOUT_MS 10U
+#define ESP32_SPI_READY_RELEASE_TIMEOUT_MS 20U
 #define ESP32_SPI_INTER_TRANSACTION_GUARD_MS 1U
 #define ESP32_SPI_XFER_TIMEOUT_MS 300U
 #define ESP32_SPI_REPORT_RETRY_ATTEMPTS 5U
 #define ESP32_SPI_REPORT_RETRY_BACKOFF_MS 1U
+#define ESP32_SPI_STATS_LOG_INTERVAL_MS 10000U
 #define ESP32_SPI_DEFAULT_TIMEOUT_MS 3000U
 #define ESP32_SPI_WIFI_POLL_INTERVAL_MS 1000U
 #define ESP32_SPI_RESULT_PENDING 0xFFFFU
@@ -94,8 +95,23 @@ typedef enum {
 typedef enum {
     ESP32_NACK_CRC_FAIL = 1,
     ESP32_NACK_BAD_LENGTH = 2,
+    ESP32_NACK_UNSUPPORTED_VERSION = 3,
+    ESP32_NACK_QUEUE_FULL = 4,
+    ESP32_NACK_BUSY = 5,
     ESP32_NACK_SESSION_MISMATCH = 6,
+    ESP32_NACK_INVALID_STATE = 7,
+    ESP32_NACK_INVALID_PAYLOAD = 8,
 } esp32_nack_reason_t;
+
+typedef enum {
+    ESP32_SPI_RX_INVALID_BAD_MAGIC = 0,
+    ESP32_SPI_RX_INVALID_BAD_VERSION,
+    ESP32_SPI_RX_INVALID_BAD_LEN,
+    ESP32_SPI_RX_INVALID_BAD_HEADER_CRC,
+    ESP32_SPI_RX_INVALID_BAD_PAYLOAD_CRC,
+    ESP32_SPI_RX_INVALID_OTHER,
+    ESP32_SPI_RX_INVALID_COUNT,
+} esp32_spi_rx_invalid_reason_t;
 
 typedef enum {
     ESP32_EVENT_READY = 1,
@@ -319,6 +335,13 @@ static uint32_t s_pending_server_chunk_delay_ms = 0U;
 static char s_last_server_cmd_key[65];
 static uint32_t s_last_server_cmd_value = 0U;
 static uint32_t s_last_server_cmd_tick = 0U;
+static uint32_t s_spi_nack_total = 0U;
+static uint32_t s_spi_retryable_nack_total = 0U;
+static uint32_t s_spi_nack_reason_counts[9];
+static uint32_t s_spi_rx_invalid_total = 0U;
+static uint32_t s_spi_rx_invalid_counts[ESP32_SPI_RX_INVALID_COUNT];
+static uint32_t s_spi_hal_fail_total = 0U;
+static uint32_t s_spi_stats_last_log_tick = 0U;
 
 static bool nack_reason_is_retryable(uint16_t reason);
 
@@ -404,6 +427,101 @@ static const char *msg_name(uint8_t msg_type)
     case ESP32_MSG_NACK: return "NACK";
     default: return "UNKNOWN";
     }
+}
+
+static const char *nack_reason_name(uint16_t reason)
+{
+    switch (reason) {
+    case ESP32_NACK_CRC_FAIL: return "CRC_FAIL";
+    case ESP32_NACK_BAD_LENGTH: return "BAD_LENGTH";
+    case ESP32_NACK_UNSUPPORTED_VERSION: return "UNSUPPORTED_VERSION";
+    case ESP32_NACK_QUEUE_FULL: return "QUEUE_FULL";
+    case ESP32_NACK_BUSY: return "BUSY";
+    case ESP32_NACK_SESSION_MISMATCH: return "SESSION_MISMATCH";
+    case ESP32_NACK_INVALID_STATE: return "INVALID_STATE";
+    case ESP32_NACK_INVALID_PAYLOAD: return "INVALID_PAYLOAD";
+    default: return "UNKNOWN";
+    }
+}
+
+static esp32_spi_rx_invalid_reason_t rx_invalid_reason_index(const char *reason)
+{
+    if (reason == NULL) {
+        return ESP32_SPI_RX_INVALID_OTHER;
+    }
+    if (strcmp(reason, "bad_magic") == 0) {
+        return ESP32_SPI_RX_INVALID_BAD_MAGIC;
+    }
+    if (strcmp(reason, "bad_version") == 0) {
+        return ESP32_SPI_RX_INVALID_BAD_VERSION;
+    }
+    if (strcmp(reason, "bad_len") == 0) {
+        return ESP32_SPI_RX_INVALID_BAD_LEN;
+    }
+    if (strcmp(reason, "bad_header_crc") == 0) {
+        return ESP32_SPI_RX_INVALID_BAD_HEADER_CRC;
+    }
+    if (strcmp(reason, "bad_payload_crc") == 0) {
+        return ESP32_SPI_RX_INVALID_BAD_PAYLOAD_CRC;
+    }
+    return ESP32_SPI_RX_INVALID_OTHER;
+}
+
+static void spi_stats_log_if_due(void)
+{
+    uint32_t now = HAL_GetTick();
+
+    if (s_spi_stats_last_log_tick != 0U &&
+        (now - s_spi_stats_last_log_tick) < ESP32_SPI_STATS_LOG_INTERVAL_MS) {
+        return;
+    }
+    s_spi_stats_last_log_tick = now;
+    printf("[ESP32SPI][spi_stats] nack_total=%lu retryable=%lu crc=%lu bad_len=%lu unsupported=%lu qfull=%lu busy=%lu session=%lu invalid_state=%lu invalid_payload=%lu rx_invalid=%lu bad_magic=%lu bad_version=%lu rx_bad_len=%lu bad_header_crc=%lu bad_payload_crc=%lu rx_other=%lu hal_fail=%lu\r\n",
+           (unsigned long)s_spi_nack_total,
+           (unsigned long)s_spi_retryable_nack_total,
+           (unsigned long)s_spi_nack_reason_counts[ESP32_NACK_CRC_FAIL],
+           (unsigned long)s_spi_nack_reason_counts[ESP32_NACK_BAD_LENGTH],
+           (unsigned long)s_spi_nack_reason_counts[ESP32_NACK_UNSUPPORTED_VERSION],
+           (unsigned long)s_spi_nack_reason_counts[ESP32_NACK_QUEUE_FULL],
+           (unsigned long)s_spi_nack_reason_counts[ESP32_NACK_BUSY],
+           (unsigned long)s_spi_nack_reason_counts[ESP32_NACK_SESSION_MISMATCH],
+           (unsigned long)s_spi_nack_reason_counts[ESP32_NACK_INVALID_STATE],
+           (unsigned long)s_spi_nack_reason_counts[ESP32_NACK_INVALID_PAYLOAD],
+           (unsigned long)s_spi_rx_invalid_total,
+           (unsigned long)s_spi_rx_invalid_counts[ESP32_SPI_RX_INVALID_BAD_MAGIC],
+           (unsigned long)s_spi_rx_invalid_counts[ESP32_SPI_RX_INVALID_BAD_VERSION],
+           (unsigned long)s_spi_rx_invalid_counts[ESP32_SPI_RX_INVALID_BAD_LEN],
+           (unsigned long)s_spi_rx_invalid_counts[ESP32_SPI_RX_INVALID_BAD_HEADER_CRC],
+           (unsigned long)s_spi_rx_invalid_counts[ESP32_SPI_RX_INVALID_BAD_PAYLOAD_CRC],
+           (unsigned long)s_spi_rx_invalid_counts[ESP32_SPI_RX_INVALID_OTHER],
+           (unsigned long)s_spi_hal_fail_total);
+}
+
+static void spi_stats_note_nack(uint16_t reason)
+{
+    s_spi_nack_total++;
+    if (reason < (uint16_t)(sizeof(s_spi_nack_reason_counts) / sizeof(s_spi_nack_reason_counts[0]))) {
+        s_spi_nack_reason_counts[reason]++;
+    }
+    if (nack_reason_is_retryable(reason)) {
+        s_spi_retryable_nack_total++;
+    }
+    spi_stats_log_if_due();
+}
+
+static void spi_stats_note_rx_invalid(const char *reason)
+{
+    esp32_spi_rx_invalid_reason_t index = rx_invalid_reason_index(reason);
+
+    s_spi_rx_invalid_total++;
+    s_spi_rx_invalid_counts[index]++;
+    spi_stats_log_if_due();
+}
+
+static void spi_stats_note_hal_fail(void)
+{
+    s_spi_hal_fail_total++;
+    spi_stats_log_if_due();
 }
 
 static bool is_full_chunk_msg(uint8_t msg_type)
@@ -723,6 +841,7 @@ static bool spi_transaction_built_payload(uint8_t tx_type,
     HAL_Delay(ESP32_SPI_INTER_TRANSACTION_GUARD_MS);
 
     if (st != HAL_OK) {
+        spi_stats_note_hal_fail();
         printf("[ESP32SPI] HAL_SPI_TransmitReceive failed, st=%d err=0x%08lX state=%d\r\n",
                (int)st,
                (unsigned long)HAL_SPI_GetError(&hspi2),
@@ -918,10 +1037,14 @@ static bool handle_rx_packet(const esp32_spi_packet_t *packet)
     const char *reason = NULL;
 
     if (!packet_validate(packet, &reason)) {
-        printf("[ESP32SPI] RX invalid: %s magic=0x%08lX type=0x%02X len=%u\r\n",
+        spi_stats_note_rx_invalid(reason);
+        printf("[ESP32SPI] RX invalid: %s magic=0x%08lX type=0x%02X seq=%lu ack=%lu session=%lu len=%u\r\n",
                reason,
                (unsigned long)packet->header.magic,
                (unsigned int)packet->header.msg_type,
+               (unsigned long)packet->header.seq,
+               (unsigned long)packet->header.ack_seq,
+               (unsigned long)packet->header.session_epoch,
                (unsigned int)packet->header.payload_len);
         return false;
     }
@@ -1045,15 +1168,17 @@ static bool handle_rx_packet(const esp32_spi_packet_t *packet)
             const esp32_nack_payload_t *nack = (const esp32_nack_payload_t *)packet->payload;
             s_last_nack_ref_seq = nack->ref_seq;
             s_last_nack_reason = nack->reason;
+            spi_stats_note_nack(nack->reason);
             if (nack->reason == ESP32_NACK_SESSION_MISMATCH) {
                 s_session_epoch = 0U;
                 s_status.session_epoch = 0U;
                 s_session_mismatch_seen = 1U;
             }
             if (!nack_reason_is_retryable(nack->reason) || ESP32_SPI_LOG_RETRYABLE_NACKS) {
-                printf("[ESP32SPI] NACK ref_seq=%lu reason=%u\r\n",
+                printf("[ESP32SPI] NACK ref_seq=%lu reason=%u(%s)\r\n",
                        (unsigned long)nack->ref_seq,
-                       (unsigned int)nack->reason);
+                       (unsigned int)nack->reason,
+                       nack_reason_name(nack->reason));
             }
         }
         break;

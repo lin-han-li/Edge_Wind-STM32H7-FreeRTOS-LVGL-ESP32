@@ -19,6 +19,7 @@ static const char *TAG = "spi_link";
 #define SPI_LINK_QUEUE_LENGTH 32
 #define SPI_LINK_TASK_STACK 8192
 #define SPI_LINK_TASK_PRIORITY 9
+#define SPI_LINK_STATS_LOG_INTERVAL_MS 10000U
 
 static QueueHandle_t s_tx_queue;
 static spi_link_rx_callback_t s_rx_callback;
@@ -29,8 +30,67 @@ static bool s_has_pending;
 static protocol_packet_t s_pending_tx;
 static uint32_t s_next_tx_seq = 1;
 static uint32_t s_last_rx_seq = 0;
+static uint32_t s_invalid_total;
+static uint32_t s_invalid_reason_counts[PROTOCOL_NACK_INVALID_PAYLOAD + 1U];
+static TickType_t s_last_stats_log_tick;
 
 static void assign_tx_sequence(protocol_packet_t *packet);
+
+static const char *nack_reason_name(protocol_nack_reason_t reason)
+{
+    switch (reason) {
+    case PROTOCOL_NACK_NONE:
+        return "NONE";
+    case PROTOCOL_NACK_CRC_FAIL:
+        return "CRC_FAIL";
+    case PROTOCOL_NACK_BAD_LENGTH:
+        return "BAD_LENGTH";
+    case PROTOCOL_NACK_UNSUPPORTED_VERSION:
+        return "UNSUPPORTED_VERSION";
+    case PROTOCOL_NACK_QUEUE_FULL:
+        return "QUEUE_FULL";
+    case PROTOCOL_NACK_BUSY:
+        return "BUSY";
+    case PROTOCOL_NACK_SESSION_MISMATCH:
+        return "SESSION_MISMATCH";
+    case PROTOCOL_NACK_INVALID_STATE:
+        return "INVALID_STATE";
+    case PROTOCOL_NACK_INVALID_PAYLOAD:
+        return "INVALID_PAYLOAD";
+    default:
+        return "UNKNOWN";
+    }
+}
+
+static void note_invalid_rx(protocol_nack_reason_t reason)
+{
+    s_invalid_total++;
+    if ((uint32_t) reason < (sizeof(s_invalid_reason_counts) / sizeof(s_invalid_reason_counts[0]))) {
+        s_invalid_reason_counts[reason]++;
+    }
+}
+
+static void log_spi_stats_if_due(void)
+{
+    TickType_t now = xTaskGetTickCount();
+
+    if (s_last_stats_log_tick != 0 &&
+        (now - s_last_stats_log_tick) < pdMS_TO_TICKS(SPI_LINK_STATS_LOG_INTERVAL_MS)) {
+        return;
+    }
+    s_last_stats_log_tick = now;
+    ESP_LOGI(TAG,
+             "spi_stats invalid_total=%" PRIu32 " crc=%" PRIu32 " bad_len=%" PRIu32 " unsupported=%" PRIu32 " qfull=%" PRIu32 " busy=%" PRIu32 " session=%" PRIu32 " invalid_state=%" PRIu32 " invalid_payload=%" PRIu32,
+             s_invalid_total,
+             s_invalid_reason_counts[PROTOCOL_NACK_CRC_FAIL],
+             s_invalid_reason_counts[PROTOCOL_NACK_BAD_LENGTH],
+             s_invalid_reason_counts[PROTOCOL_NACK_UNSUPPORTED_VERSION],
+             s_invalid_reason_counts[PROTOCOL_NACK_QUEUE_FULL],
+             s_invalid_reason_counts[PROTOCOL_NACK_BUSY],
+             s_invalid_reason_counts[PROTOCOL_NACK_SESSION_MISMATCH],
+             s_invalid_reason_counts[PROTOCOL_NACK_INVALID_STATE],
+             s_invalid_reason_counts[PROTOCOL_NACK_INVALID_PAYLOAD]);
+}
 
 static void spi_link_cleanup_partial_init(void)
 {
@@ -152,15 +212,25 @@ static void spi_link_task(void *arg)
             bool is_noop_like = (!malformed) &&
                                 ((rx_packet->header.seq == 0U) ||
                                  (rx_packet->header.msg_type == PROTOCOL_MSG_NOOP));
+            note_invalid_rx(nack_reason);
+            log_spi_stats_if_due();
             ESP_LOGW(TAG,
-                     "Dropped invalid RX packet, reason=%u, rx_bytes=%u, magic=0x%08" PRIx32 ", type=0x%02x, len=%u",
+                     "Dropped invalid RX packet, reason=%u(%s), rx_bytes=%u, magic=0x%08" PRIx32 ", type=0x%02x, seq=%" PRIu32 ", ack=%" PRIu32 ", session=%" PRIu32 ", len=%u, last_rx=%" PRIu32,
                      (unsigned) nack_reason,
+                     nack_reason_name(nack_reason),
                      (unsigned) rx_bytes,
                      (rx_bytes >= sizeof(uint32_t)) ? rx_packet->header.magic : 0U,
                      (rx_bytes >= offsetof(protocol_header_t, msg_type) + sizeof(rx_packet->header.msg_type)) ?
                          (unsigned) rx_packet->header.msg_type : 0U,
+                     (rx_bytes >= offsetof(protocol_header_t, seq) + sizeof(rx_packet->header.seq)) ?
+                         rx_packet->header.seq : 0U,
+                     (rx_bytes >= offsetof(protocol_header_t, ack_seq) + sizeof(rx_packet->header.ack_seq)) ?
+                         rx_packet->header.ack_seq : 0U,
+                     (rx_bytes >= offsetof(protocol_header_t, session_epoch) + sizeof(rx_packet->header.session_epoch)) ?
+                         rx_packet->header.session_epoch : 0U,
                      (rx_bytes >= offsetof(protocol_header_t, payload_len) + sizeof(rx_packet->header.payload_len)) ?
-                         (unsigned) rx_packet->header.payload_len : 0U);
+                         (unsigned) rx_packet->header.payload_len : 0U,
+                     s_last_rx_seq);
             if (!malformed && !is_noop_like) {
                 queue_link_nack(nack_reason, rx_packet->header.seq);
             }
