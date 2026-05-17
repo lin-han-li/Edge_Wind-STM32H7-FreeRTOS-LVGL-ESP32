@@ -105,12 +105,12 @@ def _numeric_series_all_zero(data: dict, keys: tuple[str, ...]) -> bool:
 # 每个节点的状态推送频率（Hz）：影响 node_status_update（概览/列表/指标）
 STATUS_EMIT_HZ = max(1.0, _env_float("EDGEWIND_STATUS_EMIT_HZ", 5))
 # 每个节点的监控推送频率（Hz）：影响 monitor_update（波形/频谱）
-MONITOR_EMIT_HZ = max(1.0, _env_float("EDGEWIND_MONITOR_EMIT_HZ", 20))
+MONITOR_EMIT_HZ = max(1.0, _env_float("EDGEWIND_MONITOR_EMIT_HZ", 8))
 
 # 波形/频谱监控展示点数（默认显示全量：4096 waveform + 2048 FFT）
 # 仍保留环境变量覆盖能力，便于低性能主机手动降回轻量显示。
-MAX_WAVEFORM_POINTS = max(0, _env_int("EDGEWIND_WAVEFORM_POINTS", 4096))
-MAX_SPECTRUM_POINTS = max(0, _env_int("EDGEWIND_SPECTRUM_POINTS", 2048))
+MAX_WAVEFORM_POINTS = max(0, _env_int("EDGEWIND_WAVEFORM_POINTS", 1024))
+MAX_SPECTRUM_POINTS = max(0, _env_int("EDGEWIND_SPECTRUM_POINTS", 512))
 MONITOR_WAVEFORM_POINTS = MAX_WAVEFORM_POINTS if MAX_WAVEFORM_POINTS > 0 else 4096
 MONITOR_SPECTRUM_POINTS = MAX_SPECTRUM_POINTS if MAX_SPECTRUM_POINTS > 0 else 2048
 

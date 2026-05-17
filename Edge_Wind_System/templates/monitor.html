@@ -2171,9 +2171,24 @@
         return buf;
     }
 
+    function _getFreqSeriesBuffer(len, inferredBinStep) {
+        const step = Math.max(1, inferredBinStep || 1);
+        const key = `${len}:${step}`;
+        let buf = _edgewindSeriesCache.freq.get(key);
+        if (!buf) {
+            const data = new Array(len);
+            for (let i = 0; i < len; i++) {
+                data[i] = [(i * step) * EDGEWIND_FREQ_RES_HZ, 0];
+            }
+            buf = { data };
+            _edgewindSeriesCache.freq.set(key, buf);
+        }
+        return buf;
+    }
+
     let _chartsUpdateScheduled = false;
     let _lastChartsUpdateTs = 0;
-    const CHARTS_MAX_HZ = 0; // 0=不节流，全部更新（发多少显示多少）
+    const CHARTS_MAX_HZ = 8;
     function scheduleChartsUpdate() {
         if (CHARTS_MAX_HZ <= 0) {
             if (typeof updateCharts === 'function') updateCharts();
@@ -3398,13 +3413,10 @@
                 }
         
         // 物理常数（与下位机一致）
-        const FREQ_RES = EDGEWIND_FREQ_RES_HZ;  // Hz/bin = Fs/N = 25600/4096 = 6.25
         const MAX_DISPLAY_BINS = 0;  // 0=不限制，显示全部
         
         // 如果后端提供了FFT数据，直接使用
         if (fft_spectrum.length > 0) {
-        const frequencies = [];
-            const fftData = [];
             
             // 下位机上传 2048 个 bin：k=0..2047，频率 f=k*6.25Hz，最高约 12.794kHz
             const displayLength = MAX_DISPLAY_BINS > 0
@@ -3418,23 +3430,8 @@
                 ? Math.max(1, Math.round((EDGEWIND_FFT_BINS - 1) / (displayLength - 1)))
                 : 1;
 
-            for (let i = 0; i < displayLength; i++) {
-                const freq = (i * inferredBinStep) * FREQ_RES;
-                frequencies.push(freq);
-                fftData.push(fft_spectrum[i]);  // 直接使用后端DFT数据
-            }
-            
             // 渲染图表
-            renderFFTChart(frequencies, fftData, channel);
-        } else {
-            // 如果没有FFT数据，显示空图表
-            const frequencies = [];
-            const fftData = [];
-            for (let i = 0; i < MAX_DISPLAY_BINS; i++) {
-                frequencies.push(i * FREQ_RES);
-                fftData.push(0);  // 显示为零
-            }
-            renderFFTChart(frequencies, fftData, channel);
+            renderFFTChart(fft_spectrum, channel, displayLength, inferredBinStep);
         }
             } catch (error) {
                 console.error('[updateFrequencyDomainChart] 更新频域图表时出错:', error);
@@ -3444,7 +3441,7 @@
     }
     
     // ========== 渲染FFT图表（辅助函数）- 专业折线图 ==========
-    function renderFFTChart(frequencies, fftData, channel) {
+    function renderFFTChart(fftData, channel, displayLength, inferredBinStep) {
         if (!frequencyDomainChart) {
             console.warn('[renderFFTChart] 图表实例不存在');
             return;
@@ -3474,21 +3471,27 @@
             }
             
             // 频域图改为 value 轴 + [频率, 幅值] 数据对（保证缩放/缩小/拖拽逻辑与时域一致）
-            // 不做降采样，仅将 NaN/Inf 替换为 0，确保点数不变
-            const sanitized = fftData.map(val => (Number.isFinite(val) ? val : 0));
-            const fftSeriesData = frequencies.map((f, i) => [f, sanitized[i]]);
+            const safeLength = Math.max(0, Math.min(displayLength || 0, Array.isArray(fftData) ? fftData.length : 0));
+            const binStep = Math.max(1, inferredBinStep || 1);
+            const fftSeriesData = _getFreqSeriesBuffer(safeLength, binStep).data;
             
             // 计算Y轴最大值（动态调整，留10%余量）
             // 确保正确处理空数组或无效数据
-            const maxVal = sanitized.length > 0 ? Math.max(...sanitized) : 0;
+            let maxVal = 0;
+            for (let i = 0; i < safeLength; i++) {
+                const value = Number(fftData[i]);
+                const y = Number.isFinite(value) ? value : 0;
+                fftSeriesData[i][1] = y;
+                if (y > maxVal) maxVal = y;
+            }
             const yAxisMax = maxVal > 0 ? maxVal * 1.1 : 50;
             const autoMax = yAxisMax;
             const fullMax = Math.max(autoMax * 10, 10);
 
             // 显式提供“全量范围”，保证滚轮缩小一定能回到全范围（与时域一致）
             if (frequencyDomainChart) {
-                const xMin = frequencies.length ? frequencies[0] : 0;
-                const xMax = frequencies.length ? frequencies[frequencies.length - 1] : 0;
+                const xMin = safeLength ? fftSeriesData[0][0] : 0;
+                const xMax = safeLength ? fftSeriesData[safeLength - 1][0] : 0;
                 frequencyDomainChart.__edgewindFullExtentX = { min: xMin, max: xMax };
                 frequencyDomainChart.__edgewindFullExtentY = { min: 0, max: fullMax };
                 frequencyDomainChart.__edgewindAutoWindowY = { min: 0, max: autoMax };
@@ -3530,7 +3533,7 @@
                 trigger: 'axis',
                 formatter: function(params) {
                     const point = params[0];
-                    const freq = Array.isArray(point.value) ? point.value[0] : frequencies[point.dataIndex];
+                    const freq = Array.isArray(point.value) ? point.value[0] : ((point.dataIndex || 0) * binStep * EDGEWIND_FREQ_RES_HZ);
                     const amp = Array.isArray(point.value) ? point.value[1] : point.value;
                         const unit = channel.unit || '';
                         return `频率: ${freq.toFixed(1)} Hz<br/>幅度: ${amp.toFixed(3)} ${unit}`;
@@ -3546,7 +3549,7 @@
             xAxis: {
                 type: 'value',
                 min: 0,
-                max: frequencies.length ? frequencies[frequencies.length - 1] : ((EDGEWIND_FFT_BINS - 1) * EDGEWIND_FREQ_RES_HZ),
+                max: safeLength ? fftSeriesData[safeLength - 1][0] : ((EDGEWIND_FFT_BINS - 1) * EDGEWIND_FREQ_RES_HZ),
                 name: '频率 (Hz)',
                 nameLocation: 'middle',
                 nameGap: 30,
