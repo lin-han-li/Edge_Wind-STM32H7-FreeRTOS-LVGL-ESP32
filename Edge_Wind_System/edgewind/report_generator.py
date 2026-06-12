@@ -319,6 +319,21 @@ def generate_workorder_docx(work_order, device, graph_image_dataurl: str | None 
 
     doc.add_paragraph().paragraph_format.space_before = Pt(12)
 
+    if '【DeepSeek' in str(ai_desc):
+        p_ai_title = doc.add_paragraph()
+        run_ai_title = p_ai_title.add_run('DeepSeek 证据链摘要')
+        set_run_font(run_ai_title, size=Pt(12), bold=True, color=RGBColor(0, 102, 153))
+
+        p_ai_note = doc.add_paragraph()
+        run_ai_note = p_ai_note.add_run('以下内容来自服务器侧 DeepSeek 手动分析结果，仅作为运维辅助意见，需现场人员复核。')
+        set_run_font(run_ai_note, size=Pt(9), color=RGBColor(100, 100, 100))
+
+        p_ai_body = doc.add_paragraph()
+        for line in str(ai_desc).splitlines():
+            if line.strip():
+                run_ai_line = p_ai_body.add_run(line.strip() + '\n')
+                set_run_font(run_ai_line, size=Pt(10))
+
     # ==================== 附录：故障诊断知识图谱（从第二页开始）====================
     if isinstance(graph_image_dataurl, str) and graph_image_dataurl.startswith('data:image'):
         try:

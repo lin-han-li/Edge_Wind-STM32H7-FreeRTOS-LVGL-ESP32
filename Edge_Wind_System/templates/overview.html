@@ -84,6 +84,29 @@
     </div>
 </div>
 
+<!-- DeepSeek 运维简报 -->
+<div class="row mb-4">
+    <div class="col-md-12">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0"><i class="bi bi-stars text-info me-2"></i>24小时智能运维简报</h5>
+                <div class="d-flex gap-2">
+                    <button class="btn btn-sm btn-outline-info" id="daily-ai-btn" type="button" onclick="requestDailyOpsSummary(false)">
+                        <i class="bi bi-stars"></i> 生成简报
+                    </button>
+                    <button class="btn btn-sm btn-outline-secondary" id="daily-ai-refresh-btn" type="button" onclick="requestDailyOpsSummary(true)" style="display:none;">
+                        <i class="bi bi-arrow-clockwise"></i> 重新生成
+                    </button>
+                </div>
+            </div>
+            <div class="card-body">
+                <div class="small text-muted" id="daily-ai-status">手动触发，不进入实时上传链路；只汇总近24小时工单、节点和故障统计。</div>
+                <div id="daily-ai-result" class="daily-ai-result mt-3" style="display:none;"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
 <!-- 故障分析 -->
 <div class="row mb-4">
     <div class="col-md-6 mb-4">
@@ -211,6 +234,28 @@
     .node-status-badge {
         flex-shrink: 0; /* 防止徽章被压缩 */
     }
+
+    .daily-ai-result {
+        background: #f8fafc;
+        border: 1px solid #dbeafe;
+        border-radius: 8px;
+        padding: 0.9rem;
+    }
+
+    .daily-ai-result ul {
+        padding-left: 1.2rem;
+        margin-bottom: 0;
+    }
+
+    @keyframes spin {
+        from { transform: rotate(0deg); }
+        to { transform: rotate(360deg); }
+    }
+
+    .spin {
+        animation: spin 1s linear infinite;
+        display: inline-block;
+    }
 </style>
 {% endblock %}
 
@@ -286,6 +331,7 @@
     // 初始化故障分析图表
     let faultTypePieChart = null;
     let faultFrequencyChart = null;
+    let dailyAiPollTimer = null;
 
     function initFaultAnalyticsCharts() {
         // 故障类型分布饼图
@@ -502,6 +548,136 @@
             .replace(/'/g, '&#39;');
     }
 
+    function getCsrfToken() {
+        return document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+    }
+
+    function stopDailyAiPolling() {
+        if (dailyAiPollTimer) {
+            clearInterval(dailyAiPollTimer);
+            dailyAiPollTimer = null;
+        }
+    }
+
+    function setDailyAiState(disabled, text, status, level = 'muted') {
+        const btn = document.getElementById('daily-ai-btn');
+        const statusEl = document.getElementById('daily-ai-status');
+        if (btn) {
+            btn.disabled = !!disabled;
+            btn.innerHTML = text || '<i class="bi bi-stars"></i> 生成简报';
+        }
+        if (statusEl && status) {
+            statusEl.className = `small text-${level}`;
+            statusEl.textContent = status;
+        }
+    }
+
+    function renderAiList(title, items) {
+        const list = Array.isArray(items) ? items.filter(Boolean) : [];
+        if (!list.length) return '';
+        return `
+            <div class="mt-2">
+                <div class="fw-bold">${escapeHtml(title)}</div>
+                <ul>${list.map(item => `<li>${escapeHtml(item)}</li>`).join('')}</ul>
+            </div>
+        `;
+    }
+
+    function renderDailyAiResult(task) {
+        const resultEl = document.getElementById('daily-ai-result');
+        const refreshBtn = document.getElementById('daily-ai-refresh-btn');
+        if (!resultEl) return;
+        const result = task?.result || {};
+        const text = task?.result_text || '';
+        if (!text && !result.summary) {
+            resultEl.style.display = 'none';
+            resultEl.textContent = '';
+            if (refreshBtn) refreshBtn.style.display = 'none';
+            return;
+        }
+        const confidence = (typeof result.confidence === 'number') ? result.confidence.toFixed(2) : '未给出';
+        resultEl.style.display = 'block';
+        if (refreshBtn) refreshBtn.style.display = task?.status === 'succeeded' ? 'inline-block' : 'none';
+        resultEl.innerHTML = `
+            <div class="fw-bold mb-1">简报摘要</div>
+            <div>${escapeHtml(result.summary || text || '无')}</div>
+            <div class="d-flex flex-wrap gap-2 mt-2">
+                <span class="badge bg-warning text-dark">风险: ${escapeHtml(result.risk_level || '需人工复核')}</span>
+                <span class="badge bg-info text-dark">置信度: ${escapeHtml(confidence)}</span>
+            </div>
+            ${renderAiList('证据', result.evidence)}
+            ${renderAiList('重复故障/可能共因', result.root_causes)}
+            ${renderAiList('建议步骤', result.actions)}
+            ${renderAiList('需要人工确认', result.human_review)}
+            ${renderAiList('数据不足项', result.data_gaps)}
+        `;
+    }
+
+    async function requestDailyOpsSummary(force = false) {
+        stopDailyAiPolling();
+        setDailyAiState(true, '<i class="bi bi-arrow-repeat spin"></i> 提交中...', force ? '正在重新提交 24小时运维简报...' : '正在提交 24小时运维简报...', 'info');
+        try {
+            const csrfToken = getCsrfToken();
+            const response = await fetch('/api/ai/ops/daily-summary', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(csrfToken ? { 'X-CSRFToken': csrfToken } : {})
+                },
+                body: JSON.stringify({ force })
+            });
+            const data = await response.json();
+            if (!response.ok || !data.success) {
+                setDailyAiState(false, '<i class="bi bi-stars"></i> 生成简报', data.error || 'DeepSeek 运维简报提交失败', data.status === 'disabled' ? 'muted' : 'danger');
+                return;
+            }
+            renderDailyAiResult(data.task);
+            if (data.task?.status === 'succeeded') {
+                setDailyAiState(false, '<i class="bi bi-stars"></i> 生成简报', data.status === 'cached' ? '已读取缓存的 24小时运维简报。' : 'DeepSeek 运维简报完成。', 'success');
+                return;
+            }
+            setDailyAiState(true, '<i class="bi bi-arrow-repeat spin"></i> 生成中...', 'DeepSeek 运维简报已入队...', 'info');
+            pollDailyAiTask(data.task?.task_id);
+        } catch (error) {
+            console.error('[Daily AI] submit failed:', error);
+            setDailyAiState(false, '<i class="bi bi-stars"></i> 生成简报', 'DeepSeek 运维简报请求失败。', 'danger');
+        }
+    }
+
+    function pollDailyAiTask(taskId) {
+        if (!taskId) return;
+        let attempts = 0;
+        dailyAiPollTimer = setInterval(async () => {
+            attempts += 1;
+            if (attempts > 80) {
+                stopDailyAiPolling();
+                setDailyAiState(false, '<i class="bi bi-stars"></i> 生成简报', 'DeepSeek 运维简报等待超时，后台可能仍在处理。', 'warning');
+                return;
+            }
+            try {
+                const response = await fetch(`/api/ai/tasks/${encodeURIComponent(taskId)}`, { method: 'GET' });
+                const data = await response.json();
+                if (!response.ok || !data.success) throw new Error(data.error || 'task query failed');
+                const task = data.task || {};
+                renderDailyAiResult(task);
+                if (task.status === 'queued' || task.status === 'running') {
+                    setDailyAiState(true, '<i class="bi bi-arrow-repeat spin"></i> 生成中...', task.status === 'queued' ? 'DeepSeek 运维简报排队中...' : 'DeepSeek 运维简报生成中...', 'info');
+                    return;
+                }
+                stopDailyAiPolling();
+                if (task.status === 'succeeded') {
+                    setDailyAiState(false, '<i class="bi bi-stars"></i> 生成简报', `DeepSeek 运维简报完成，耗时 ${task.latency_ms || 0} ms。`, 'success');
+                } else {
+                    setDailyAiState(false, '<i class="bi bi-stars"></i> 生成简报', task.error_message || 'DeepSeek 运维简报失败。', 'danger');
+                }
+            } catch (error) {
+                console.warn('[Daily AI] poll failed:', error);
+                stopDailyAiPolling();
+                setDailyAiState(false, '<i class="bi bi-stars"></i> 生成简报', 'DeepSeek 运维简报状态读取失败。', 'warning');
+            }
+        }, 1500);
+    }
+
     function renderNodeStatusList(devices) {
         const container = document.getElementById('node-status-list');
 
@@ -625,4 +801,3 @@
     });
 </script>
 {% endblock %}
-

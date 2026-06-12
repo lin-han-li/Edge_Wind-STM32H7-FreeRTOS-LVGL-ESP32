@@ -1,0 +1,11 @@
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.pptx binary
+*.doc binary
+*.docx binary
+*.pdf binary
+*.bin binary
+*.npz binary
+*.tflite binary
+*.keras binary

@@ -31,3 +31,8 @@ Thumbs.db
 
 # Local validation captures
 test_logs/
+
+# Local JavaScript dependencies and generated work outputs
+node_modules/
+outputs/
+report_work/

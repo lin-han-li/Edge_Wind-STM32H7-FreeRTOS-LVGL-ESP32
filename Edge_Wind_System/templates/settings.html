@@ -90,6 +90,36 @@
             </div>
         </div>
 
+        <!-- DeepSeek AI 状态 -->
+        <div class="col-md-6">
+            <div class="card h-100 border-0 shadow-sm rounded-4">
+                <div class="card-header bg-white border-0 pt-4 ps-4">
+                    <h5 class="mb-0 fw-bold text-info"><i class="bi bi-stars me-2"></i>DeepSeek AI 状态</h5>
+                </div>
+                <div class="card-body p-4">
+                    <div class="d-flex justify-content-between align-items-center mb-3">
+                        <span class="text-muted small fw-bold">启用状态</span>
+                        <span class="badge bg-secondary" id="aiEnabledBadge">--</span>
+                    </div>
+                    <div class="d-flex justify-content-between align-items-center mb-3">
+                        <span class="text-muted small fw-bold">API Key</span>
+                        <span class="badge bg-secondary" id="aiKeyBadge">--</span>
+                    </div>
+                    <div class="d-flex justify-content-between align-items-center mb-3">
+                        <span class="text-muted small fw-bold">模型</span>
+                        <code class="small" id="aiModelName">--</code>
+                    </div>
+                    <div class="d-flex justify-content-between align-items-center mb-3">
+                        <span class="text-muted small fw-bold">任务队列</span>
+                        <span class="small" id="aiQueueDepth">--</span>
+                    </div>
+                    <div class="alert alert-light border small mb-0" id="aiStatusText">
+                        正在读取 DeepSeek AI 状态...
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- 数据管理 -->
         <div class="col-md-6">
             <div class="card h-100 border-0 shadow-sm rounded-4">
@@ -300,6 +330,7 @@
         // 检查服务器状态和加载系统信息
         checkServerStatus();
         loadSystemInfo();
+        loadAiStatus();
         
         // 初始化轮询间隔滑块
         const pollInterval = document.getElementById('pollInterval');
@@ -311,6 +342,7 @@
         
         // 每30秒刷新一次系统信息
         setInterval(loadSystemInfo, 30000);
+        setInterval(loadAiStatus, 30000);
     });
     
     // 更新范围滑块显示值
@@ -556,6 +588,53 @@
             }
         } catch (e) {
             console.error('[loadSystemInfo] 加载系统信息失败:', e);
+        }
+    }
+
+    async function loadAiStatus() {
+        const enabledBadge = document.getElementById('aiEnabledBadge');
+        const keyBadge = document.getElementById('aiKeyBadge');
+        const modelEl = document.getElementById('aiModelName');
+        const queueEl = document.getElementById('aiQueueDepth');
+        const textEl = document.getElementById('aiStatusText');
+        try {
+            const response = await fetch('/api/ai/status', { method: 'GET' });
+            const result = await response.json();
+            if (!response.ok || !result.success) {
+                throw new Error(result.error || `HTTP ${response.status}`);
+            }
+            const data = result.data || {};
+            if (enabledBadge) {
+                enabledBadge.textContent = data.enabled ? '已启用' : '未启用';
+                enabledBadge.className = `badge ${data.enabled ? 'bg-success' : 'bg-secondary'}`;
+            }
+            if (keyBadge) {
+                keyBadge.textContent = data.api_key_configured ? '已配置' : '未配置';
+                keyBadge.className = `badge ${data.api_key_configured ? 'bg-success' : 'bg-warning text-dark'}`;
+            }
+            if (modelEl) modelEl.textContent = data.model || '--';
+            if (queueEl) queueEl.textContent = `${data.queue_depth || 0}/${data.queue_max || 0}`;
+            if (textEl) {
+                if (!data.enabled) {
+                    textEl.textContent = 'DeepSeek 外部调用当前关闭。需要在服务器环境变量中设置 DEEPSEEK_ENABLED=true。';
+                    textEl.className = 'alert alert-light border small mb-0';
+                } else if (!data.api_key_configured) {
+                    textEl.textContent = 'DeepSeek 已启用但未配置 API Key。请在服务器环境变量中设置 DEEPSEEK_API_KEY。';
+                    textEl.className = 'alert alert-warning small mb-0';
+                } else if (data.circuit_open) {
+                    textEl.textContent = 'DeepSeek 因近期失败暂时熔断，稍后会自动恢复。';
+                    textEl.className = 'alert alert-warning small mb-0';
+                } else {
+                    textEl.textContent = 'DeepSeek 可用于工单诊断、推理知识图谱、故障快照解释和24小时运维简报，所有任务均走后台队列。';
+                    textEl.className = 'alert alert-success small mb-0';
+                }
+            }
+        } catch (e) {
+            console.error('[loadAiStatus] 加载 AI 状态失败:', e);
+            if (textEl) {
+                textEl.textContent = '无法读取 DeepSeek AI 状态。';
+                textEl.className = 'alert alert-danger small mb-0';
+            }
         }
     }
     

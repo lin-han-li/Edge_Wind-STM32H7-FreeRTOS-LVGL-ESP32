@@ -82,6 +82,10 @@
 #define ESP32_SPI_FULL_CONTINUOUS_DEFAULT 0
 #endif
 
+#ifndef ESP_FORCE_FULL_REPORT_MODE
+#define ESP_FORCE_FULL_REPORT_MODE 1
+#endif
+
 #ifndef ESP32_SPI_FULL_NOT_ARMED_LOG_MS
 #define ESP32_SPI_FULL_NOT_ARMED_LOG_MS 5000U
 #endif
@@ -687,11 +691,11 @@ static volatile uint8_t g_console_line_len = 0;
 // ---------- 服务器下发命令解析 ----------
 static volatile uint8_t g_server_reset_pending = 0;
 // 服务器请求的上报模式：0=summary, 1=full
-static volatile uint8_t g_server_report_full = (ESP32_SPI_STRESS_FULL_UPLOAD != 0) ? 1U : 0U;
+static volatile uint8_t g_server_report_full = ((ESP_FORCE_FULL_REPORT_MODE != 0) || (ESP32_SPI_STRESS_FULL_UPLOAD != 0)) ? 1U : 0U;
 static volatile uint8_t g_server_report_full_dirty = 0;
 #if (ESP32_SPI_ENABLE_FULL_UPLOAD)
 static volatile uint16_t g_spi_full_manual_frames = 0;
-static volatile uint8_t g_spi_full_continuous = (ESP32_SPI_FULL_CONTINUOUS_DEFAULT != 0) ? 1U : 0U;
+static volatile uint8_t g_spi_full_continuous = ((ESP_FORCE_FULL_REPORT_MODE != 0) || (ESP32_SPI_FULL_CONTINUOUS_DEFAULT != 0)) ? 1U : 0U;
 static volatile uint8_t g_spi_full_waiting_result = 0;
 static uint32_t g_spi_full_result_ref_seq = 0U;
 static uint32_t g_spi_full_result_frame_id = 0U;
@@ -968,7 +972,7 @@ void ESP_CommParams_Apply(const ESP_CommParams_t *p)
     /* 约束：避免极端值导致系统抖动或“永不发送” */
     uint32_t hb    = clamp_u32(p->heartbeat_ms,    200u, 54999u);
     uint32_t minit = clamp_u32(p->min_interval_ms, 0u,   600000u);
-    uint32_t http  = clamp_u32(p->http_timeout_ms, 1000u, 600000u);
+    uint32_t http  = clamp_u32(p->http_timeout_ms, 10000u, 600000u);
     uint32_t hrs   = clamp_u32(p->hardreset_sec,   5u,   3600u);
     uint32_t step  = clamp_u32(p->wave_step,       1u,   64u);
     uint32_t upmax = (uint32_t)WAVEFORM_POINTS;
@@ -1308,6 +1312,9 @@ bool ESP_AutoReconnect_SetLastReporting(bool last_reporting)
 
 static void ESP_UploadMode_ApplyLoaded(uint8_t full)
 {
+#if (ESP_FORCE_FULL_REPORT_MODE)
+    full = 1U;
+#endif
     full = full ? 1U : 0U;
     g_server_report_full = full;
     g_server_report_full_dirty = 0U;
@@ -2004,6 +2011,9 @@ static void ESP_Console_HandleLine(char *line)
 
 static void ESP_SetServerReportMode(uint8_t full)
 {
+#if (ESP_FORCE_FULL_REPORT_MODE)
+    full = 1U;
+#endif
     full = (full != 0U) ? 1U : 0U;
     /* Treat every cloud command as an apply request.  After boot the runtime
        mode may come from SD while this command-cache variable is still at its

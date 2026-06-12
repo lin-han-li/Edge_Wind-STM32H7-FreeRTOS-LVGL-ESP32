@@ -10,7 +10,7 @@
         <h5 class="mb-0 fw-bold text-primary">
             <i class="bi bi-clipboard-list me-2"></i>故障日志
         </h5>
-        
+
         <div class="d-flex gap-2">
             <select class="form-select form-select-sm border-light bg-light" id="status-filter" style="width: 120px; font-size: 13px;" title="筛选工单状态" aria-label="筛选工单状态">
                 <option value="">所有状态</option>
@@ -36,7 +36,7 @@
                 <i class="bi bi-trash"></i> 删除选中
                 <span class="badge bg-danger ms-1" id="selected-fault-count">0</span>
             </button>
-            
+
             <button class="btn btn-sm btn-outline-primary" onclick="exportData()" title="导出数据">
                 <i class="bi bi-download"></i> 导出
             </button>
@@ -76,27 +76,69 @@
         <div class="modal-content">
             <div class="modal-header">
                 <h5 class="modal-title">智能故障诊断引擎</h5>
-                <button type="button" class="btn btn-sm btn-outline-secondary me-2" id="reset-graph-btn" onclick="resetKnowledgeGraph()">
-                    <i class="bi bi-arrow-counterclockwise"></i> 重置视图
-                </button>
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
             <div class="modal-body">
-                <div class="row">
-                    <div class="col-md-4">
-                        <h6 class="mb-3">故障详情</h6>
+                <div class="diagnosis-workbench">
+                    <aside class="diagnosis-pane diagnosis-summary-pane">
+                        <div class="diagnosis-pane-title">故障摘要</div>
                         <div id="fault-details">
                             <!-- 动态填充 -->
                         </div>
-                    </div>
-                    <div class="col-md-8">
-                        <h6 class="mb-3">知识图谱诊断</h6>
-                        <div id="diagnosis-graph" style="width: 100%; height: 100%; min-height: 850px;"></div>
-                    </div>
+                    </aside>
+                    <section class="diagnosis-pane diagnosis-graph-pane">
+                        <div class="diagnosis-graph-toolbar">
+                            <div>
+                                <div class="diagnosis-pane-title mb-0" id="graph-main-title">本次推理证据链</div>
+                                <div class="diagnosis-pane-subtitle" id="graph-main-subtitle">本次故障的证据、命中根因和建议动作是主诊断路径；点击节点可联动右侧解释</div>
+                                <div class="diagnosis-graph-legend">
+                                    <span><i class="legend-dot legend-dot-fault"></i>故障</span>
+                                    <span><i class="legend-dot legend-dot-cause"></i>根因</span>
+                                    <span><i class="legend-dot legend-dot-solution"></i>方案</span>
+                                    <span><i class="legend-dot legend-dot-param"></i>证据</span>
+                                    <span><i class="legend-ring legend-ring-ai"></i>AI 命中</span>
+                                </div>
+                            </div>
+                            <div class="diagnosis-graph-actions">
+                                <div class="btn-group btn-group-sm" role="group" aria-label="知识图谱视图">
+                                    <button type="button" class="btn btn-info" id="graph-view-event-btn" onclick="switchGraphView('event')">2D 推理证据链</button>
+                                    <button type="button" class="btn btn-outline-info" id="graph-view-full-btn" onclick="switchGraphView('full')">3D 专家全量库</button>
+                                </div>
+                                <span class="graph-mode-badge" id="graph-mode-badge">2D Reasoning Path</span>
+                                <button type="button" class="btn btn-sm btn-outline-secondary" onclick="resetCurrentKnowledgeGraphView()">
+                                    <i class="bi bi-arrow-counterclockwise"></i> 重置视图
+                                </button>
+                            </div>
+                        </div>
+                        <div class="diagnosis-graph-shell graph-switch-shell evidence-main-shell">
+                            <div id="diagnosis-graph"></div>
+                            <div id="diagnosis-graph-3d-main"></div>
+                        </div>
+                    </section>
+                    <aside class="diagnosis-pane diagnosis-insight-pane">
+                        <div class="diagnosis-insight-scroll">
+                            <div class="diagnosis-insight-header">
+                            <div>
+                                <div class="diagnosis-pane-title mb-0">AI 推理洞察</div>
+                                <div id="graph-reasoning-status" class="small text-muted">打开工单后加载图谱推理状态...</div>
+                            </div>
+                            <button type="button" class="btn btn-sm btn-outline-info" id="deepseek-graph-btn" onclick="requestGraphReasoning(false)">
+                                <i class="bi bi-diagram-3"></i> 图谱推理
+                            </button>
+                        </div>
+                        <div id="graph-reasoning-panel" class="graph-insight-panel"></div>
+                        <div id="graph-node-detail-panel" class="node-detail-panel">
+                            <div class="node-detail-empty">点击图谱节点后，这里显示节点解释和关联证据。</div>
+                        </div>
+                        </div>
+                    </aside>
                 </div>
             </div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+                <button type="button" class="btn btn-outline-info" id="deepseek-diagnosis-btn" onclick="requestDeepSeekDiagnosis(false)">
+                    <i class="bi bi-stars"></i> DeepSeek 分析
+                </button>
                 <button type="button" class="btn btn-success" onclick="exportWorkOrder()">
                     <i class="bi bi-file-earmark-word"></i> 导出工单
                 </button>
@@ -121,7 +163,7 @@
 {% block extra_css %}
 <style>
     /* ========== Modern Soft SaaS Styling ========== */
-    
+
     /* Table Card Styling */
     .card {
         box-shadow: 0 0 40px 0 rgba(0,0,0,.05);
@@ -139,27 +181,27 @@
         letter-spacing: 0.5px;
         border: none;
     }
-    
+
     .badge-soft-danger {
         background-color: #ffe5e5;
         color: #d32f2f;
     }
-    
+
     .badge-soft-warning {
         background-color: #fff8e1;
         color: #f57c00;
     }
-    
+
     .badge-soft-success {
         background-color: #e8f5e9;
         color: #2e7d32;
     }
-    
+
     .badge-soft-primary {
         background-color: #e3f2fd;
         color: #1976d2;
     }
-    
+
     .badge-soft-info {
         background-color: #e0f7fa;
         color: #0277bd;
@@ -176,7 +218,7 @@
         padding: 12px 16px;
         background: transparent;
     }
-    
+
     .table tbody td {
         padding: 16px;
         vertical-align: middle;
@@ -184,7 +226,7 @@
         border-bottom: 1px solid #f5f7fa;
         font-size: 13px;
     }
-    
+
     .table-hover tbody tr:hover {
         background-color: #fcfcfc;
         transform: translateY(-1px);
@@ -202,20 +244,20 @@
         padding: 8px 16px;
         transition: all 0.3s ease;
     }
-    
+
     #fault-search:focus {
         background-color: #fff;
         box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
         border: 1px solid rgba(37, 99, 235, 0.2);
         outline: none;
     }
-    
+
     .input-group-text {
         background-color: #f5f7fa;
         border: none;
         border-radius: 20px 0 0 20px;
     }
-    
+
     .input-group-sm .input-group-text {
         padding-left: 16px;
     }
@@ -241,69 +283,339 @@
 
     /* ========== 知识图谱模态框样式 ========== */
     #diagnosisModal .modal-dialog {
-        max-width: 75% !important;
-        width: 75% !important;
-        max-height: 98vh;
-        margin: 1vh auto;
+        max-width: 98vw !important;
+        width: 98vw !important;
+        max-height: 96vh;
+        margin: 2vh auto;
     }
-    
+
     #diagnosisModal .modal-content {
-        height: 98vh !important;
-        max-height: 98vh !important;
+        height: 96vh !important;
+        max-height: 96vh !important;
         display: flex;
         flex-direction: column;
         background: #ffffff !important;
         color: #1f2937 !important;
     }
-    
+
     #diagnosisModal .modal-header {
         background: #f8f9fa !important;
         border-bottom: 1px solid #dee2e6 !important;
         color: #1f2937 !important;
         flex-shrink: 0;
     }
-    
+
     #diagnosisModal .modal-title {
         color: #1f2937 !important;
         font-weight: 600;
     }
-    
+
     #diagnosisModal .modal-body {
         flex: 1;
-        overflow-y: auto;
-        padding: 1.5rem;
+        overflow: hidden;
+        padding: 1rem;
         color: #1f2937 !important;
         background: #ffffff !important;
+        min-height: 0;
     }
 
-    #diagnosisModal .modal-body .row {
+    .diagnosis-workbench {
+        display: grid;
+        grid-template-columns: clamp(205px, 13vw, 235px) minmax(0, 1fr) clamp(300px, 20vw, 350px);
+        gap: 0.75rem;
         height: 100%;
+        min-height: 0;
     }
 
-    #diagnosisModal .modal-body .col-md-8 {
+    .diagnosis-pane {
+        min-width: 0;
+        min-height: 0;
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        background: #ffffff;
+    }
+
+    .diagnosis-summary-pane {
+        overflow-y: auto;
+        padding: 0.85rem;
+    }
+
+    .diagnosis-insight-pane {
         display: flex;
         flex-direction: column;
+        overflow: hidden;
+        padding: 0.85rem;
+        gap: 0.85rem;
     }
 
-    #diagnosisModal .modal-body .col-md-8 h6 {
+    .diagnosis-graph-pane {
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        padding: 0.85rem;
+    }
+
+    .diagnosis-pane-title {
+        color: #0f172a !important;
+        font-size: 0.95rem;
+        font-weight: 700;
+        line-height: 1.35;
+    }
+
+    .diagnosis-pane-subtitle {
+        color: #64748b !important;
+        font-size: 0.78rem;
+        margin-top: 0.1rem;
+    }
+
+    .diagnosis-graph-legend {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        margin-top: 0.45rem;
+        color: #475569 !important;
+        font-size: 0.78rem;
+    }
+
+    .diagnosis-graph-legend span {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.25rem;
+        color: #475569 !important;
+    }
+
+    .legend-dot {
+        width: 0.55rem;
+        height: 0.55rem;
+        border-radius: 999px;
+        display: inline-block;
+    }
+
+    .legend-ring {
+        width: 0.65rem;
+        height: 0.65rem;
+        border-radius: 999px;
+        display: inline-block;
+        background: #ffffff;
+    }
+
+    .legend-dot-fault { background: #ef4444; }
+    .legend-dot-cause { background: #f59e0b; }
+    .legend-dot-solution { background: #10b981; }
+    .legend-dot-param { background: #06b6d4; }
+    .legend-ring-ai {
+        border: 2px solid #2563eb;
+        box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.16);
+    }
+
+    .diagnosis-graph-toolbar,
+    .diagnosis-insight-header {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 0.75rem;
         flex: 0 0 auto;
     }
 
-    #diagnosisModal #diagnosis-graph {
-        flex: 1;
+    .diagnosis-graph-actions {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.45rem;
+        flex-wrap: wrap;
+        justify-content: flex-end;
     }
-    
+
+    .diagnosis-graph-actions .btn-group {
+        display: inline-flex !important;
+        padding: 0.15rem;
+        border: 1px solid #dbeafe;
+        border-radius: 999px;
+        background: #f8fafc;
+        box-shadow: inset 0 0 0 1px rgba(255,255,255,0.76);
+    }
+
+    .diagnosis-graph-actions .btn-group .btn {
+        border-radius: 999px !important;
+        border-width: 0;
+        font-weight: 700;
+        white-space: nowrap;
+    }
+
+    .graph-mode-badge {
+        display: inline-flex;
+        align-items: center;
+        padding: 0.28rem 0.62rem;
+        border-radius: 999px;
+        border: 1px solid #dbeafe;
+        background: #eff6ff;
+        color: #1d4ed8 !important;
+        font-size: 0.72rem;
+        font-weight: 700;
+        letter-spacing: 0;
+        white-space: nowrap;
+    }
+
+    .diagnosis-graph-shell {
+        flex: 1;
+        min-height: 0;
+        margin-top: 0.75rem;
+        border: 1px solid #eef2f7;
+        border-radius: 8px;
+        background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+        overflow: hidden;
+    }
+
+    .graph-switch-shell {
+        position: relative;
+    }
+
+    .evidence-main-shell {
+        background:
+            radial-gradient(circle at 50% 45%, rgba(239, 246, 255, 0.98) 0%, rgba(255, 255, 255, 0.98) 62%, rgba(248, 250, 252, 0.96) 100%);
+    }
+
+    .graph-switch-shell.is-3d {
+        background:
+            radial-gradient(circle at 50% 44%, rgba(219, 234, 254, 0.95) 0%, rgba(255, 255, 255, 0.98) 58%, rgba(241, 245, 249, 0.96) 100%);
+    }
+
+    .diagnosis-graph-3d-shell {
+        position: relative;
+        background:
+            radial-gradient(circle at 48% 42%, rgba(219, 234, 254, 0.82) 0%, rgba(255, 255, 255, 0.96) 48%, rgba(241, 245, 249, 0.92) 100%);
+    }
+
+    #diagnosisModal #diagnosis-graph-3d-main {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        min-height: 0;
+        display: none;
+    }
+
+    #diagnosisModal #diagnosis-graph-3d-main canvas {
+        display: block;
+    }
+
+    #diagnosisModal #diagnosis-graph {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        min-height: 0;
+        display: block;
+    }
+
+    #diagnosisModal #diagnosis-graph canvas {
+        display: block;
+    }
+
+    .diagnosis-insight-scroll {
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
+        padding-right: 0.1rem;
+    }
+
+    .diagnosis-insight-header > div {
+        min-width: 0;
+    }
+
+    .graph-3d-hint {
+        position: absolute;
+        left: 0.75rem;
+        bottom: 0.65rem;
+        z-index: 2;
+        padding: 0.25rem 0.5rem;
+        border-radius: 999px;
+        background: rgba(15, 23, 42, 0.7);
+        color: #ffffff;
+        font-size: 0.72rem;
+        pointer-events: none;
+        backdrop-filter: blur(6px);
+    }
+
+    .graph-3d-stats {
+        position: absolute;
+        left: 0.75rem;
+        top: 0.65rem;
+        z-index: 2;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        max-width: calc(100% - 1.5rem);
+        padding: 0.35rem 0.6rem;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.9);
+        border: 1px solid rgba(148, 163, 184, 0.35);
+        color: #334155;
+        font-size: 0.75rem;
+        pointer-events: none;
+        box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
+        backdrop-filter: blur(8px);
+    }
+
+    .graph-3d-selected {
+        min-width: 0;
+        max-width: 15rem;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        color: #2563eb;
+        font-weight: 600;
+    }
+
+    .graph-3d-tooltip {
+        position: absolute;
+        z-index: 3;
+        display: none;
+        max-width: 260px;
+        padding: 0.45rem 0.6rem;
+        border-radius: 8px;
+        background: rgba(15, 23, 42, 0.88);
+        color: #ffffff;
+        font-size: 0.78rem;
+        line-height: 1.45;
+        pointer-events: none;
+        box-shadow: 0 14px 34px rgba(15, 23, 42, 0.22);
+    }
+
+    .graph-3d-tooltip strong {
+        display: block;
+        font-size: 0.82rem;
+        margin-bottom: 0.1rem;
+    }
+
+    #diagnosisModal .graph-3d-hint,
+    #diagnosisModal .graph-3d-hint *,
+    #diagnosisModal .graph-3d-tooltip,
+    #diagnosisModal .graph-3d-tooltip * {
+        color: #ffffff !important;
+    }
+
+    #diagnosisModal .graph-3d-tooltip {
+        background: rgba(15, 23, 42, 0.94);
+    }
+
+    #current-ai-recommendation {
+        display: -webkit-box;
+        -webkit-line-clamp: 4;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+    }
+
     #diagnosisModal .modal-footer {
         flex-shrink: 0;
         background: #f8f9fa !important;
         border-top: 1px solid #dee2e6 !important;
     }
-    
+
     #diagnosisModal .modal-footer {
         background: #f8f9fa !important;
         border-top: 1px solid #dee2e6 !important;
     }
-    
+
     /* 确保模态框内所有文字都是深色 - 特别是故障详情部分 */
     #diagnosisModal h6,
     #diagnosisModal h5,
@@ -313,7 +625,7 @@
     #diagnosisModal h1 {
         color: #1f2937 !important;
     }
-    
+
     #diagnosisModal p,
     #diagnosisModal div,
     #diagnosisModal span,
@@ -322,18 +634,18 @@
     #diagnosisModal small {
         color: #1f2937 !important;
     }
-    
+
     /* 故障详情区域特别处理 */
     #diagnosisModal #fault-details,
     #diagnosisModal #fault-details * {
         color: #1f2937 !important;
     }
-    
+
     #diagnosisModal #fault-details strong {
         color: #1f2937 !important;
         font-weight: 600;
     }
-    
+
     #diagnosisModal #fault-details code {
         background: #f3f4f6 !important;
         color: #1f2937 !important;
@@ -341,22 +653,221 @@
         border-radius: 4px;
         font-family: 'Courier New', monospace;
     }
-    
+
     #diagnosisModal #fault-details code.text-danger {
         color: #dc3545 !important;
     }
-    
+
     #diagnosisModal .text-muted {
         color: #6b7280 !important;
     }
-    
+
     #diagnosisModal .btn-close {
         filter: none;
         opacity: 0.5;
     }
-    
+
     #diagnosisModal .btn-close:hover {
         opacity: 1;
+    }
+
+    .ai-diagnosis-card {
+        border: 1px solid rgba(13, 202, 240, 0.25);
+        background: #f8fdff;
+        border-radius: 8px;
+        padding: 12px;
+    }
+
+    .ai-diagnosis-card pre {
+        white-space: pre-wrap;
+        word-break: break-word;
+        font-size: 12px;
+        line-height: 1.55;
+        margin: 0;
+        max-height: 260px;
+        overflow: auto;
+    }
+
+    .ai-result-box {
+        background: #f8fafc;
+        border: 1px solid #dbeafe;
+        border-radius: 8px;
+        padding: 0.75rem;
+        color: #1f2937;
+    }
+
+    .ai-result-box .ai-result-title {
+        font-weight: 700;
+        color: #0f172a;
+        margin-bottom: 0.35rem;
+    }
+
+    .ai-result-box ul {
+        margin-bottom: 0;
+        padding-left: 1.1rem;
+    }
+
+    .graph-insight-panel {
+        margin-top: 0.85rem;
+        padding-bottom: 0.8rem;
+        border-bottom: 1px solid #e5e7eb;
+    }
+
+    .graph-insight-summary {
+        font-size: 0.88rem;
+        line-height: 1.55;
+        color: #334155 !important;
+    }
+
+    .reasoning-timeline {
+        display: flex;
+        flex-direction: column;
+        gap: 0.75rem;
+        margin-top: 0.85rem;
+    }
+
+    .reasoning-timeline-item {
+        position: relative;
+        padding-left: 1rem;
+        border-left: 2px solid #dbeafe;
+    }
+
+    .reasoning-timeline-item::before {
+        content: "";
+        position: absolute;
+        left: -5px;
+        top: 0.25rem;
+        width: 8px;
+        height: 8px;
+        border-radius: 999px;
+        background: #2563eb;
+        box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+    }
+
+    .reasoning-chain-title {
+        font-weight: 700;
+        color: #0f172a;
+        font-size: 0.9rem;
+        margin-bottom: 0.25rem;
+    }
+
+    .reasoning-evidence {
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+        font-size: 0.82rem;
+        line-height: 1.45;
+        color: #475569 !important;
+        margin-bottom: 0.4rem;
+    }
+
+    .reasoning-chip-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.35rem;
+    }
+
+    .reasoning-chip {
+        border: 1px solid #bfdbfe;
+        background: #eff6ff;
+        color: #1d4ed8 !important;
+        border-radius: 999px;
+        padding: 0.18rem 0.55rem;
+        font-size: 0.78rem;
+        line-height: 1.45;
+        cursor: pointer;
+    }
+
+    .reasoning-chip:hover {
+        background: #dbeafe;
+        border-color: #93c5fd;
+    }
+
+    .insight-collapse {
+        border-top: 1px solid #e5e7eb;
+        margin-top: 0.75rem;
+        padding-top: 0.65rem;
+    }
+
+    .insight-collapse summary {
+        cursor: pointer;
+        color: #0f172a !important;
+        font-weight: 700;
+        font-size: 0.86rem;
+    }
+
+    .insight-collapse ul {
+        margin: 0.55rem 0 0;
+        padding-left: 1rem;
+        font-size: 0.82rem;
+        line-height: 1.5;
+        color: #475569 !important;
+    }
+
+    .node-detail-panel {
+        padding-top: 0.75rem;
+    }
+
+    .node-detail-empty,
+    .graph-insight-empty {
+        border: 1px dashed #cbd5e1;
+        border-radius: 8px;
+        padding: 0.75rem;
+        color: #64748b !important;
+        font-size: 0.86rem;
+        line-height: 1.5;
+        background: #f8fafc;
+    }
+
+    .node-detail-title {
+        color: #0f172a !important;
+        font-weight: 700;
+        margin-bottom: 0.25rem;
+    }
+
+    .node-detail-text {
+        color: #475569 !important;
+        font-size: 0.86rem;
+        line-height: 1.55;
+        margin-bottom: 0.5rem;
+    }
+
+    @media (max-width: 1180px) {
+        .diagnosis-workbench {
+            grid-template-columns: 1fr;
+            overflow-y: auto;
+        }
+
+        #diagnosisModal .modal-body {
+            overflow: hidden;
+        }
+
+        .diagnosis-graph-shell {
+            min-height: 560px;
+        }
+
+        .diagnosis-insight-pane {
+            overflow: visible;
+        }
+
+        .diagnosis-summary-pane {
+            overflow: visible;
+        }
+
+        .diagnosis-insight-scroll {
+            overflow: visible;
+        }
+    }
+
+    @keyframes spin {
+        from { transform: rotate(0deg); }
+        to { transform: rotate(360deg); }
+    }
+
+    .spin {
+        animation: spin 1s linear infinite;
+        display: inline-block;
     }
 
     /* Responsive adjustments for mobile */
@@ -366,21 +877,31 @@
             align-items: flex-start !important;
             gap: 1rem;
         }
-        
+
         .card-header .d-flex {
             width: 100%;
             flex-wrap: wrap;
         }
-        
+
         .card-header .d-flex > * {
             flex: 1 1 auto;
             min-width: 120px;
+        }
+
+        .diagnosis-insight-header,
+        .diagnosis-graph-toolbar {
+            flex-direction: column;
+        }
+
+        .graph-mode-badge {
+            align-self: flex-start;
         }
     }
 </style>
 {% endblock %}
 
 {% block extra_js %}
+<script src="{{ url_for('static', filename='vendor/three-0.149.0.min.js') }}"></script>
 <script>
     // ========== 工具函数（必须放在本页主逻辑之前，避免 ReferenceError）==========
     // 说明：base.html 只渲染 extra_js，不渲染 scripts；因此这些函数必须在 extra_js 内定义。
@@ -409,18 +930,36 @@
     let expandedNodes = new Set();  // 记录已展开的节点，避免重复展开
     let previousFaultIds = null;  // 存储上一次的故障ID集合，用于检测新故障
     let selectedFaultIds = new Set();  // 批量删除选择状态
+    let currentAiTaskId = null;
+    let currentAiPollTimer = null;
+    let currentGraphData = null;
+    let currentGraphView = 'event';
+    let currentGraphTaskId = null;
+    let currentGraphPollTimer = null;
+    let knowledgeGraph3D = null;
+    let pendingKnowledgeGraphRender = false;
 
-    const DEFAULT_GRAPH_ZOOM = 1.35;
-    const DEFAULT_GRAPH_CENTER = ['50%', '55%'];
+    const DEFAULT_GRAPH_ZOOM = 1;
+    const DEFAULT_EVENT_GRAPH_ZOOM = 0.84;
+    const DEFAULT_GRAPH_CENTER = ['50%', '50%'];
+    const DEFAULT_EVENT_GRAPH_CENTER = ['50%', '53%'];
+    const GRAPH_ZOOM_MIN = 0.65;
+    const GRAPH_ZOOM_MAX = 2.2;
+    const GRAPH_HELPER_PREFIX = '__ew_graph_helper__';
+    let currentGraphSemanticZoom = DEFAULT_GRAPH_ZOOM;
 
     function applyGraphInitialView() {
         if (!diagnosisChart) return;
+        const initialZoom = currentGraphView === 'event' ? DEFAULT_EVENT_GRAPH_ZOOM : DEFAULT_GRAPH_ZOOM;
+        const initialCenter = currentGraphView === 'event' ? DEFAULT_EVENT_GRAPH_CENTER : DEFAULT_GRAPH_CENTER;
+        currentGraphSemanticZoom = initialZoom;
         diagnosisChart.setOption({
             series: [{
-                zoom: DEFAULT_GRAPH_ZOOM,
-                center: DEFAULT_GRAPH_CENTER
+                zoom: initialZoom,
+                center: initialCenter
             }]
         }, { notMerge: false, lazyUpdate: true, silent: true });
+        applyGraphSemanticZoom(initialZoom);
     }
 
     // 文件名清洗：Windows 不允许出现 \ / : * ? " < > |
@@ -435,6 +974,1404 @@
         const dt = (d instanceof Date) ? d : new Date(d || Date.now());
         const pad = (n) => String(n).padStart(2, '0');
         return `${dt.getFullYear()}${pad(dt.getMonth() + 1)}${pad(dt.getDate())}_${pad(dt.getHours())}${pad(dt.getMinutes())}${pad(dt.getSeconds())}`;
+    }
+
+    function stopAiPolling() {
+        if (currentAiPollTimer) {
+            clearInterval(currentAiPollTimer);
+            currentAiPollTimer = null;
+        }
+    }
+
+    function stopGraphReasoningPolling() {
+        if (currentGraphPollTimer) {
+            clearInterval(currentGraphPollTimer);
+            currentGraphPollTimer = null;
+        }
+    }
+
+    function setGraphReasoningState(disabled, text, message, level = 'muted') {
+        const btn = document.getElementById('deepseek-graph-btn');
+        const statusEl = document.getElementById('graph-reasoning-status');
+        if (btn) {
+            btn.disabled = !!disabled;
+            btn.innerHTML = text || '<i class="bi bi-diagram-3"></i> 图谱推理';
+        }
+        if (statusEl) {
+            statusEl.className = `small text-${level} mb-2`;
+            statusEl.textContent = message || '';
+        }
+    }
+
+    function graphEvidenceText(item) {
+        if (!item) return '';
+        if (typeof item === 'string') return item;
+        return item.text || item.description || item.summary || item.value || JSON.stringify(item);
+    }
+
+    function normalizeRiskLabel(value) {
+        const risk = String(value || '').trim().toLowerCase();
+        if (risk === 'high' || risk === 'critical') return '高';
+        if (risk === 'medium' || risk === 'moderate') return '中';
+        if (risk === 'low') return '低';
+        return value || '需人工复核';
+    }
+
+    function formatConfidence(value) {
+        return (typeof value === 'number') ? value.toFixed(2) : '未给出';
+    }
+
+    function encodeGraphRef(value) {
+        return encodeURIComponent(String(value || ''));
+    }
+
+    function decodeGraphRef(value) {
+        try {
+            return decodeURIComponent(String(value || ''));
+        } catch (err) {
+            return String(value || '');
+        }
+    }
+
+    function getChartNodes() {
+        if (!diagnosisChart) return currentGraphData?.nodes || [];
+        const option = diagnosisChart.getOption();
+        return option?.series?.[0]?.data || currentGraphData?.nodes || [];
+    }
+
+    function getChartLinks() {
+        if (!diagnosisChart) return currentGraphData?.links || [];
+        const option = diagnosisChart.getOption();
+        return option?.series?.[0]?.links || currentGraphData?.links || [];
+    }
+
+    function graphSemanticScaleForZoom(zoom) {
+        const normalizedZoom = clampGraphValue(Number(zoom) || DEFAULT_GRAPH_ZOOM, GRAPH_ZOOM_MIN, GRAPH_ZOOM_MAX);
+        return clampGraphValue(Math.sqrt(normalizedZoom), 0.88, 1.18);
+    }
+
+    function getDiagnosisGraphZoom() {
+        if (!diagnosisChart) return DEFAULT_GRAPH_ZOOM;
+        const option = diagnosisChart.getOption();
+        const value = Number(option?.series?.[0]?.zoom);
+        return Number.isFinite(value) && value > 0 ? value : DEFAULT_GRAPH_ZOOM;
+    }
+
+    function applyGraphSemanticZoom(zoom = getDiagnosisGraphZoom()) {
+        if (!diagnosisChart || currentGraphView !== 'event') return;
+        currentGraphSemanticZoom = clampGraphValue(Number(zoom) || DEFAULT_GRAPH_ZOOM, GRAPH_ZOOM_MIN, GRAPH_ZOOM_MAX);
+        const option = diagnosisChart.getOption();
+        const series = option?.series?.[0] || {};
+        const data = Array.isArray(series.data) ? series.data : [];
+        const links = Array.isArray(series.links) ? series.links : [];
+        if (!data.length) return;
+        const scale = graphSemanticScaleForZoom(currentGraphSemanticZoom);
+        const scaledNodes = data.map(node => {
+            const baseSize = Number(node.__baseSymbolSize) || Number(node.symbolSize) || 1;
+            const baseFontSize = Number(node.__baseLabelFontSize) || Number(node?.label?.fontSize) || 11;
+            const baseDistance = Number(node.__baseLabelDistance) || Number(node?.label?.distance) || 0;
+            const helper = !!node.__graphHelper;
+            const helperLabel = !!node.__helperLabel;
+            const label = node.label ? {
+                ...node.label,
+                fontSize: Math.max(helperLabel ? 10 : (helper ? 8 : 9), baseFontSize * scale),
+                distance: Math.max(0, baseDistance * scale)
+            } : node.label;
+            return {
+                ...node,
+                symbolSize: helper ? baseSize : Math.max(10, baseSize * scale),
+                label
+            };
+        });
+        const scaledLinks = links.map(link => {
+            const baseWidth = Number(link.__baseLineWidth) || Number(link?.lineStyle?.width) || 1;
+            return {
+                ...link,
+                lineStyle: {
+                    ...(link.lineStyle || {}),
+                    width: Math.max(link.__graphHelper ? 0.6 : 0.8, baseWidth * scale)
+                }
+            };
+        });
+        diagnosisChart.setOption({
+            series: [{
+                data: scaledNodes,
+                links: scaledLinks,
+                edgeSymbolSize: [0, Math.max(5, 8 * scale)]
+            }]
+        }, { notMerge: false, lazyUpdate: true, silent: true });
+    }
+
+    function graphViewPayload(graph, view) {
+        if (!graph) return null;
+        const views = graph.graph_views || {};
+        const selected = views[view] || views.event || views.full;
+        if (!selected) return graph;
+        return {
+            ...graph,
+            nodes: selected.nodes || graph.nodes || [],
+            links: selected.links || graph.links || [],
+            categories: selected.categories || graph.categories || []
+        };
+    }
+
+    function updateGraphViewButtons(view) {
+        const eventBtn = document.getElementById('graph-view-event-btn');
+        const fullBtn = document.getElementById('graph-view-full-btn');
+        const titleEl = document.getElementById('graph-main-title');
+        const subtitleEl = document.getElementById('graph-main-subtitle');
+        const badgeEl = document.getElementById('graph-mode-badge');
+        const hasViews = !!(originalGraphData && originalGraphData.graph_views);
+        [eventBtn, fullBtn].forEach(btn => {
+            if (btn) btn.disabled = !hasViews;
+        });
+        if (eventBtn) {
+            eventBtn.className = view === 'event' ? 'btn btn-info' : 'btn btn-outline-info';
+        }
+        if (fullBtn) {
+            fullBtn.className = view === 'full' ? 'btn btn-info' : 'btn btn-outline-info';
+        }
+        if (titleEl) {
+            titleEl.textContent = view === 'full' ? '专家知识图谱全量库' : '本次推理证据链';
+        }
+        if (subtitleEl) {
+            subtitleEl.textContent = view === 'full'
+                ? '当前故障码对应的完整专家知识库，占满主画布浏览候选根因、证据模式、复核项和处置方案'
+                : '本次故障的证据、命中根因和建议动作是主诊断路径；点击节点可联动右侧解释';
+        }
+        if (badgeEl) {
+            badgeEl.textContent = view === 'full' ? '专家全量库' : '本次证据链';
+        }
+    }
+
+    function getFullGraphData() {
+        if (!originalGraphData) return null;
+        return JSON.parse(JSON.stringify(graphViewPayload(originalGraphData, 'full')));
+    }
+
+    function getEventGraphData() {
+        if (!originalGraphData) return currentGraphData ? JSON.parse(JSON.stringify(currentGraphData)) : null;
+        return JSON.parse(JSON.stringify(graphViewPayload(originalGraphData, 'event')));
+    }
+
+    function isGraphContainerReady(el, minWidth = 80, minHeight = 80) {
+        return !!(el && el.clientWidth >= minWidth && el.clientHeight >= minHeight && el.offsetParent !== null);
+    }
+
+    function switchGraphView(view) {
+        if (!originalGraphData) return;
+        currentGraphView = view === 'full' ? 'full' : 'event';
+        currentGraphData = JSON.parse(JSON.stringify(graphViewPayload(originalGraphData, 'event')));
+        expandedNodes.clear();
+        updateGraphViewButtons(currentGraphView);
+        renderKnowledgeGraphView();
+    }
+
+    function disposeKnowledgeGraph3D() {
+        if (!knowledgeGraph3D) return;
+        const containerEl = knowledgeGraph3D.containerEl;
+        if (knowledgeGraph3D.frameId) {
+            cancelAnimationFrame(knowledgeGraph3D.frameId);
+        }
+        if (knowledgeGraph3D.cleanup) {
+            knowledgeGraph3D.cleanup();
+        }
+        if (knowledgeGraph3D.scene) {
+            knowledgeGraph3D.scene.traverse(object => {
+                if (object.geometry) object.geometry.dispose();
+                const materials = Array.isArray(object.material) ? object.material : [object.material];
+                materials.filter(Boolean).forEach(material => {
+                    if (material.map) material.map.dispose();
+                    material.dispose();
+                });
+            });
+        }
+        if (knowledgeGraph3D.renderer) {
+            knowledgeGraph3D.renderer.dispose();
+        }
+        if (containerEl) {
+            containerEl.innerHTML = '';
+        }
+        knowledgeGraph3D = null;
+    }
+
+    function ensureDiagnosisChart() {
+        if (diagnosisChart) return diagnosisChart;
+        const graphEl = document.getElementById('diagnosis-graph');
+        if (!graphEl || !window.echarts) return null;
+        diagnosisChart = echarts.init(graphEl);
+        return diagnosisChart;
+    }
+
+    function renderKnowledgeGraphView() {
+        if (!originalGraphData && !currentGraphData) return;
+        const graph2DEl = document.getElementById('diagnosis-graph');
+        const graph3DEl = document.getElementById('diagnosis-graph-3d-main');
+        const shellEl = graph2DEl?.closest('.graph-switch-shell');
+        const activeView = currentGraphView === 'full' ? 'full' : 'event';
+        updateGraphViewButtons(activeView);
+        if (graph2DEl) graph2DEl.style.display = activeView === 'event' ? 'block' : 'none';
+        if (graph3DEl) graph3DEl.style.display = activeView === 'full' ? 'block' : 'none';
+        if (shellEl) shellEl.classList.toggle('is-3d', activeView === 'full');
+
+        const activeEl = activeView === 'full' ? graph3DEl : graph2DEl;
+        if (!isGraphContainerReady(activeEl, activeView === 'full' ? 160 : 80, activeView === 'full' ? 160 : 80)) {
+            pendingKnowledgeGraphRender = true;
+            return;
+        }
+        pendingKnowledgeGraphRender = false;
+        currentGraphData = getEventGraphData();
+        if (activeView === 'full') {
+            renderKnowledgeGraph3D(getFullGraphData(), { containerId: 'diagnosis-graph-3d-main' });
+            return;
+        }
+        disposeKnowledgeGraph3D();
+        const graphEl = document.getElementById('diagnosis-graph');
+        if (graphEl && !diagnosisChart) graphEl.innerHTML = '';
+        const chart = ensureDiagnosisChart();
+        if (!chart) {
+            console.error('[KnowledgeGraph] ECharts is not available; 2D evidence graph was not rendered.');
+            return;
+        }
+        updateGraphOption(currentGraphData);
+        chart.resize();
+        applyGraphInitialView();
+        bindDiagnosisGraphClickHandlers();
+    }
+
+    function resetCurrentKnowledgeGraphView() {
+        if (currentGraphView === 'full') {
+            if (!knowledgeGraph3D) {
+                renderKnowledgeGraphView();
+            }
+            resetKnowledgeGraph3DView();
+            return;
+        }
+        resetKnowledgeGraph();
+    }
+
+    function resetKnowledgeGraph3DView() {
+        if (!knowledgeGraph3D) return;
+        fitKnowledgeGraph3DCamera(knowledgeGraph3D, false);
+        clearKnowledgeGraph3DSelection(knowledgeGraph3D, true);
+    }
+
+    function graph3DNodeRadius(kind) {
+        if (kind === 'fault') return 18;
+        if (kind === 'cause' || kind === 'solution') return 12;
+        if (kind === 'evidence' || kind === 'check') return 9;
+        return 8;
+    }
+
+    function graph3DLineColor(link) {
+        const relation = String(link?.relation || '');
+        if (relation.includes('support')) return '#2563eb';
+        if (relation.includes('cause')) return '#f59e0b';
+        if (relation.includes('action') || relation.includes('solution') || relation.includes('mitigated')) return '#10b981';
+        if (relation.includes('risk')) return '#dc2626';
+        return '#94a3b8';
+    }
+
+    function graph3DNodeKey(node, fallback = '') {
+        return String(node?.id || node?.name || fallback || '');
+    }
+
+    function graph3DIsAiMatched(node) {
+        return node?.status === 'matched'
+            || node?.status === 'event_matched'
+            || String(node?.source || '').includes('deepseek')
+            || (Array.isArray(node?.evidence_refs) && node.evidence_refs.length > 0);
+    }
+
+    function createGraph3DLabelTexture(node, kind, categories) {
+        const canvas = document.createElement('canvas');
+        canvas.width = 520;
+        canvas.height = 124;
+        const ctx = canvas.getContext('2d');
+        const color = graphNodeColor(kind);
+        const name = truncateGraphLabel(node.name || node.id, kind === 'fault' ? 18 : 11);
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.shadowColor = 'rgba(15,23,42,0.20)';
+        ctx.shadowBlur = 10;
+        ctx.fillStyle = kind === 'fault' ? 'rgba(255,255,255,0.98)' : 'rgba(255,255,255,0.92)';
+        ctx.beginPath();
+        if (ctx.roundRect) {
+            ctx.roundRect(18, 27, 484, 58, 29);
+        } else {
+            ctx.rect(18, 27, 484, 58);
+        }
+        ctx.fill();
+        ctx.shadowBlur = 0;
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.arc(52, 56, Math.max(9, graph3DNodeRadius(kind) - 2), 0, Math.PI * 2);
+        ctx.fill();
+        if (graph3DIsAiMatched(node)) {
+            ctx.strokeStyle = '#2563eb';
+            ctx.lineWidth = 5;
+            ctx.stroke();
+        }
+        ctx.fillStyle = '#0f172a';
+        ctx.font = kind === 'fault' ? '800 28px sans-serif' : '800 22px sans-serif';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(name, 82, 56, 390);
+        const texture = new THREE.CanvasTexture(canvas);
+        texture.colorSpace = THREE.SRGBColorSpace;
+        return texture;
+    }
+
+    function graph3DOrbitBand(kind, maxRadius) {
+        const bands = {
+            cause: { radius: 0.46, phase: -0.65 },
+            evidence: { radius: 0.62, phase: 0.25 },
+            solution: { radius: 0.76, phase: 1.10 },
+            check: { radius: 0.88, phase: 1.85 },
+            risk: { radius: 0.98, phase: 2.45 },
+            data_gap: { radius: 0.98, phase: 2.95 },
+            other: { radius: 0.82, phase: 3.45 }
+        };
+        const band = bands[kind] || bands.other;
+        return {
+            radius: maxRadius * band.radius,
+            phase: band.phase
+        };
+    }
+
+    function graph3DOrbitPosition(index, total, kind, maxRadius) {
+        const band = graph3DOrbitBand(kind, maxRadius);
+        const count = Math.max(1, total);
+        const golden = Math.PI * (3 - Math.sqrt(5));
+        const y = count === 1 ? 0 : 1 - (2 * (index + 0.5) / count);
+        const ring = Math.sqrt(Math.max(0, 1 - y * y));
+        const theta = band.phase + golden * index;
+        return new THREE.Vector3(
+            Math.cos(theta) * ring * band.radius,
+            y * band.radius,
+            Math.sin(theta) * ring * band.radius
+        );
+    }
+
+    function createGraph3DCircle(radius, plane = 'xy', offset = 0, color = 0x94a3b8, opacity = 0.10) {
+        const points = [];
+        const steps = 144;
+        for (let i = 0; i <= steps; i += 1) {
+            const angle = Math.PI * 2 * i / steps;
+            const a = Math.cos(angle) * radius;
+            const b = Math.sin(angle) * radius;
+            if (plane === 'xz') {
+                points.push(new THREE.Vector3(a, offset, b));
+            } else if (plane === 'yz') {
+                points.push(new THREE.Vector3(offset, a, b));
+            } else {
+                points.push(new THREE.Vector3(a, b, offset));
+            }
+        }
+        return new THREE.Line(
+            new THREE.BufferGeometry().setFromPoints(points),
+            new THREE.LineBasicMaterial({ color, transparent: true, opacity })
+        );
+    }
+
+    function createGraph3DSphereGuide(radius) {
+        const group = new THREE.Group();
+        const shell = new THREE.Mesh(
+            new THREE.SphereGeometry(radius, 32, 18),
+            new THREE.MeshBasicMaterial({
+                color: 0x93c5fd,
+                transparent: true,
+                opacity: 0.055,
+                wireframe: true,
+                depthWrite: false
+            })
+        );
+        group.add(shell);
+        group.add(createGraph3DCircle(radius, 'xy', 0, 0x475569, 0.38));
+        group.add(createGraph3DCircle(radius, 'xz', 0, 0x475569, 0.34));
+        group.add(createGraph3DCircle(radius, 'yz', 0, 0x475569, 0.32));
+        [-0.72, -0.48, -0.24, 0.24, 0.48, 0.72].forEach(ratio => {
+            const y = radius * ratio;
+            const ringRadius = Math.sqrt(Math.max(0, radius * radius - y * y));
+            group.add(createGraph3DCircle(ringRadius, 'xz', y, 0x64748b, 0.22));
+        });
+        [0.46, 0.62, 0.76, 0.88, 0.98].forEach(ratio => {
+            group.add(createGraph3DCircle(radius * ratio, 'xy', 0, 0x93c5fd, 0.14));
+        });
+        return group;
+    }
+
+    function fitKnowledgeGraph3DCamera(state, preserveZoom = false) {
+        const graphEl = state?.containerEl;
+        if (!state || !graphEl) return;
+        const width = Math.max(graphEl.clientWidth || 0, 280);
+        const height = Math.max(graphEl.clientHeight || 0, 220);
+        const aspect = width / height;
+        const fov = THREE.MathUtils.degToRad(state.camera.fov);
+        const fovH = 2 * Math.atan(Math.tan(fov / 2) * aspect);
+        const compact = (width < 560 || height < 520);
+        const padding = compact ? 0.60 : 0.78;
+        const halfX = Math.max(1, state.extentX || state.maxRadius || 220);
+        const halfY = Math.max(1, state.extentY || state.maxRadius || 220);
+        const requiredZ = Math.max(
+            halfY / (Math.tan(fov / 2) * padding),
+            halfX / (Math.tan(fovH / 2) * padding)
+        );
+        const fitDistance = Math.max(240, Math.min(1040, requiredZ + Math.max(72, state.maxRadius * (compact ? 0.52 : 0.28))));
+        state.fitDistance = fitDistance;
+        state.minZoom = fitDistance * (compact ? 0.82 : 0.68);
+        state.maxZoom = fitDistance * 2.15;
+        state.camera.aspect = aspect;
+        state.camera.near = 1;
+        state.camera.far = Math.max(1800, state.maxZoom + state.maxRadius * 2);
+        state.camera.updateProjectionMatrix();
+        if (!preserveZoom) {
+            state.camera.position.set(0, 0, fitDistance);
+            state.root.rotation.set(-0.42, -0.48, 0.08);
+        } else {
+            state.camera.position.z = Math.max(state.minZoom, Math.min(state.maxZoom, state.camera.position.z));
+        }
+        state.renderer.setSize(width, height);
+    }
+
+    function graph3DTypeLabel(kind) {
+        if (kind === 'fault') return '故障';
+        if (kind === 'cause') return '根因';
+        if (kind === 'solution') return '方案';
+        if (kind === 'evidence') return '证据';
+        if (kind === 'check') return '复核项';
+        if (kind === 'risk') return '风险';
+        if (kind === 'data_gap') return '数据不足';
+        return '节点';
+    }
+
+    function graphKindCounts(nodes, categories) {
+        const counts = {};
+        (Array.isArray(nodes) ? nodes : []).forEach(node => {
+            const kind = graphNodeKind(node, categories);
+            counts[kind] = (counts[kind] || 0) + 1;
+        });
+        return counts;
+    }
+
+    function graphKindCountText(counts) {
+        const keys = ['cause', 'evidence', 'solution', 'check', 'risk', 'data_gap'];
+        return keys
+            .filter(kind => counts?.[kind])
+            .map(kind => `${graph3DTypeLabel(kind)} ${counts[kind]}`)
+            .join(' · ');
+    }
+
+    function showGraph3DTooltip(state, event, object) {
+        const tooltip = state?.tooltipEl;
+        const graphEl = state?.containerEl;
+        const node = object?.userData?.node;
+        if (!tooltip || !graphEl || !node) return;
+        const kind = object.userData.kind || graphNodeKind(node, state?.categories || []);
+        tooltip.innerHTML = `
+            <strong>${escapeHtml(node.name || node.id || '节点')}</strong>
+            <span>${escapeHtml(graph3DTypeLabel(kind))}</span>
+        `;
+        const rect = graphEl.getBoundingClientRect();
+        const maxLeft = Math.max(12, rect.width - Math.min(280, Math.max(160, rect.width - 24)));
+        tooltip.style.left = `${Math.min(maxLeft, Math.max(8, event.clientX - rect.left + 12))}px`;
+        tooltip.style.top = `${Math.min(rect.height - 72, Math.max(8, event.clientY - rect.top + 12))}px`;
+        tooltip.style.display = 'block';
+    }
+
+    function hideGraph3DTooltip(state) {
+        const tooltip = state?.tooltipEl;
+        if (tooltip) tooltip.style.display = 'none';
+    }
+
+    function updateKnowledgeGraph3DStats(state, node = null, kind = '') {
+        const stats = state?.statsEl;
+        if (!stats || !state) return;
+        const selected = node ? `${graph3DTypeLabel(kind)} · ${node.name || node.id || '节点'}` : '未选择';
+        const countText = graphKindCountText(state.kindCounts);
+        stats.innerHTML = `
+            <span>当前故障全库：${state.nodeCount} 个节点 / ${state.linkCount} 条关系</span>
+            ${countText ? `<span>${escapeHtml(countText)}</span>` : ''}
+            <span class="graph-3d-selected">${escapeHtml(selected)}</span>
+        `;
+    }
+
+    function updateKnowledgeGraph3DHighlight(state, focusKey = null) {
+        if (!state) return;
+        const activeKey = focusKey || state.selectedKey || null;
+        const related = new Set();
+        if (activeKey && state.adjacency.has(activeKey)) {
+            state.adjacency.get(activeKey).forEach(key => related.add(key));
+        }
+        state.lineRecords.forEach(record => {
+            const connected = activeKey && (record.source === activeKey || record.target === activeKey);
+            record.material.opacity = connected ? 0.88 : 0.18;
+            record.material.color.set(connected ? graph3DLineColor(record.link) : '#cbd5e1');
+        });
+        state.nodeRecords.forEach(record => {
+            const isSelected = state.selectedKey === record.key;
+            const isFocused = activeKey === record.key;
+            const isRelated = related.has(record.key);
+            const scale = isSelected || isFocused ? 1.28 : (isRelated ? 1.08 : 1);
+            record.mesh.scale.setScalar(scale);
+            record.hitMesh.scale.setScalar(scale);
+            if (record.label) {
+                record.label.visible = true;
+            }
+            if (record.halo) {
+                record.halo.visible = record.important || isSelected || isFocused;
+                record.halo.material.opacity = isSelected || isFocused ? 0.34 : 0.13;
+            }
+        });
+    }
+
+    function highlightDiagnosisGraphNode(ref, showTip = false) {
+        if (!diagnosisChart || !currentGraphData) return false;
+        const text = String(ref || '');
+        if (!text) return false;
+        const nodes = getChartNodes();
+        const nodeIndex = nodes.findIndex(node => {
+            const refs = Array.isArray(node.evidence_refs) ? node.evidence_refs.map(String) : [];
+            return String(node.id || '') === text || String(node.name || '') === text || refs.includes(text);
+        });
+        if (nodeIndex < 0) return false;
+        diagnosisChart.dispatchAction({ type: 'downplay', seriesIndex: 0 });
+        diagnosisChart.dispatchAction({ type: 'highlight', seriesIndex: 0, dataIndex: nodeIndex });
+        if (showTip) {
+            diagnosisChart.dispatchAction({ type: 'showTip', seriesIndex: 0, dataIndex: nodeIndex });
+        }
+        return true;
+    }
+
+    function selectKnowledgeGraph3DRecord(state, record) {
+        if (!state || !record) return false;
+        state.selectedKey = record.key;
+        showGraphNodeExplanation(record.node);
+        highlightDiagnosisGraphNode(record.key, false) || highlightDiagnosisGraphNode(record.node?.name, false);
+        updateKnowledgeGraph3DStats(state, record.node, record.kind);
+        updateKnowledgeGraph3DHighlight(state, record.key);
+        return true;
+    }
+
+    function selectKnowledgeGraph3DNode(ref) {
+        if (!knowledgeGraph3D) return false;
+        const text = String(ref || '');
+        if (!text) return false;
+        const record = knowledgeGraph3D.nodeRecords.find(item => {
+            const refs = Array.isArray(item.node.evidence_refs) ? item.node.evidence_refs.map(String) : [];
+            return item.key === text || item.node.id === text || item.node.name === text || refs.includes(text);
+        });
+        return selectKnowledgeGraph3DRecord(knowledgeGraph3D, record);
+    }
+
+    function clearKnowledgeGraph3DSelection(state, resetDetail = false) {
+        if (!state) return;
+        state.selectedKey = null;
+        updateKnowledgeGraph3DStats(state);
+        updateKnowledgeGraph3DHighlight(state);
+        if (resetDetail) resetGraphNodeDetail();
+    }
+
+    function renderKnowledgeGraph3D(data, options = {}) {
+        const containerId = options.containerId || 'diagnosis-graph-3d-main';
+        const graphEl = document.getElementById(containerId);
+        if (!graphEl) return;
+        if (!window.THREE) {
+            graphEl.innerHTML = '<div class="node-detail-empty m-2">3D 专家全量库依赖未加载，无法显示真实 Three.js 图谱。</div>';
+            return;
+        }
+        disposeKnowledgeGraph3D();
+        if (!data) {
+            graphEl.innerHTML = '<div class="node-detail-empty m-2">No expert graph data.</div>';
+            return;
+        }
+
+        const width = Math.max(graphEl.clientWidth || 0, 280);
+        const height = Math.max(graphEl.clientHeight || 0, 220);
+        const compactView = width < 520 || height < 520;
+        const categories = Array.isArray(data?.categories) ? data.categories : [];
+        const nodes = Array.isArray(data?.nodes) ? data.nodes : [];
+        const links = Array.isArray(data?.links) ? data.links : [];
+        const kindCounts = graphKindCounts(nodes, categories);
+        const countText = graphKindCountText(kindCounts);
+        graphEl.innerHTML = `
+            <div class="graph-3d-stats">
+                <span>当前故障全库：${nodes.length} 个节点 / ${links.length} 条关系</span>
+                ${countText ? `<span>${escapeHtml(countText)}</span>` : ''}
+                <span class="graph-3d-selected">未选择</span>
+            </div>
+            <div class="graph-3d-hint">拖动旋转，滚轮缩放，点击节点查看详情；悬停只高亮一跳关系</div>
+            <div class="graph-3d-tooltip"></div>
+        `;
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+        renderer.setSize(width, height);
+        graphEl.appendChild(renderer.domElement);
+
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(42, width / height, 1, 2200);
+        const root = new THREE.Group();
+        scene.add(root);
+        scene.add(new THREE.AmbientLight(0xffffff, 0.92));
+        const keyLight = new THREE.DirectionalLight(0xffffff, 0.82);
+        keyLight.position.set(180, 240, 380);
+        scene.add(keyLight);
+        const fillLight = new THREE.DirectionalLight(0xdbeafe, 0.36);
+        fillLight.position.set(-240, -120, 260);
+        scene.add(fillLight);
+
+        const nodeObjects = [];
+        const nodeRecords = [];
+        const lineRecords = [];
+        const nodePositions = new Map();
+        const adjacency = new Map();
+        const maxRadius = compactView
+            ? Math.max(84, Math.min(width, height) * 0.27)
+            : Math.max(135, Math.min(width, height) * 0.39);
+        const kindOrder = ['cause', 'evidence', 'solution', 'check', 'risk', 'data_gap', 'other'];
+        const grouped = new Map(kindOrder.map(kind => [kind, []]));
+        const faultNodes = [];
+        nodes.forEach((node, index) => {
+            const kind = graphNodeKind(node, categories);
+            if (kind === 'fault') {
+                faultNodes.push({ node, index, kind });
+            } else {
+                const bucket = grouped.get(kind) || grouped.get('other');
+                bucket.push({ node, index, kind });
+            }
+        });
+        faultNodes.forEach((item, faultIndex) => {
+            const key = graph3DNodeKey(item.node, item.index);
+            const position = faultIndex === 0
+                ? new THREE.Vector3(0, 0, 0)
+                : graph3DOrbitPosition(faultIndex - 1, Math.max(1, faultNodes.length - 1), 'other', maxRadius * 0.34);
+            nodePositions.set(key, position);
+        });
+        grouped.forEach((items, kind) => {
+            items.forEach((item, itemIndex) => {
+                nodePositions.set(
+                    graph3DNodeKey(item.node, item.index),
+                    graph3DOrbitPosition(itemIndex, items.length, kind, maxRadius)
+                );
+            });
+        });
+
+        let extentX = maxRadius * 0.45;
+        let extentY = maxRadius * 0.45;
+        nodePositions.forEach(position => {
+            extentX = Math.max(extentX, Math.abs(position.x) + 76);
+            extentY = Math.max(extentY, Math.abs(position.y) + 54);
+        });
+
+        root.add(createGraph3DSphereGuide(maxRadius));
+
+        links.forEach(link => {
+            const sourceKey = linkEndpointKey(link.source);
+            const targetKey = linkEndpointKey(link.target);
+            const source = nodePositions.get(sourceKey);
+            const target = nodePositions.get(targetKey);
+            if (!source || !target) return;
+            if (!adjacency.has(sourceKey)) adjacency.set(sourceKey, new Set());
+            if (!adjacency.has(targetKey)) adjacency.set(targetKey, new Set());
+            adjacency.get(sourceKey).add(targetKey);
+            adjacency.get(targetKey).add(sourceKey);
+            const geometry = new THREE.BufferGeometry().setFromPoints([source, target]);
+            const material = new THREE.LineBasicMaterial({
+                color: '#cbd5e1',
+                transparent: true,
+                opacity: 0.18
+            });
+            const line = new THREE.Line(geometry, material);
+            line.renderOrder = 0;
+            root.add(line);
+            lineRecords.push({ line, material, link, source: sourceKey, target: targetKey });
+        });
+
+        nodes.forEach((node, index) => {
+            const kind = graphNodeKind(node, categories);
+            const key = graph3DNodeKey(node, index);
+            const position = nodePositions.get(key) || new THREE.Vector3(0, 0, 0);
+            const color = new THREE.Color(graphNodeColor(kind));
+            const sphereSize = graph3DNodeRadius(kind) * (compactView ? 0.52 : 0.80);
+            const material = new THREE.MeshStandardMaterial({
+                color,
+                emissive: color,
+                emissiveIntensity: kind === 'fault' ? 0.20 : 0.06,
+                roughness: 0.50,
+                metalness: 0.08
+            });
+            const mesh = new THREE.Mesh(new THREE.SphereGeometry(sphereSize, 20, 14), material);
+            mesh.position.copy(position);
+            mesh.userData.node = node;
+            mesh.userData.kind = kind;
+            mesh.userData.key = key;
+            mesh.renderOrder = 2;
+            root.add(mesh);
+            nodeObjects.push(mesh);
+
+            const halo = new THREE.Mesh(
+                new THREE.SphereGeometry(sphereSize * 1.75, 24, 16),
+                new THREE.MeshBasicMaterial({
+                    color: 0x2563eb,
+                    transparent: true,
+                    opacity: graph3DIsAiMatched(node) ? 0.13 : 0,
+                    wireframe: true,
+                    depthWrite: false
+                })
+            );
+            halo.position.copy(position);
+            halo.visible = graph3DIsAiMatched(node);
+            halo.renderOrder = 3;
+            root.add(halo);
+
+            const hitSize = Math.max(sphereSize + 13, 20);
+            const hitMesh = new THREE.Mesh(
+                new THREE.SphereGeometry(hitSize, 16, 12),
+                new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.001, depthWrite: false })
+            );
+            hitMesh.position.copy(position);
+            hitMesh.userData.node = node;
+            hitMesh.userData.kind = kind;
+            hitMesh.userData.key = key;
+            root.add(hitMesh);
+            nodeObjects.push(hitMesh);
+
+            const aiMatched = graph3DIsAiMatched(node);
+            const important = true;
+            const texture = createGraph3DLabelTexture(node, kind, categories);
+            const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+                map: texture,
+                transparent: true,
+                opacity: kind === 'fault' || aiMatched ? 1 : 0.94,
+                depthTest: false
+            }));
+            const labelOffset = position.length() > 1
+                ? position.clone().normalize().multiplyScalar(sphereSize + 8)
+                : new THREE.Vector3(0, sphereSize + 14, 0);
+            sprite.position.copy(position).add(labelOffset);
+            const labelHeight = compactView
+                ? (kind === 'fault' ? 29 : 20)
+                : (kind === 'fault' ? 40 : (aiMatched ? 31 : 26));
+            sprite.scale.set(labelHeight * 4.2, labelHeight, 1);
+            sprite.visible = true;
+            sprite.userData.node = node;
+            sprite.userData.kind = kind;
+            sprite.userData.key = key;
+            sprite.renderOrder = 5;
+            root.add(sprite);
+            nodeObjects.push(sprite);
+
+            nodeRecords.push({ key, node, kind, mesh, hitMesh, halo, label: sprite, important });
+        });
+
+        const state = {
+            renderer,
+            scene,
+            camera,
+            root,
+            nodeObjects,
+            nodeRecords,
+            lineRecords,
+            adjacency,
+            categories,
+            selectedKey: null,
+            containerEl: graphEl,
+            statsEl: graphEl.querySelector('.graph-3d-stats'),
+            tooltipEl: graphEl.querySelector('.graph-3d-tooltip'),
+            nodeCount: nodes.length,
+            linkCount: links.length,
+            kindCounts,
+            maxRadius,
+            extentX,
+            extentY,
+            raycaster: new THREE.Raycaster(),
+            pointer: new THREE.Vector2(),
+            dragging: false,
+            moved: false,
+            lastX: 0,
+            lastY: 0,
+            frameId: null,
+            cleanup: null
+        };
+        fitKnowledgeGraph3DCamera(state);
+        updateKnowledgeGraph3DHighlight(state);
+
+        const toPointer = (event) => {
+            const rect = renderer.domElement.getBoundingClientRect();
+            state.pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+            state.pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+        };
+        const onPointerDown = (event) => {
+            state.dragging = true;
+            state.moved = false;
+            state.lastX = event.clientX;
+            state.lastY = event.clientY;
+            renderer.domElement.setPointerCapture?.(event.pointerId);
+        };
+        const onPointerMove = (event) => {
+            if (!state.dragging) {
+                toPointer(event);
+                state.raycaster.setFromCamera(state.pointer, camera);
+                const hit = state.raycaster.intersectObjects(nodeObjects, false)[0];
+                renderer.domElement.style.cursor = hit ? 'pointer' : 'grab';
+                if (hit) {
+                    updateKnowledgeGraph3DHighlight(state, hit.object.userData.key);
+                    showGraph3DTooltip(state, event, hit.object);
+                } else {
+                    updateKnowledgeGraph3DHighlight(state);
+                    hideGraph3DTooltip(state);
+                }
+                return;
+            }
+            const dx = event.clientX - state.lastX;
+            const dy = event.clientY - state.lastY;
+            if (Math.abs(dx) + Math.abs(dy) > 3) state.moved = true;
+            root.rotation.y += dx * 0.006;
+            root.rotation.x += dy * 0.006;
+            root.rotation.x = Math.max(-1.35, Math.min(1.35, root.rotation.x));
+            state.lastX = event.clientX;
+            state.lastY = event.clientY;
+        };
+        const onPointerUp = (event) => {
+            renderer.domElement.releasePointerCapture?.(event.pointerId);
+            state.dragging = false;
+            if (state.moved) return;
+            toPointer(event);
+            state.raycaster.setFromCamera(state.pointer, camera);
+            const hit = state.raycaster.intersectObjects(nodeObjects, false)[0];
+            if (hit?.object?.userData?.node) {
+                const record = state.nodeRecords.find(item => item.key === hit.object.userData.key);
+                selectKnowledgeGraph3DRecord(state, record);
+                showGraph3DTooltip(state, event, hit.object);
+            } else {
+                clearKnowledgeGraph3DSelection(state, true);
+                hideGraph3DTooltip(state);
+            }
+        };
+        const onWheel = (event) => {
+            event.preventDefault();
+            camera.position.z = Math.max(state.minZoom, Math.min(state.maxZoom, camera.position.z + event.deltaY * 0.38));
+        };
+        const onResize = () => resizeKnowledgeGraph3D();
+        const onPointerLeave = () => {
+            updateKnowledgeGraph3DHighlight(state);
+            hideGraph3DTooltip(state);
+        };
+
+        renderer.domElement.addEventListener('pointerdown', onPointerDown);
+        renderer.domElement.addEventListener('pointermove', onPointerMove);
+        renderer.domElement.addEventListener('pointerup', onPointerUp);
+        renderer.domElement.addEventListener('wheel', onWheel, { passive: false });
+        renderer.domElement.addEventListener('pointerleave', onPointerLeave);
+        window.addEventListener('resize', onResize);
+        state.cleanup = () => {
+            renderer.domElement.removeEventListener('pointerdown', onPointerDown);
+            renderer.domElement.removeEventListener('pointermove', onPointerMove);
+            renderer.domElement.removeEventListener('pointerup', onPointerUp);
+            renderer.domElement.removeEventListener('wheel', onWheel);
+            renderer.domElement.removeEventListener('pointerleave', onPointerLeave);
+            window.removeEventListener('resize', onResize);
+        };
+
+        const animate = () => {
+            if (!state.dragging) root.rotation.y += 0.0009;
+            renderer.render(scene, camera);
+            state.frameId = requestAnimationFrame(animate);
+        };
+        knowledgeGraph3D = state;
+        animate();
+    }
+
+    function resizeKnowledgeGraph3D() {
+        if (!knowledgeGraph3D?.containerEl) return;
+        const graphEl = knowledgeGraph3D.containerEl;
+        const width = Math.max(graphEl?.clientWidth || 0, 280);
+        const height = Math.max(graphEl?.clientHeight || 0, 220);
+        knowledgeGraph3D.camera.aspect = width / height;
+        knowledgeGraph3D.camera.updateProjectionMatrix();
+        fitKnowledgeGraph3DCamera(knowledgeGraph3D, true);
+    }
+
+    function bindDiagnosisGraphClickHandlers() {
+        if (!diagnosisChart) return;
+        diagnosisChart.off('click');
+        diagnosisChart.off('graphRoam');
+        diagnosisChart.on('click', async function(params) {
+            if (params.dataType !== 'node') return;
+            if (params.data?.__graphHelper) return;
+            showGraphNodeExplanation(params.data);
+            const nodeName = params.data.name || params.name;
+            const nodeId = params.data.id || nodeName;
+            selectKnowledgeGraph3DNode(nodeId) || selectKnowledgeGraph3DNode(nodeName);
+            const clickedType = String(params.data.node_type || '').toLowerCase();
+            if (params.data.category === 3 || params.data.category === 4 || params.data.category === 5 || params.data.category === 6 ||
+                ['parameter', 'evidence', 'check', 'risk', 'data_gap'].includes(clickedType)) {
+                return;
+            }
+            if (expandedNodes.has(nodeId) || expandedNodes.has(nodeName)) {
+                await collapseNode(nodeId, nodeName);
+                return;
+            }
+            if (!currentFaultId) return;
+            const response = await fetch(`/api/graph/details/${currentFaultId}/${encodeURIComponent(nodeName)}`);
+            if (!response.ok) return;
+            const data = await response.json();
+            if (data.children && data.children.length > 0) {
+                await expandNodeWithData(params.data, data.children);
+            }
+        });
+        diagnosisChart.on('graphRoam', function() {
+            window.requestAnimationFrame(() => applyGraphSemanticZoom(getDiagnosisGraphZoom()));
+        });
+    }
+
+    function renderInsightCollapse(title, items, open = false) {
+        const list = Array.isArray(items) ? items.filter(Boolean) : [];
+        if (!list.length) return '';
+        return `
+            <details class="insight-collapse"${open ? ' open' : ''}>
+                <summary>${escapeHtml(title)} (${list.length})</summary>
+                <ul>${list.map(item => `<li>${escapeHtml(item)}</li>`).join('')}</ul>
+            </details>
+        `;
+    }
+
+    function renderReasoningChip(label, ref, fallback) {
+        const text = label || fallback || '未关联';
+        if (!ref) {
+            return `<span class="reasoning-chip">${escapeHtml(text)}</span>`;
+        }
+        return `<button type="button" class="reasoning-chip" onclick="focusGraphRef('${encodeGraphRef(ref)}')">${escapeHtml(text)}</button>`;
+    }
+
+    function renderEvidenceCollapse(evidence) {
+        const list = Array.isArray(evidence) ? evidence : [];
+        if (!list.length) return '';
+        const items = list.map((item, index) => {
+            const text = graphEvidenceText(item);
+            const ref = item.id || `ev_${index + 1}`;
+            const status = item.status === 'matched' ? '已关联' : '未关联';
+            return `
+                <li>
+                    <span>${escapeHtml(text)}</span>
+                    <span class="badge bg-light text-dark ms-1">${escapeHtml(status)}</span>
+                    <button type="button" class="btn btn-sm btn-link p-0 ms-1" onclick="focusGraphEvidence('${encodeGraphRef(ref)}')">定位</button>
+                </li>
+            `;
+        }).join('');
+        return `
+            <details class="insight-collapse">
+                <summary>证据 (${list.length})</summary>
+                <ul>${items}</ul>
+            </details>
+        `;
+    }
+
+    function resetGraphNodeDetail() {
+        const panel = document.getElementById('graph-node-detail-panel');
+        if (!panel) return;
+        panel.innerHTML = '<div class="node-detail-empty">点击图谱节点后，这里显示节点解释和关联证据。</div>';
+    }
+
+    function renderGraphReasoningPanel(data) {
+        const panel = document.getElementById('graph-reasoning-panel');
+        if (!panel) return;
+        const reasoning = data?.reasoning || {};
+        const evidence = Array.isArray(data?.evidence) ? data.evidence : [];
+        const hasAi = reasoning.mode === 'hybrid' || reasoning.status === 'succeeded';
+        if (!hasAi && !evidence.length) {
+            const mode = reasoning.mode || 'static';
+            if (mode === 'queued' || mode === 'running') {
+                setGraphReasoningState(true, '<i class="bi bi-arrow-repeat spin"></i> 推理中...', 'DeepSeek 图谱推理正在后台生成...', 'info');
+            } else if (mode === 'failed') {
+                setGraphReasoningState(false, '<i class="bi bi-diagram-3"></i> 重新推理', reasoning.error || 'DeepSeek 图谱推理失败，当前显示静态图谱。', 'warning');
+            } else {
+                setGraphReasoningState(false, '<i class="bi bi-diagram-3"></i> 图谱推理', '当前显示本地静态知识图谱。', 'muted');
+            }
+            panel.innerHTML = `
+                <div class="graph-insight-empty">
+                    ${escapeHtml(reasoning.summary || '当前为静态知识图谱。生成 DeepSeek 推理后，会在这里显示证据链和命中节点。')}
+                </div>
+            `;
+            resetGraphNodeDetail();
+            return;
+        }
+
+        const confidence = formatConfidence(reasoning.confidence);
+        const paths = Array.isArray(reasoning.paths) ? reasoning.paths : [];
+        const pathHtml = paths.map((path, index) => {
+            const confidenceText = formatConfidence(path.confidence);
+            const evidenceTexts = Array.isArray(path.supporting_evidence) && path.supporting_evidence.length
+                ? path.supporting_evidence
+                : evidence
+                    .filter(item => Array.isArray(path.evidence_refs) && path.evidence_refs.includes(item.id))
+                    .map(item => graphEvidenceText(item));
+            const evidenceSummary = evidenceTexts.length ? evidenceTexts.slice(0, 2).join('；') : '本次上下文证据未直接映射到图谱节点';
+            return `
+                <div class="reasoning-timeline-item">
+                    <div class="d-flex justify-content-between align-items-start gap-2">
+                        <div class="reasoning-chain-title">推理链 ${index + 1}</div>
+                        <span class="badge bg-info text-dark">置信度 ${escapeHtml(confidenceText)}</span>
+                    </div>
+                    <div class="reasoning-evidence">证据：${escapeHtml(evidenceSummary)}</div>
+                    <div class="reasoning-chip-row">
+                        ${renderReasoningChip(`根因：${path.source_name || path.source || '未关联'}`, path.source, '未关联根因')}
+                        ${renderReasoningChip(`方案：${path.target_name || path.target || '未关联'}`, path.target, '未关联方案')}
+                    </div>
+                    ${path.explanation ? `<div class="reasoning-evidence mt-1">说明：${escapeHtml(path.explanation)}</div>` : ''}
+                </div>
+            `;
+        }).join('');
+
+        panel.innerHTML = `
+            <div class="graph-insight-summary">${escapeHtml(reasoning.summary || '已叠加 DeepSeek 推理结果。')}</div>
+            <div class="d-flex flex-wrap gap-2 mt-2">
+                <span class="badge bg-warning text-dark">风险: ${escapeHtml(normalizeRiskLabel(reasoning.risk_level))}</span>
+                <span class="badge bg-info text-dark">置信度: ${escapeHtml(confidence)}</span>
+            </div>
+            ${pathHtml ? `<div class="reasoning-timeline">${pathHtml}</div>` : '<div class="graph-insight-empty mt-2">DeepSeek 已返回结果，但没有可定位的推理链。</div>'}
+            ${renderEvidenceCollapse(evidence)}
+            ${renderInsightCollapse('人工复核', reasoning.human_review)}
+            ${renderInsightCollapse('数据不足项', reasoning.data_gaps)}
+        `;
+        resetGraphNodeDetail();
+        setGraphReasoningState(false, '<i class="bi bi-diagram-3"></i> 重新推理', 'DeepSeek 已生成证据推理链，图谱只高亮命中节点。', 'success');
+    }
+
+    function focusGraphRef(encodedRef) {
+        const ref = decodeGraphRef(encodedRef);
+        if (knowledgeGraph3D) selectKnowledgeGraph3DNode(ref);
+        focusGraphPath(ref, ref);
+    }
+
+    function focusGraphEvidence(encodedRef) {
+        const refText = decodeGraphRef(encodedRef);
+        if (knowledgeGraph3D) selectKnowledgeGraph3DNode(refText);
+        if (!diagnosisChart || !currentGraphData) return;
+        const nodes = getChartNodes();
+        const links = getChartLinks();
+        const nodeIndex = nodes.findIndex(node => {
+            const refs = Array.isArray(node.evidence_refs) ? node.evidence_refs.map(String) : [];
+            return node.id === refText || node.name === refText || refs.includes(refText);
+        });
+        if (nodeIndex >= 0) {
+            diagnosisChart.dispatchAction({ type: 'downplay', seriesIndex: 0 });
+            diagnosisChart.dispatchAction({ type: 'highlight', seriesIndex: 0, dataIndex: nodeIndex });
+            diagnosisChart.dispatchAction({ type: 'showTip', seriesIndex: 0, dataIndex: nodeIndex });
+            showGraphNodeExplanation(nodes[nodeIndex]);
+            return;
+        }
+        const edgeIndex = links.findIndex(link => {
+            const refs = Array.isArray(link.evidence_refs) ? link.evidence_refs.map(String) : [];
+            return refs.includes(refText);
+        });
+        if (edgeIndex >= 0) {
+            diagnosisChart.dispatchAction({ type: 'downplay', seriesIndex: 0 });
+            diagnosisChart.dispatchAction({ type: 'highlight', seriesIndex: 0, dataIndex: edgeIndex });
+        }
+    }
+
+    function focusGraphPath(source, target) {
+        if (knowledgeGraph3D) {
+            selectKnowledgeGraph3DNode(source);
+            selectKnowledgeGraph3DNode(target);
+        }
+        if (!diagnosisChart || !currentGraphData) return;
+        const sourceText = String(source || '');
+        const targetText = String(target || '');
+        const nodes = getChartNodes();
+        const nodeIndex = nodes.findIndex(node =>
+            node.id === sourceText || node.id === targetText || node.name === sourceText || node.name === targetText
+        );
+        if (nodeIndex >= 0) {
+            diagnosisChart.dispatchAction({ type: 'downplay', seriesIndex: 0 });
+            diagnosisChart.dispatchAction({ type: 'highlight', seriesIndex: 0, dataIndex: nodeIndex });
+            diagnosisChart.dispatchAction({ type: 'showTip', seriesIndex: 0, dataIndex: nodeIndex });
+            showGraphNodeExplanation(nodes[nodeIndex]);
+        }
+    }
+
+    function showGraphNodeExplanation(node) {
+        const panel = document.getElementById('graph-node-detail-panel');
+        if (!panel || !node) return;
+        const refs = Array.isArray(node.evidence_refs) ? node.evidence_refs.join(', ') : '';
+        const confidence = formatConfidence(node.confidence);
+        panel.innerHTML = `
+            <div class="node-detail-title">节点详情</div>
+            <div><strong>${escapeHtml(node.name || node.id || '节点')}</strong></div>
+            <div class="node-detail-text mt-1">${escapeHtml(node.value || node.description || '暂无详细说明')}</div>
+            <div class="d-flex flex-wrap gap-2">
+                <span class="badge bg-light text-dark">类型: ${escapeHtml(node.node_type || node.category || '未知')}</span>
+                <span class="badge bg-light text-dark">来源: ${escapeHtml(node.source || 'static_kg')}</span>
+                <span class="badge bg-light text-dark">置信度: ${escapeHtml(confidence)}</span>
+                ${refs ? `<span class="badge bg-info text-dark">证据: ${escapeHtml(refs)}</span>` : ''}
+            </div>
+        `;
+    }
+
+    function setDeepSeekButtonState(disabled, text) {
+        const btn = document.getElementById('deepseek-diagnosis-btn');
+        if (!btn) return;
+        btn.disabled = !!disabled;
+        btn.innerHTML = text || '<i class="bi bi-stars"></i> DeepSeek 分析';
+    }
+
+    function setDeepSeekPanel(message, level = 'muted') {
+        const statusEl = document.getElementById('deepseek-diagnosis-status');
+        if (statusEl) {
+            statusEl.className = `small text-${level}`;
+            statusEl.textContent = message;
+        }
+    }
+
+    function friendlyAiError(message) {
+        const value = String(message || '');
+        const lower = value.toLowerCase();
+        if (lower.includes('nameresolutionerror') || lower.includes('failed to resolve')) {
+            return 'DeepSeek API 域名解析失败，请检查当前网络、DNS 或代理/TUN 状态，稍后重试。';
+        }
+        if (lower.includes('request timed out') || lower.includes('read timed out') || lower.includes('connecttimeout')) {
+            return 'DeepSeek API 请求超时，请检查网络连通性，稍后重试。';
+        }
+        if (lower.includes('authentication failed') || lower.includes('http 401') || lower.includes('http 403')) {
+            return 'DeepSeek API 鉴权失败，请检查服务器环境变量中的 DEEPSEEK_API_KEY。';
+        }
+        if (lower.includes('http 429')) {
+            return 'DeepSeek API 当前限流，请稍后重试。';
+        }
+        return value || 'DeepSeek 分析失败。';
+    }
+
+    function renderAiList(title, items) {
+        const list = Array.isArray(items) ? items.filter(Boolean) : [];
+        if (!list.length) return '';
+        return `
+            <div class="mt-2">
+                <div class="ai-result-title">${escapeHtml(title)}</div>
+                <ul>${list.map(item => `<li>${escapeHtml(item)}</li>`).join('')}</ul>
+            </div>
+        `;
+    }
+
+    function renderStructuredAiResult(result, fallbackText) {
+        if (!result || typeof result !== 'object') {
+            return `<pre class="mt-2 mb-0">${escapeHtml(fallbackText || '')}</pre>`;
+        }
+        const confidence = (typeof result.confidence === 'number') ? result.confidence.toFixed(2) : '未给出';
+        return `
+            <div class="ai-result-box mt-2">
+                <div class="ai-result-title">诊断摘要</div>
+                <div>${escapeHtml(result.summary || fallbackText || '无')}</div>
+                <div class="d-flex flex-wrap gap-2 mt-2">
+                    <span class="badge bg-warning text-dark">风险: ${escapeHtml(result.risk_level || '需人工复核')}</span>
+                    <span class="badge bg-info text-dark">置信度: ${escapeHtml(confidence)}</span>
+                </div>
+                ${renderAiList('证据', result.evidence)}
+                ${renderAiList('可能根因', result.root_causes)}
+                ${renderAiList('建议步骤', result.actions)}
+                ${renderAiList('需要人工确认', result.human_review)}
+                ${renderAiList('数据不足项', result.data_gaps)}
+            </div>
+        `;
+    }
+
+    function renderDeepSeekResult(task) {
+        const resultEl = document.getElementById('deepseek-diagnosis-result');
+        const regenBtn = document.getElementById('deepseek-regenerate-btn');
+        const recommendationEl = document.getElementById('current-ai-recommendation');
+        const text = task?.result_text || '';
+        if (resultEl) {
+            if (text) {
+                resultEl.style.display = 'block';
+                resultEl.innerHTML = renderStructuredAiResult(task?.result, text);
+            } else {
+                resultEl.style.display = 'none';
+                resultEl.textContent = '';
+            }
+        }
+        if (recommendationEl && text) {
+            recommendationEl.textContent = text;
+        }
+        if (currentFault && text) {
+            currentFault.ai_recommendation = text;
+        }
+        if (regenBtn) {
+            regenBtn.style.display = task?.status === 'succeeded' ? 'inline-block' : 'none';
+        }
+    }
+
+    async function loadDeepSeekStatus() {
+        stopAiPolling();
+        currentAiTaskId = null;
+        setDeepSeekButtonState(false, '<i class="bi bi-stars"></i> DeepSeek 分析');
+        renderDeepSeekResult(null);
+        try {
+            const response = await fetch('/api/ai/status', { method: 'GET' });
+            const data = await response.json();
+            const status = data.data || {};
+            if (!data.success || !status.enabled || !status.api_key_configured) {
+                setDeepSeekPanel('DeepSeek 未启用或未配置 API Key，可在服务器环境变量中启用。', 'muted');
+                setDeepSeekButtonState(false, '<i class="bi bi-stars"></i> DeepSeek 分析');
+                return;
+            }
+            if (status.circuit_open) {
+                setDeepSeekPanel('DeepSeek 暂时熔断中，稍后可重试。', 'warning');
+            } else {
+                setDeepSeekPanel(`DeepSeek 已就绪，模型 ${status.model}，队列 ${status.queue_depth}/${status.queue_max}。`, 'success');
+            }
+        } catch (error) {
+            console.warn('[DeepSeek] status failed:', error);
+            setDeepSeekPanel('无法读取 DeepSeek 状态，点击分析时会再次检查。', 'warning');
+        }
+    }
+
+    async function requestDeepSeekDiagnosis(force = false) {
+        if (!currentFaultId) {
+            alert('无法获取当前工单ID');
+            return;
+        }
+        stopAiPolling();
+        setDeepSeekButtonState(true, '<i class="bi bi-arrow-repeat spin"></i> 提交中...');
+        setDeepSeekPanel(force ? '正在重新提交 DeepSeek 分析任务...' : '正在提交 DeepSeek 分析任务...', 'info');
+        try {
+            const csrfToken = getCsrfToken();
+            const response = await fetch(`/api/ai/work-orders/${currentFaultId}/diagnosis`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(csrfToken ? { 'X-CSRFToken': csrfToken } : {})
+                },
+                body: JSON.stringify({ force })
+            });
+            const data = await response.json();
+            if (!response.ok || !data.success) {
+                setDeepSeekPanel(data.error || 'DeepSeek 分析任务提交失败', data.status === 'disabled' ? 'muted' : 'danger');
+                setDeepSeekButtonState(false, '<i class="bi bi-stars"></i> DeepSeek 分析');
+                return;
+            }
+            currentAiTaskId = data.task?.task_id || null;
+            renderDeepSeekResult(data.task);
+            if (data.task?.status === 'succeeded') {
+                setDeepSeekPanel(data.status === 'cached' ? '已读取缓存的 DeepSeek 分析结果。' : 'DeepSeek 分析已完成。', 'success');
+                setDeepSeekButtonState(false, '<i class="bi bi-stars"></i> DeepSeek 分析');
+                return;
+            }
+            setDeepSeekPanel('DeepSeek 分析已入队，等待后台任务完成...', 'info');
+            pollAiTask(currentAiTaskId);
+        } catch (error) {
+            console.error('[DeepSeek] submit failed:', error);
+            setDeepSeekPanel('DeepSeek 分析请求失败，请稍后重试。', 'danger');
+            setDeepSeekButtonState(false, '<i class="bi bi-stars"></i> DeepSeek 分析');
+        }
+    }
+
+    function pollAiTask(taskId) {
+        if (!taskId) return;
+        let attempts = 0;
+        currentAiPollTimer = setInterval(async () => {
+            attempts += 1;
+            if (attempts > 80) {
+                stopAiPolling();
+                setDeepSeekPanel('DeepSeek 分析等待超时，后台可能仍在处理，可稍后重新打开查看。', 'warning');
+                setDeepSeekButtonState(false, '<i class="bi bi-stars"></i> DeepSeek 分析');
+                return;
+            }
+            try {
+                const response = await fetch(`/api/ai/tasks/${encodeURIComponent(taskId)}`, { method: 'GET' });
+                const data = await response.json();
+                if (!response.ok || !data.success) {
+                    throw new Error(data.error || 'task query failed');
+                }
+                const task = data.task || {};
+                renderDeepSeekResult(task);
+                if (task.status === 'queued' || task.status === 'running') {
+                    setDeepSeekPanel(task.status === 'queued' ? 'DeepSeek 分析排队中...' : 'DeepSeek 分析生成中...', 'info');
+                    return;
+                }
+                stopAiPolling();
+                if (task.status === 'succeeded') {
+                    setDeepSeekPanel(`DeepSeek 分析完成，耗时 ${task.latency_ms || 0} ms。`, 'success');
+                } else {
+                    setDeepSeekPanel(friendlyAiError(task.error_message || 'DeepSeek 分析失败，已保留本地静态建议。'), 'danger');
+                }
+                setDeepSeekButtonState(false, '<i class="bi bi-stars"></i> DeepSeek 分析');
+            } catch (error) {
+                console.warn('[DeepSeek] poll failed:', error);
+                stopAiPolling();
+                setDeepSeekPanel('DeepSeek 任务状态读取失败，请稍后重试。', 'warning');
+                setDeepSeekButtonState(false, '<i class="bi bi-stars"></i> DeepSeek 分析');
+            }
+        }, 1500);
+    }
+
+    async function requestGraphReasoning(force = false) {
+        if (!currentFaultId) {
+            alert('无法获取当前工单ID');
+            return;
+        }
+        stopGraphReasoningPolling();
+        setGraphReasoningState(true, '<i class="bi bi-arrow-repeat spin"></i> 提交中...', force ? '正在重新提交图谱推理任务...' : '正在提交图谱推理任务...', 'info');
+        try {
+            const csrfToken = getCsrfToken();
+            const response = await fetch(`/api/ai/work-orders/${currentFaultId}/graph-reasoning`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(csrfToken ? { 'X-CSRFToken': csrfToken } : {})
+                },
+                body: JSON.stringify({ force })
+            });
+            const data = await response.json();
+            if (!response.ok || !data.success) {
+                setGraphReasoningState(false, '<i class="bi bi-diagram-3"></i> 图谱推理', data.error || '图谱推理任务提交失败', data.status === 'disabled' ? 'muted' : 'danger');
+                return;
+            }
+            currentGraphTaskId = data.task?.task_id || null;
+            if (data.task?.status === 'succeeded') {
+                setGraphReasoningState(false, '<i class="bi bi-diagram-3"></i> 重新推理', data.status === 'cached' ? '已读取缓存的图谱推理结果。' : '图谱推理已完成。', 'success');
+                await loadKnowledgeGraph(currentFault?.fault_code);
+                return;
+            }
+            setGraphReasoningState(true, '<i class="bi bi-arrow-repeat spin"></i> 推理中...', '图谱推理已入队，等待后台任务完成...', 'info');
+            pollGraphReasoningTask(currentGraphTaskId);
+        } catch (error) {
+            console.error('[DeepSeek graph] submit failed:', error);
+            setGraphReasoningState(false, '<i class="bi bi-diagram-3"></i> 图谱推理', '图谱推理请求失败，请稍后重试。', 'danger');
+        }
+    }
+
+    function pollGraphReasoningTask(taskId) {
+        if (!taskId) return;
+        let attempts = 0;
+        currentGraphPollTimer = setInterval(async () => {
+            attempts += 1;
+            if (attempts > 80) {
+                stopGraphReasoningPolling();
+                setGraphReasoningState(false, '<i class="bi bi-diagram-3"></i> 图谱推理', '图谱推理等待超时，后台可能仍在处理，可稍后重新打开查看。', 'warning');
+                return;
+            }
+            try {
+                const response = await fetch(`/api/ai/tasks/${encodeURIComponent(taskId)}`, { method: 'GET' });
+                const data = await response.json();
+                if (!response.ok || !data.success) {
+                    throw new Error(data.error || 'task query failed');
+                }
+                const task = data.task || {};
+                if (task.status === 'queued' || task.status === 'running') {
+                    setGraphReasoningState(true, '<i class="bi bi-arrow-repeat spin"></i> 推理中...', task.status === 'queued' ? '图谱推理排队中...' : '图谱推理生成中...', 'info');
+                    return;
+                }
+                stopGraphReasoningPolling();
+                if (task.status === 'succeeded') {
+                    setGraphReasoningState(false, '<i class="bi bi-diagram-3"></i> 重新推理', `图谱推理完成，耗时 ${task.latency_ms || 0} ms。`, 'success');
+                    await loadKnowledgeGraph(currentFault?.fault_code);
+                } else {
+                    setGraphReasoningState(false, '<i class="bi bi-diagram-3"></i> 图谱推理', friendlyAiError(task.error_message || '图谱推理失败，已保留静态图谱。'), 'danger');
+                }
+            } catch (error) {
+                console.warn('[DeepSeek graph] poll failed:', error);
+                stopGraphReasoningPolling();
+                setGraphReasoningState(false, '<i class="bi bi-diagram-3"></i> 图谱推理', '图谱推理状态读取失败，请稍后重试。', 'warning');
+            }
+        }, 1500);
     }
 
     // 故障快照事件API使用本地时间字符串：YYYY-MM-DD HH:MM:SS
@@ -504,7 +2441,7 @@
             // 保存当前滚动位置（用于刷新后恢复）
             const tableContainer = document.querySelector('.table-responsive');
             const scrollTop = tableContainer ? tableContainer.scrollTop : 0;
-            
+
             // 防止请求一直 pending 导致页面永远“获取中”：增加超时控制（8秒）
             const controller = new AbortController();
             const timeoutMs = 8000;
@@ -541,7 +2478,7 @@
                 }
                 return;
             }
-            
+
             // 处理 HTTP 错误（404, 500 等）
             if (!response.ok) {
                 console.error(`[loadFaults] HTTP错误: ${response.status} ${response.statusText}`);
@@ -570,7 +2507,7 @@
                 }
                 return;
             }
-            
+
             const ct = response.headers.get('content-type') || '';
             if (!ct.includes('application/json')) {
                 const text = await response.text();
@@ -592,13 +2529,13 @@
             }
 
             const data = await response.json();
-            
+
             // 检查响应数据格式
             if (!data || typeof data !== 'object') {
                 console.error('[loadFaults] API返回数据格式错误:', data);
                 return;
             }
-            
+
             // 调试日志：打印接收到的故障数量
             const faultCount = (data.faults || []).length;
             console.log(`[loadFaults] 接收到 ${faultCount} 条故障记录`);
@@ -612,10 +2549,10 @@
                 console.warn(`[loadFaults] ⚠️  警告: API返回了0条故障记录`);
                 console.log(`[loadFaults] 完整API响应:`, JSON.stringify(data, null, 2));
             }
-            
+
             // 获取当前故障ID集合
             const currentFaultIds = new Set((data.faults || []).map(f => f.id));
-            
+
             // 检测新故障（仅在非首次加载时）
             if (previousFaultIds !== null) {
                 currentFaultIds.forEach(faultId => {
@@ -631,7 +2568,7 @@
                                 const faultCode = newFault.fault_code || 'E00';
                                 const deviceId = newFault.device_id || '未知设备';
                                 const message = `发现新故障: ${faultTypeName} (${faultCode}) - ${deviceId}`;
-                                
+
                                 // 使用统一的系统事件发布函数
                                 if (typeof window.publishSystemEvent === 'function') {
                                     window.publishSystemEvent(message, 'error');
@@ -650,20 +2587,20 @@
                 // 首次加载，只记录基线
                 previousFaultIds = new Set(currentFaultIds);
             }
-            
+
             // 更新上一次的故障ID集合
             previousFaultIds = new Set(currentFaultIds);
-            
+
             // 存储原始数据到全局变量
             globalFaultData = data.faults || [];
             allFaults = globalFaultData;  // 保持向后兼容
-            
+
             // 更新设备过滤器选项（基于所有数据）
             updateDeviceFilter(globalFaultData);
-            
+
             // 调用渲染函数（会应用客户端过滤，保持搜索和过滤状态）
             renderFaultTable();
-            
+
             // 确保表格在成功获取数据后刷新（如果有 DataTable 实例）
             if (typeof faultTable !== 'undefined' && faultTable) {
                 try {
@@ -675,7 +2612,7 @@
                     console.log('[loadFaults] 使用手动渲染，非 DataTable');
                 }
             }
-            
+
             // 恢复滚动位置（仅在数据变化时，避免干扰用户手动滚动）
             if (tableContainer && scrollTop > 0) {
                 // 使用 requestAnimationFrame 确保DOM已更新
@@ -684,13 +2621,18 @@
                 });
             }
         } catch (error) {
-            console.error('Failed to load faults:', error);
+            const isAbortError = error && (error.name === 'AbortError' || String(error).includes('AbortError'));
+            if (isAbortError) {
+                console.warn('[loadFaults] 请求已取消或超时:', error);
+            } else {
+                console.error('Failed to load faults:', error);
+            }
 
             // 关键修复：把异常明确展示出来（否则用户只看到“获取中”）
             const tbody = document.getElementById('fault-table-body');
             if (tbody) {
                 let msg = '获取故障日志失败';
-                if (error && (error.name === 'AbortError' || String(error).includes('AbortError'))) {
+                if (isAbortError) {
                     msg = '获取故障日志超时（8秒），请检查服务器是否卡住/网络是否可达';
                 }
                 tbody.innerHTML = `
@@ -713,7 +2655,7 @@
     function updateDeviceFilter(faults) {
         const deviceFilter = document.getElementById('device-filter');
         const devices = [...new Set(faults.map(f => f.device_id))];
-        
+
         // 安全：使用 DOM API 设置 option，避免 device_id 中包含特殊字符导致的注入问题
         deviceFilter.innerHTML = '<option value="">所有设备</option>';
         devices.forEach(device => {
@@ -728,37 +2670,37 @@
         // 获取当前搜索词
         const searchInput = document.getElementById('fault-search');
         const searchTerm = searchInput ? searchInput.value.trim().toLowerCase() : '';
-        
+
         // 获取当前过滤器值
         const statusFilter = document.getElementById('status-filter').value;
         const deviceFilter = document.getElementById('device-filter').value;
-        
+
         // 应用客户端过滤
         const filtered = globalFaultData.filter(fault => {
             // 搜索过滤：在 device_id, fault_type, fault_code, location 中搜索
             let matchesSearch = true;
             if (searchTerm) {
                 const searchStr = (
-                    (fault.device_id || '') + 
-                    (fault.fault_type || '') + 
-                    (fault.fault_code || '') + 
+                    (fault.device_id || '') +
+                    (fault.fault_type || '') +
+                    (fault.fault_code || '') +
                     (fault.location || '')
                 ).toLowerCase();
                 matchesSearch = searchStr.includes(searchTerm);
             }
-            
+
             // 状态过滤
             let matchesStatus = true;
             if (statusFilter) {
                 matchesStatus = fault.status === statusFilter;
             }
-            
+
             // 设备过滤
             let matchesDevice = true;
             if (deviceFilter) {
                 matchesDevice = fault.device_id === deviceFilter;
             }
-            
+
             return matchesSearch && matchesStatus && matchesDevice;
         });
 
@@ -804,9 +2746,9 @@
             // 同一状态内按时间排序：最新在前
             return getFaultTimeMs(b) - getFaultTimeMs(a);
         });
-        
+
         const tbody = document.getElementById('fault-table-body');
-        
+
         if (filtered.length === 0) {
             tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted py-4">暂无故障记录</td></tr>';
             updateFaultSelectionState();
@@ -828,7 +2770,7 @@
                 statusDot = '<span style="color: #6b7280;">●</span>';
                 statusText = '未知';
             }
-            
+
             // 严重程度：后端已补充 severity；这里再做一次兜底推断，避免历史数据仍显示“未知”
             const inferredSeverity = (() => {
                 const s = String(fault.severity || '').trim().toLowerCase();
@@ -846,13 +2788,13 @@
                 'major': 'soft-warning',
                 'general': 'soft-primary'
             }[inferredSeverity] || 'soft-primary';
-            
+
             const severityText = {
                 'severe': '严重',
                 'major': '主要',
                 'general': '一般'
             }[inferredSeverity] || '一般';
-            
+
             // 后端 fault_time 已带 +08:00，前端仍强制按北京时间展示，确保一致
             const faultTime = new Intl.DateTimeFormat('zh-CN', {
                 timeZone: 'Asia/Shanghai',
@@ -864,7 +2806,7 @@
                 second: '2-digit',
                 hour12: false
             }).format(new Date(fault.fault_time));
-            
+
             return `
                 <tr>
                     <td class="text-center">
@@ -892,7 +2834,7 @@
                 </tr>
             `;
         }).join('');
-        
+
         tbody.innerHTML = html;
         updateFaultSelectionState();
     }
@@ -900,10 +2842,10 @@
     async function showDiagnosis(faultId) {
         const fault = allFaults.find(f => f.id === faultId);
         if (!fault) return;
-        
+
         currentFaultId = faultId;
         currentFault = fault;
-        
+
         // 填充故障详情
         const faultTimeBj = new Intl.DateTimeFormat('zh-CN', {
             timeZone: 'Asia/Shanghai',
@@ -941,25 +2883,36 @@
             </div>
             <div>
                 <strong>AI推荐:</strong><br>
-                <small class="text-muted">${escapeHtml(fault.ai_recommendation || '暂无推荐')}</small>
+                <small class="text-muted" id="current-ai-recommendation">${escapeHtml(fault.ai_recommendation || '暂无推荐')}</small>
+            </div>
+            <div class="ai-diagnosis-card mt-3" id="deepseek-diagnosis-panel">
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <strong class="text-info"><i class="bi bi-stars"></i> DeepSeek V4 Pro</strong>
+                    <button type="button" class="btn btn-sm btn-outline-info" id="deepseek-regenerate-btn" onclick="requestDeepSeekDiagnosis(true)" style="display: none;">
+                        重新生成
+                    </button>
+                </div>
+                <div id="deepseek-diagnosis-status" class="small text-muted">正在读取 AI 配置状态...</div>
+                <div id="deepseek-diagnosis-result" class="mt-2" style="display: none;"></div>
             </div>
         `;
-        
+
         document.getElementById('fault-details').innerHTML = detailsHtml;
-        
+        loadDeepSeekStatus();
+
         // 根据状态显示/隐藏按钮
         const dispatchBtn = document.getElementById('dispatch-fault-btn');
         const resolveBtn = document.getElementById('resolve-fault-btn');
         const archivedBtn = document.getElementById('archived-btn');
         const deleteBtn = document.getElementById('delete-fault-btn');
-        
+
         // 重置所有按钮显示状态
         dispatchBtn.style.display = 'none';
         resolveBtn.style.display = 'none';
         archivedBtn.style.display = 'none';
         deleteBtn.style.display = 'inline-block';
         deleteBtn.disabled = false;
-        
+
         if (fault.status === 'pending') {
             // 待处理：显示"确认派单"按钮
             dispatchBtn.style.display = 'inline-block';
@@ -970,150 +2923,620 @@
             // 已解决：显示"已归档"按钮（禁用状态）
             archivedBtn.style.display = 'inline-block';
         }
-        
+
         // 加载知识图谱
         if (fault.fault_code) {
             await loadKnowledgeGraph(fault.fault_code);
         }
-        
+
         // 显示模态框
         const modalElement = document.getElementById('diagnosisModal');
         const modal = new bootstrap.Modal(modalElement);
-        
+
         // 等待模态框完全显示后调整图表大小
         modalElement.addEventListener('shown.bs.modal', function handler() {
-            if (diagnosisChart) {
-                setTimeout(() => {
-                    diagnosisChart.resize();
-                    applyGraphInitialView();
-                }, 200);
-            }
+            setTimeout(() => {
+                renderKnowledgeGraphView();
+                if (diagnosisChart) diagnosisChart.resize();
+                resizeKnowledgeGraph3D();
+            }, 200);
             modalElement.removeEventListener('shown.bs.modal', handler);
         });
-        
+
         modal.show();
     }
 
     async function loadKnowledgeGraph(faultCode) {
         try {
-            const response = await fetch(`/api/knowledge_graph/${faultCode}`);
+            const graphUrl = currentFaultId ? `/api/knowledge_graph/work-orders/${currentFaultId}` : `/api/knowledge_graph/${faultCode}`;
+            const response = await fetch(graphUrl);
             const data = await response.json();
-            
+            if (!response.ok) {
+                throw new Error(data.error || 'knowledge graph request failed');
+            }
+
             // 保存原始数据用于重置
             originalGraphData = JSON.parse(JSON.stringify(data));
+            currentGraphView = data.graph_views?.event ? 'event' : 'full';
+            currentGraphData = JSON.parse(JSON.stringify(graphViewPayload(data, currentGraphView)));
             expandedNodes.clear();  // 重置已展开节点记录
-            
-            if (!diagnosisChart) {
-                diagnosisChart = echarts.init(document.getElementById('diagnosis-graph'));
+            updateGraphViewButtons(currentGraphView);
+            renderGraphReasoningPanel(data);
+            currentGraphTaskId = data.reasoning?.task_id || null;
+            if (data.reasoning?.mode === 'queued' || data.reasoning?.mode === 'running') {
+                stopGraphReasoningPolling();
+                pollGraphReasoningTask(currentGraphTaskId);
             }
-            
-            // 更新图表配置
-            updateGraphOption(data);
-            
-            // 图表调整大小
-            diagnosisChart.resize();
-            applyGraphInitialView();
-            
-            // ========== 强制绑定点击事件（在图表更新后） ==========
-            // 1. 先解绑所有现有的事件监听器，防止重复绑定
-            diagnosisChart.off('click');
-            
-            // 2. 绑定点击事件监听器（支持展开/收回切换）
-            diagnosisChart.on('click', async function(params) {
-                console.log("🔥 Graph Node Clicked:", params);
-                console.log("🔥 dataType:", params.dataType);
-                console.log("🔥 params.data:", params.data);
-                console.log("🔥 params.name:", params.name);
-                
-                if (params.dataType === 'node') {
-                    const nodeName = params.data.name || params.name;
-                    const nodeId = params.data.id || nodeName;
-                    console.log(`🖱️ Clicked: ${nodeName}, LogID: ${currentFaultId}`);
-                    
-                    // 防止展开参数节点（已经是二级节点）
-                    if (params.data.category === 3 || params.data.category === 'parameter') {
-                        console.log("⚠️ 跳过参数节点（已经是二级节点）");
-                        return;
-                    }
-                    
-                    // 检查节点是否已展开
-                    const isExpanded = expandedNodes.has(nodeId) || expandedNodes.has(nodeName);
-                    
-                    if (isExpanded) {
-                        // 如果已展开，则收回子节点
-                        console.log(`🔄 节点 ${nodeName} 已展开，执行收回操作`);
-                        await collapseNode(nodeId, nodeName);
-                        return;
-                    }
-                    
-                    // 检查是否有当前故障ID
-                    if (!currentFaultId) {
-                        console.error("❌ 错误: currentFaultId 未设置");
-                        alert("错误：无法获取故障ID，请刷新页面重试");
-                        return;
-                    }
-                    
-                    // 确保节点名称正确编码（使用 encodeURIComponent 一次）
-                    const encodedNodeName = encodeURIComponent(nodeName);
-                    const url = `/api/graph/details/${currentFaultId}/${encodedNodeName}`;
-                    console.log(`📡 Fetch URL: ${url}`);
-                    console.log(`📡 Node Name (原始): ${nodeName}`);
-                    console.log(`📡 Node Name (编码): ${encodedNodeName}`);
-                    
-                    try {
-                        const response = await fetch(url);
-                        
-                        if (!response.ok) {
-                            console.error(`❌ Fetch 失败: ${response.status} ${response.statusText}`);
-                            const errorText = await response.text();
-                            console.error(`错误详情: ${errorText}`);
-                            return;
-                        }
-                        
-                        const data = await response.json();
-                        console.log("📦 Response:", data);
-                        
-                        if (data.children && data.children.length > 0) {
-                            console.log(`✅ 收到 ${data.children.length} 个子节点`);
-                            await expandNodeWithData(params.data, data.children);
-                        } else {
-                            console.warn("⚠️ No children data found for this node.");
-                        }
-                    } catch (err) {
-                        console.error("❌ Fetch Error:", err);
-                    }
-                } else {
-                    console.log("⚠️ 点击的不是节点，dataType:", params.dataType);
-                }
-            });
-            
-            console.log("✅ 知识图谱点击事件已绑定");
+
+            renderKnowledgeGraphView();
         } catch (error) {
             console.error('Failed to load knowledge graph:', error);
         }
     }
 
+    function graphCategoryName(node, categories) {
+        const raw = node?.category;
+        if (typeof raw === 'number') {
+            return categories?.[raw]?.name || String(raw);
+        }
+        const rawText = String(raw ?? '');
+        if (/^\d+$/.test(rawText)) {
+            return categories?.[Number(rawText)]?.name || rawText;
+        }
+        return rawText || String(node?.node_type || '');
+    }
+
+    function graphNodeKind(node, categories) {
+        const type = String(node?.node_type || '').toLowerCase();
+        const categoryName = graphCategoryName(node, categories);
+        if (type === 'fault' || categoryName.includes('故障')) return 'fault';
+        if (type === 'cause' || categoryName.includes('原因')) return 'cause';
+        if (type === 'solution' || type === 'action' || categoryName.includes('方案')) return 'solution';
+        if (type === 'evidence' || type === 'parameter' || categoryName.includes('证据') || Number(node?.category) === 3) return 'evidence';
+        if (type === 'check' || type === 'review' || categoryName.includes('复核') || Number(node?.category) === 4) return 'check';
+        if (type === 'risk' || categoryName.includes('风险') || Number(node?.category) === 6) return 'risk';
+        if (type === 'data_gap' || categoryName.includes('不足') || Number(node?.category) === 5) return 'data_gap';
+        return 'other';
+    }
+
+    function linkEndpointKey(value) {
+        if (value && typeof value === 'object') {
+            return String(value.id || value.name || '');
+        }
+        return String(value || '');
+    }
+
+    function graphNodeColor(kind) {
+        if (kind === 'fault') return '#ef4444';
+        if (kind === 'cause') return '#f59e0b';
+        if (kind === 'solution') return '#10b981';
+        if (kind === 'evidence' || kind === 'parameter') return '#06b6d4';
+        if (kind === 'check') return '#8b5cf6';
+        if (kind === 'risk') return '#dc2626';
+        if (kind === 'data_gap') return '#64748b';
+        return '#64748b';
+    }
+
+    function graphNodeFill(kind) {
+        return graphNodeColor(kind);
+    }
+
+    function graphNodeSize(kind) {
+        if (kind === 'fault') return 86;
+        if (kind === 'evidence' || kind === 'parameter') return 42;
+        if (kind === 'check' || kind === 'risk' || kind === 'data_gap') return 44;
+        return 68;
+    }
+
+    function graphIsAiMatchedNode(node) {
+        return node?.status === 'matched'
+            || node?.status === 'event_matched'
+            || String(node?.source || '').includes('deepseek')
+            || (Array.isArray(node?.evidence_refs) && node.evidence_refs.length > 0);
+    }
+
+    function graphNodeConfidenceValue(node) {
+        const value = Number(node?.confidence);
+        return Number.isFinite(value) ? value : 0;
+    }
+
+    function graphNodeLane(kind) {
+        if (kind === 'fault') return 'fault';
+        if (kind === 'cause') return 'cause';
+        if (kind === 'solution') return 'solution';
+        if (kind === 'evidence' || kind === 'parameter') return 'evidence';
+        return 'review';
+    }
+
+    function graphNodeVisual(kind, matched, dimmed) {
+        const palette = {
+            fault: { fill: '#ef4444', border: '#fecaca', text: '#7f1d1d', shadow: 'rgba(239,68,68,0.22)' },
+            cause: { fill: '#f59e0b', border: '#fde68a', text: '#78350f', shadow: 'rgba(245,158,11,0.18)' },
+            solution: { fill: '#10b981', border: '#bbf7d0', text: '#064e3b', shadow: 'rgba(16,185,129,0.18)' },
+            evidence: { fill: '#06b6d4', border: '#bae6fd', text: '#164e63', shadow: 'rgba(6,182,212,0.16)' },
+            check: { fill: '#8b5cf6', border: '#ddd6fe', text: '#4c1d95', shadow: 'rgba(139,92,246,0.16)' },
+            risk: { fill: '#dc2626', border: '#fecaca', text: '#7f1d1d', shadow: 'rgba(220,38,38,0.18)' },
+            data_gap: { fill: '#94a3b8', border: '#e2e8f0', text: '#334155', shadow: 'rgba(100,116,139,0.12)' },
+            other: { fill: '#64748b', border: '#e2e8f0', text: '#334155', shadow: 'rgba(100,116,139,0.12)' }
+        };
+        const visual = palette[kind] || palette.other;
+        const opacity = dimmed ? 0.32 : 1;
+        return {
+            ...visual,
+            border: matched ? '#2563eb' : visual.border,
+            borderWidth: matched ? 3.2 : 2,
+            shadowBlur: matched ? 18 : (kind === 'fault' ? 14 : 7),
+            opacity
+        };
+    }
+
+    function graphNodeSymbolSize(kind, text = '') {
+        if (kind === 'fault') return 78;
+        if (kind === 'cause' || kind === 'solution') return 56;
+        if (kind === 'risk' || kind === 'data_gap' || kind === 'check') return 42;
+        return 38;
+    }
+
+    function graphNodeShortLabel(node, kind) {
+        const maxChars = kind === 'fault' ? 7 : (kind === 'cause' || kind === 'solution' ? 7 : 6);
+        return truncateGraphLabel(node?.name || node?.id || '节点', maxChars);
+    }
+
+    function graphSortForDisplay(items) {
+        return items.sort((a, b) => {
+            const matchedDelta = Number(graphIsAiMatchedNode(b)) - Number(graphIsAiMatchedNode(a));
+            if (matchedDelta) return matchedDelta;
+            const confidenceDelta = graphNodeConfidenceValue(b) - graphNodeConfidenceValue(a);
+            if (confidenceDelta) return confidenceDelta;
+            return String(a.name || a.id || '').localeCompare(String(b.name || b.id || ''), 'zh-Hans-CN');
+        });
+    }
+
+    function spreadAngles(count, centerAngle, spanAngle) {
+        if (count <= 1) return [centerAngle];
+        const start = centerAngle - spanAngle / 2;
+        return Array.from({ length: count }, (_item, index) => start + (spanAngle * index / Math.max(1, count - 1)));
+    }
+
+    function spreadCircularAngles(count, startAngle = -Math.PI / 2) {
+        if (count <= 1) return [startAngle];
+        return Array.from({ length: count }, (_item, index) => startAngle + (Math.PI * 2 * index / count));
+    }
+
+    function graphNodeKeyForMap(node, fallback = '') {
+        return String(node?.id || node?.name || fallback || '');
+    }
+
+    function seedForceGraphNodes(nodes, categories, width, height) {
+        const groups = { fault: [], evidence: [], cause: [], solution: [], review: [] };
+        nodes.forEach(node => {
+            const kind = graphNodeKind(node, categories);
+            const bucket = kind === 'check' || kind === 'risk' || kind === 'data_gap' ? 'review' : (groups[kind] ? kind : 'review');
+            groups[bucket].push(node);
+        });
+        Object.values(groups).forEach(graphSortForDisplay);
+
+        groups.fault.forEach((node, index) => {
+            node.x = width * (0.50 + index * 0.015);
+            node.y = height * (0.52 + index * 0.025);
+            node.fixed = true;
+        });
+
+        const ringNodes = [
+            ...groups.cause,
+            ...groups.evidence,
+            ...groups.solution,
+            ...groups.review
+        ];
+        const centerX = width * 0.50;
+        const centerY = height * 0.52;
+        const radiusX = Math.min(width * 0.27, Math.max(220, width * 0.20));
+        const radiusY = Math.min(height * 0.30, Math.max(165, height * 0.24));
+        const count = Math.max(ringNodes.length, 1);
+        ringNodes.forEach((node, index) => {
+            const angle = -Math.PI / 2 + (Math.PI * 2 * index / count);
+            const ring = 0.88 + (index % 3) * 0.06;
+            node.x = centerX + Math.cos(angle) * radiusX * ring;
+            node.y = centerY + Math.sin(angle) * radiusY * ring;
+            node.fixed = false;
+        });
+    }
+
+    function shouldShowGraphNodeLabel(node, kind, matched, view) {
+        if (kind === 'fault' || matched) return true;
+        if (view !== 'event') return false;
+        return kind === 'evidence' && String(node?.source || '').includes('event');
+    }
+
+    function graphRelationKind(link) {
+        const relation = String(link?.relation || link?.value || '').toLowerCase();
+        if (relation.includes('ai_reasoning')) return 'ai';
+        if (relation.includes('support') || relation.includes('evidence') || relation.includes('证据')) return 'support';
+        if (relation.includes('cause') || relation.includes('root') || relation.includes('原因')) return 'cause';
+        if (relation.includes('action') || relation.includes('solution') || relation.includes('mitigated') || relation.includes('方案')) return 'solution';
+        if (relation.includes('risk') || relation.includes('风险')) return 'risk';
+        if (relation.includes('detail') || relation.includes('参数')) return 'detail';
+        return 'default';
+    }
+
+    function truncateGraphLabel(value, maxChars = 13) {
+        const text = String(value || '');
+        return text.length > maxChars ? `${text.slice(0, maxChars)}...` : text;
+    }
+
+    function layoutGraphNodes(nodes, categories) {
+        const graphEl = document.getElementById('diagnosis-graph');
+        const width = Math.max(graphEl?.clientWidth || 760, 420);
+        const height = Math.max(graphEl?.clientHeight || 560, 360);
+        const lanes = {
+            evidence: { x: 0.12, title: '现场证据' },
+            fault: { x: 0.31, title: '故障事件' },
+            cause: { x: 0.50, title: '候选根因' },
+            solution: { x: 0.69, title: '建议处置' },
+            review: { x: 0.88, title: '复核/风险' }
+        };
+        const groups = { evidence: [], fault: [], cause: [], solution: [], review: [] };
+
+        nodes.forEach(node => {
+            const kind = graphNodeKind(node, categories);
+            (groups[graphNodeLane(kind)] || groups.review).push(node);
+        });
+
+        const sortItems = (items) => items.sort((a, b) => {
+            const matchedDelta = Number(graphIsAiMatchedNode(b)) - Number(graphIsAiMatchedNode(a));
+            if (matchedDelta) return matchedDelta;
+            const confidenceDelta = graphNodeConfidenceValue(b) - graphNodeConfidenceValue(a);
+            if (confidenceDelta) return confidenceDelta;
+            return String(a.name || a.id || '').localeCompare(String(b.name || b.id || ''), 'zh-Hans-CN');
+        });
+
+        Object.values(groups).forEach(sortItems);
+
+        const placeVertical = (items, laneKey) => {
+            const lane = lanes[laneKey];
+            if (!lane || !items.length) return;
+            const top = height * 0.20;
+            const bottom = height * 0.83;
+            const span = Math.max(0, bottom - top);
+            const maxRows = Math.max(3, Math.floor(span / 62));
+            const columns = Math.max(1, Math.ceil(items.length / maxRows));
+            const laneWidth = width * 0.095;
+            items.forEach((node, index) => {
+                const row = index % maxRows;
+                const col = Math.floor(index / maxRows);
+                const columnCount = Math.max(1, Math.min(columns, 3));
+                const rowsInColumn = Math.min(maxRows, items.length - col * maxRows);
+                const y = rowsInColumn === 1 ? (top + bottom) / 2 : top + (span * row / Math.max(1, rowsInColumn - 1));
+                const columnOffset = (col - (columnCount - 1) / 2) * Math.min(70, laneWidth);
+                node.x = clampGraphValue(width * lane.x + columnOffset, 70, width - 70);
+                node.y = y;
+                node.fixed = true;
+                node.label = { ...(node.label || {}), position: 'inside' };
+            });
+        };
+
+        const placeFaults = (items) => {
+            if (!items.length) return;
+            items.forEach((node, index) => {
+                node.x = width * lanes.fault.x;
+                node.y = height * (items.length === 1 ? 0.52 : 0.46 + index * 0.12);
+                node.fixed = true;
+                node.label = { ...(node.label || {}), position: 'inside' };
+            });
+        };
+
+        placeVertical(groups.evidence, 'evidence');
+        placeFaults(groups.fault);
+        placeVertical(groups.cause, 'cause');
+        placeVertical(groups.solution, 'solution');
+        placeVertical(groups.review, 'review');
+    }
+
+    function radialReasoningGeometry(width, height) {
+        const centerX = width * 0.50;
+        const centerY = height * 0.50;
+        const minSide = Math.min(width, height);
+        return {
+            centerX,
+            centerY,
+            causeR: clampGraphValue(minSide * 0.23, 145, 205),
+            solutionR: clampGraphValue(minSide * 0.31, 220, 300),
+            reviewR: clampGraphValue(minSide * 0.34, 245, 330),
+            outerR: clampGraphValue(minSide * 0.36, 255, 345),
+            faultR: Math.max(52, minSide * 0.105)
+        };
+    }
+
+    function graphHelperNode(id, x, y, label = '', color = 'rgba(100,116,139,0.58)', fontSize = 12) {
+        const hasLabel = !!label;
+        return {
+            id: `${GRAPH_HELPER_PREFIX}${id}`,
+            name: label || `${GRAPH_HELPER_PREFIX}${id}`,
+            x,
+            y,
+            fixed: true,
+            draggable: false,
+            silent: true,
+            node_type: 'helper',
+            __graphHelper: true,
+            __helperLabel: hasLabel,
+            __baseSymbolSize: hasLabel ? 6 : 1,
+            __baseLabelFontSize: fontSize,
+            __baseLabelDistance: 0,
+            symbol: 'circle',
+            symbolSize: hasLabel ? 6 : 1,
+            itemStyle: {
+                color: 'rgba(255,255,255,0)',
+                borderColor: 'rgba(255,255,255,0)',
+                opacity: hasLabel ? 0.001 : 0
+            },
+            label: {
+                show: hasLabel,
+                formatter: label,
+                position: 'right',
+                distance: 0,
+                color,
+                fontSize,
+                fontWeight: 800,
+                lineHeight: fontSize + 4,
+                backgroundColor: 'rgba(255,255,255,0.78)',
+                borderColor: 'rgba(226,232,240,0.8)',
+                borderWidth: hasLabel ? 1 : 0,
+                borderRadius: 999,
+                padding: hasLabel ? [2, 6] : 0,
+                textBorderColor: 'rgba(255,255,255,0.96)',
+                textBorderWidth: hasLabel ? 2 : 0
+            },
+            tooltip: { show: false }
+        };
+    }
+
+    function buildRadialReasoningHelpers(width, height) {
+        const geom = radialReasoningGeometry(width, height);
+        const nodes = [];
+        const links = [];
+        const addCircle = (key, radius, color, opacity, widthValue, dash = [6, 8]) => {
+            const segments = 32;
+            for (let index = 0; index < segments; index += 1) {
+                const angle = Math.PI * 2 * index / segments;
+                const node = graphHelperNode(
+                    `${key}_${index}`,
+                    geom.centerX + Math.cos(angle) * radius,
+                    geom.centerY + Math.sin(angle) * radius
+                );
+                nodes.push(node);
+                links.push({
+                    source: `${GRAPH_HELPER_PREFIX}${key}_${index}`,
+                    target: `${GRAPH_HELPER_PREFIX}${key}_${(index + 1) % segments}`,
+                    silent: true,
+                    __graphHelper: true,
+                    __baseLineWidth: widthValue,
+                    symbol: ['none', 'none'],
+                    symbolSize: [0, 0],
+                    lineStyle: {
+                        color,
+                        opacity,
+                        width: widthValue,
+                        type: 'dashed',
+                        curveness: 0,
+                        dashOffset: dash[0]
+                    },
+                    tooltip: { show: false }
+                });
+            }
+        };
+        const addSpokes = () => {
+            const spokes = 8;
+            for (let index = 0; index < spokes; index += 1) {
+                const angle = Math.PI * 2 * index / spokes;
+                const sourceId = `spoke_${index}_inner`;
+                const targetId = `spoke_${index}_outer`;
+                nodes.push(graphHelperNode(
+                    sourceId,
+                    geom.centerX + Math.cos(angle) * (geom.faultR + 20),
+                    geom.centerY + Math.sin(angle) * (geom.faultR + 20)
+                ));
+                nodes.push(graphHelperNode(
+                    targetId,
+                    geom.centerX + Math.cos(angle) * geom.outerR,
+                    geom.centerY + Math.sin(angle) * geom.outerR
+                ));
+                links.push({
+                    source: `${GRAPH_HELPER_PREFIX}${sourceId}`,
+                    target: `${GRAPH_HELPER_PREFIX}${targetId}`,
+                    silent: true,
+                    __graphHelper: true,
+                    __baseLineWidth: 0.65,
+                    symbol: ['none', 'none'],
+                    symbolSize: [0, 0],
+                    lineStyle: {
+                        color: '#bfdbfe',
+                        opacity: 0.08,
+                        width: 0.65,
+                        type: 'dashed',
+                        curveness: 0
+                    },
+                    tooltip: { show: false }
+                });
+            }
+        };
+
+        addSpokes();
+        addCircle('outer_ring', geom.outerR, '#67e8f9', 0.13, 0.9);
+        addCircle('cause_ring', geom.causeR, '#fbbf24', 0.15, 1.05);
+        addCircle('fault_ring', geom.faultR, '#fecaca', 0.18, 0.85);
+        nodes.push(graphHelperNode('label_outer', geom.centerX - geom.outerR - 8, geom.centerY - geom.outerR - 18, '证据外圈', 'rgba(8,145,178,0.50)', 11));
+        nodes.push(graphHelperNode('label_cause', geom.centerX - geom.causeR - 8, geom.centerY - geom.causeR - 18, '根因内圈', 'rgba(180,83,9,0.54)', 11));
+        return { nodes, links };
+    }
+
+    function orientEventReasoningLink(link, nodeKindByKey) {
+        const sourceKey = linkEndpointKey(link.source);
+        const targetKey = linkEndpointKey(link.target);
+        const sourceKind = nodeKindByKey.get(sourceKey) || 'other';
+        const targetKind = nodeKindByKey.get(targetKey) || 'other';
+        const oriented = { ...link, source: sourceKey, target: targetKey };
+
+        const swap = () => {
+            const oldSource = oriented.source;
+            oriented.source = oriented.target;
+            oriented.target = oldSource;
+        };
+        const isEvidenceLike = (kind) => kind === 'evidence' || kind === 'check' || kind === 'risk' || kind === 'data_gap' || kind === 'other';
+
+        if (sourceKind === 'solution' && targetKind === 'cause') {
+            swap();
+        } else if (sourceKind === 'fault' && targetKind === 'cause') {
+            swap();
+        } else if (sourceKind === 'cause' && targetKind === 'evidence') {
+            swap();
+        } else if (sourceKind === 'fault' && isEvidenceLike(targetKind)) {
+            swap();
+        } else if (sourceKind === 'solution' && targetKind === 'fault') {
+            swap();
+        } else if (sourceKind === 'evidence' && targetKind === 'solution') {
+            oriented.target = targetKey;
+        }
+        return oriented;
+    }
+
+    function buildGraphDisplayData(data, categories) {
+        const view = currentGraphView === 'full' ? 'full' : 'event';
+        const graphEl = document.getElementById('diagnosis-graph');
+        const graphWidth = Math.max(graphEl?.clientWidth || 760, 420);
+        const graphHeight = Math.max(graphEl?.clientHeight || 560, 360);
+        const rawNodes = (Array.isArray(data.nodes) ? data.nodes : []).map(node => ({ ...node }));
+        seedForceGraphNodes(rawNodes, categories, graphWidth, graphHeight);
+        const nodeKindByKey = new Map();
+        rawNodes.forEach((node, index) => {
+            const kind = graphNodeKind(node, categories);
+            const key = graphNodeKeyForMap(node, index);
+            nodeKindByKey.set(key, kind);
+            if (node?.name) nodeKindByKey.set(String(node.name), kind);
+            if (node?.id) nodeKindByKey.set(String(node.id), kind);
+        });
+
+        const nodes = rawNodes.map(node => {
+            const kind = graphNodeKind(node, categories);
+            const matched = graphIsAiMatchedNode(node) || kind === 'fault';
+            const dimmed = view === 'full' && !matched;
+            const visual = graphNodeVisual(kind, matched, dimmed);
+            const labelText = graphNodeShortLabel(node, kind);
+            const baseSymbolSize = graphNodeSymbolSize(kind, labelText);
+            const baseFontSize = dimmed ? 10 : (kind === 'fault' ? 12 : 11);
+            const copy = {
+                ...node,
+                symbol: 'circle',
+                symbolSize: baseSymbolSize,
+                __baseSymbolSize: baseSymbolSize,
+                __baseLabelFontSize: baseFontSize,
+                __baseLabelDistance: kind === 'fault' ? 0 : 8,
+                draggable: kind !== 'fault',
+                itemStyle: { ...(node.itemStyle || {}) },
+                label: { ...(node.label || {}) }
+            };
+            copy.fixed = kind === 'fault';
+            copy.itemStyle = {
+                ...copy.itemStyle,
+                color: visual.fill,
+                borderColor: visual.border,
+                borderWidth: visual.borderWidth,
+                shadowBlur: visual.shadowBlur,
+                shadowColor: visual.shadow,
+                opacity: visual.opacity
+            };
+            copy.label = {
+                ...copy.label,
+                show: shouldShowGraphNodeLabel(node, kind, matched, view),
+                position: kind === 'fault' ? 'inside' : 'right',
+                distance: kind === 'fault' ? 0 : 8,
+                color: kind === 'fault' ? '#ffffff' : (dimmed ? 'rgba(71,85,105,0.36)' : '#1f2937'),
+                fontWeight: kind === 'fault' ? 800 : 700,
+                fontSize: baseFontSize,
+                textBorderColor: kind === 'fault' ? 'rgba(127,29,29,0.35)' : 'rgba(255,255,255,0.96)',
+                textBorderWidth: kind === 'fault' ? 1.5 : 3,
+                backgroundColor: 'transparent',
+                borderWidth: 0,
+                padding: 0,
+                formatter: () => labelText,
+                rich: {
+                    ai: {
+                        color: '#ffffff',
+                        backgroundColor: '#2563eb',
+                        borderRadius: 4,
+                        padding: [1, 4],
+                        fontSize: 9,
+                        fontWeight: 800
+                    }
+                }
+            };
+            return copy;
+        });
+
+        const links = (Array.isArray(data.links) ? data.links : [])
+            .map(link => {
+                const orientedLink = { ...link };
+                const kind = graphRelationKind(orientedLink);
+                const isAi = kind === 'ai';
+                const isSupport = kind === 'support';
+                const palette = {
+                    ai: '#2563eb',
+                    support: '#0891b2',
+                    cause: '#d97706',
+                    solution: '#059669',
+                    risk: '#dc2626',
+                    detail: '#67e8f9',
+                    default: '#94a3b8'
+                };
+                return {
+                    ...orientedLink,
+                    __baseLineWidth: isAi ? 3 : (isSupport ? 1.8 : 1.4),
+                    lineStyle: {
+                        ...(orientedLink.lineStyle || {}),
+                        color: palette[kind] || palette.default,
+                        opacity: isAi ? 0.95 : (view === 'full' ? 0.24 : 0.55),
+                        width: isAi ? 3 : (isSupport ? 1.8 : 1.4),
+                        type: (isSupport || kind === 'risk' || kind === 'detail') ? 'dashed' : 'solid',
+                        curveness: 0.3
+                    },
+                    label: {
+                        show: false
+                    }
+                };
+            });
+
+        return {
+            nodes,
+            links
+        };
+    }
+
     function updateGraphOption(data) {
-        // 更新图例，包含新的类别
-        const categories = [
+        const graphEl = document.getElementById('diagnosis-graph');
+        const graphWidth = Math.max(graphEl?.clientWidth || 760, 420);
+        const graphHeight = Math.max(graphEl?.clientHeight || 560, 360);
+        const palette = ['#ef4444', '#f59e0b', '#10b981', '#93c5fd'];
+        const defaultCategories = [
             { name: '故障', itemStyle: { color: '#ef4444' } },
             { name: '根本原因', itemStyle: { color: '#f59e0b' } },
             { name: '解决方案', itemStyle: { color: '#10b981' } },
-            { name: '参数', itemStyle: { color: '#93c5fd' } }  // 浅蓝色用于二级节点
+            { name: '参数', itemStyle: { color: '#93c5fd' } }
         ];
-        
+        const baseCategories = Array.isArray(data.categories) && data.categories.length ? data.categories : defaultCategories.slice(0, 3);
+        const categories = [...baseCategories];
+        if (!categories.some(category => category.name === '参数')) {
+            categories.push(defaultCategories[3]);
+        }
+        const styledCategories = categories
+            .map((category, index) => ({
+                ...category,
+                itemStyle: category.itemStyle || { color: palette[index % palette.length] }
+            }));
+        const displayGraph = buildGraphDisplayData(data, styledCategories);
+
         diagnosisChart.setOption({
             backgroundColor: 'transparent',
-            title: {
-                text: '故障诊断知识图谱',
-                left: 'center',
-                top: 10,
-                textStyle: { 
-                    fontSize: 18, 
-                    fontWeight: 'bold',
-                    color: '#1f2937'  // 深色文字，白色背景下可见
-                }
-            },
+            graphic: [],
             tooltip: {
                 trigger: 'item',
                 backgroundColor: '#ffffff',
@@ -1123,163 +3546,343 @@
                     color: '#1f2937'  // 深色文字，白色背景下可见
                 },
                 formatter: function(params) {
+                    if (params.data?.__graphHelper) return '';
                     if (params.dataType === 'node') {
-                        let tooltip = `<b>${params.data.name}</b>`;
+                        const node = params.data || {};
+                        const kind = graphNodeKind(node, styledCategories);
+                        let tooltip = `<b>${escapeHtml(node.name || node.id || '节点')}</b>`;
+                        tooltip += `<br/><small>类型: ${escapeHtml(graph3DTypeLabel(kind))}</small>`;
                         if (params.data.value) {
-                            tooltip += `<br/>${params.data.value}`;
+                            tooltip += `<br/>${escapeHtml(params.data.value)}`;
                         }
                         if (params.data.description) {
-                            tooltip += `<br/><small>${params.data.description}</small>`;
+                            tooltip += `<br/><small>${escapeHtml(params.data.description)}</small>`;
+                        }
+                        if (typeof node.confidence === 'number') {
+                            tooltip += `<br/><small>置信度: ${escapeHtml(node.confidence.toFixed(2))}</small>`;
+                        }
+                        const refs = Array.isArray(node.evidence_refs) ? node.evidence_refs.join(', ') : '';
+                        if (refs) {
+                            tooltip += `<br/><small>证据: ${escapeHtml(refs)}</small>`;
+                        }
+                        return tooltip;
+                    }
+                    if (params.dataType === 'edge') {
+                        const edge = params.data || {};
+                        let tooltip = `<b>${escapeHtml(edge.value || edge.relation || '关系')}</b>`;
+                        if (edge.explanation) {
+                            tooltip += `<br/>${escapeHtml(edge.explanation)}`;
+                        }
+                        if (typeof edge.confidence === 'number') {
+                            tooltip += `<br/><small>置信度: ${escapeHtml(edge.confidence.toFixed(2))}</small>`;
+                        }
+                        const refs = Array.isArray(edge.evidence_refs) ? edge.evidence_refs.join(', ') : '';
+                        if (refs) {
+                            tooltip += `<br/><small>证据: ${escapeHtml(refs)}</small>`;
                         }
                         return tooltip;
                     }
                     return '';
                 }
             },
-            legend: {
-                data: ['故障', '根本原因', '解决方案', '参数'],
-                orient: 'vertical',  // 垂直布局
-                right: 10,  // 放在右侧
-                top: 60,  // 距离顶部60px
-                itemGap: 12,  // 图例项间距
-                textStyle: {
-                    fontSize: 12,
-                    color: '#1f2937'  // 深色文字，白色背景下可见
-                }
-            },
             series: [{
                 type: 'graph',
                 layout: 'force',
+                zoom: currentGraphView === 'event' ? DEFAULT_EVENT_GRAPH_ZOOM : DEFAULT_GRAPH_ZOOM,
+                center: currentGraphView === 'event' ? DEFAULT_EVENT_GRAPH_CENTER : DEFAULT_GRAPH_CENTER,
+                roam: true,
+                scaleLimit: {
+                    min: GRAPH_ZOOM_MIN,
+                    max: GRAPH_ZOOM_MAX
+                },
+                draggable: true,
+                layoutAnimation: true,
+                animationDuration: currentGraphView === 'event' ? 850 : 650,
+                animationDurationUpdate: currentGraphView === 'event' ? 850 : 650,
+                animationEasingUpdate: 'cubicOut',
                 force: {
-                    repulsion: 2000,
-                    edgeLength: [100, 200],
-                    gravity: 0.1,
+                    repulsion: currentGraphView === 'event' ? Math.max(760, Math.min(1080, graphWidth * 1.08)) : Math.max(70, Math.min(135, graphWidth * 0.16)),
+                    gravity: currentGraphView === 'event' ? 0.1 : 0.025,
+                    edgeLength: currentGraphView === 'event' ? [76, 148] : [64, 106],
+                    friction: currentGraphView === 'event' ? 0.84 : 0.92,
                     layoutAnimation: true
                 },
-                zoom: DEFAULT_GRAPH_ZOOM,
-                center: DEFAULT_GRAPH_CENTER,
-                roam: true,
-                draggable: true,
                 label: {
                     show: true,
-                    position: 'right',
-                    fontSize: function(params) {
-                        // 二级节点使用较小字体
-                        return params.data.category === 3 ? 11 : 14;
-                    },
-                    fontWeight: 'bold',
-                    formatter: '{b}',
-                    color: '#1f2937'  // 深色文字，白色背景下可见
+                    color: '#1f2937'
+                },
+                labelLayout: function(params) {
+                    if (params?.data?.__graphHelper) {
+                        return {
+                            hideOverlap: false,
+                            moveOverlap: params?.data?.__helperLabel ? 'shiftY' : undefined
+                        };
+                    }
+                    return { hideOverlap: true };
                 },
                 edgeSymbol: ['none', 'arrow'],
-                edgeSymbolSize: [0, 10],
-                categories: categories,
+                edgeSymbolSize: [0, 8],
+                categories: styledCategories,
                 lineStyle: {
-                    color: 'source',
+                    color: '#94a3b8',
                     curveness: 0.3,
-                    width: 2
+                    width: 1.4,
+                    opacity: 0.46
                 },
                 emphasis: {
                     focus: 'adjacency',
-                    lineStyle: { width: 4 }
+                    itemStyle: {
+                        shadowBlur: 16,
+                        shadowColor: 'rgba(37,99,235,0.22)'
+                    },
+                    lineStyle: { width: 3.5, opacity: 0.95 }
                 },
-                data: data.nodes || [],
-                links: data.links || []
+                data: displayGraph.nodes,
+                links: displayGraph.links
             }]
+        }, true);
+    }
+
+    function clampGraphValue(value, min, max) {
+        return Math.min(max, Math.max(min, value));
+    }
+
+    function graphNodeApproxSize(node) {
+        const size = node?.symbolSize;
+        if (Array.isArray(size)) {
+            return [Number(size[0]) || 130, Number(size[1]) || 34];
+        }
+        if (typeof size === 'number') {
+            return [size, size];
+        }
+        return graphNodeSize(graphNodeKind(node, []));
+    }
+
+    function graphNodeBox(node) {
+        const [width, height] = graphNodeApproxSize(node);
+        const x = Number(node?.x) || 0;
+        const y = Number(node?.y) || 0;
+        return {
+            left: x - width / 2 - 10,
+            right: x + width / 2 + 10,
+            top: y - height / 2 - 8,
+            bottom: y + height / 2 + 8
+        };
+    }
+
+    function graphBoxesOverlap(a, b) {
+        return !(a.right < b.left || a.left > b.right || a.bottom < b.top || a.top > b.bottom);
+    }
+
+    function expandedChildDirection(parentNode, graphWidth, graphHeight) {
+        const kind = graphNodeKind(parentNode, []);
+        if (kind === 'solution') return 'right';
+        if (kind === 'fault') return 'down';
+        if (kind === 'cause') return 'left';
+        const x = Number(parentNode?.x) || graphWidth / 2;
+        const y = Number(parentNode?.y) || graphHeight / 2;
+        if (y > graphHeight * 0.72) return 'up';
+        return x < graphWidth / 2 ? 'left' : 'right';
+    }
+
+    function resolveExpandedChildPosition(baseX, baseY, direction, size, occupied, graphWidth, graphHeight) {
+        const width = Array.isArray(size) ? Number(size[0]) || 42 : Number(size) || 42;
+        const height = Array.isArray(size) ? Number(size[1]) || width : width;
+        const halfW = width / 2;
+        const halfH = height / 2;
+        const minX = halfW + 18;
+        const maxX = graphWidth - halfW - 18;
+        const minY = halfH + 18;
+        const maxY = graphHeight - halfH - 18;
+        const step = direction === 'left' || direction === 'right' ? 46 : 72;
+
+        for (let attempt = 0; attempt < 18; attempt += 1) {
+            const magnitude = attempt === 0 ? 0 : Math.ceil(attempt / 2) * step;
+            const sign = attempt % 2 === 0 ? -1 : 1;
+            const offset = attempt === 0 ? 0 : magnitude * sign;
+            const x = (direction === 'left' || direction === 'right')
+                ? clampGraphValue(baseX, minX, maxX)
+                : clampGraphValue(baseX + offset, minX, maxX);
+            const y = (direction === 'left' || direction === 'right')
+                ? clampGraphValue(baseY + offset, minY, maxY)
+                : clampGraphValue(baseY, minY, maxY);
+            const box = {
+                left: x - halfW - 10,
+                right: x + halfW + 10,
+                top: y - halfH - 8,
+                bottom: y + halfH + 8
+            };
+            if (!occupied.some(item => graphBoxesOverlap(box, item))) {
+                occupied.push(box);
+                return { x, y };
+            }
+        }
+
+        const fallback = {
+            x: clampGraphValue(baseX, minX, maxX),
+            y: clampGraphValue(baseY, minY, maxY)
+        };
+        occupied.push({
+            left: fallback.x - halfW - 10,
+            right: fallback.x + halfW + 10,
+            top: fallback.y - halfH - 8,
+            bottom: fallback.y + halfH + 8
         });
+        return fallback;
+    }
+
+    function layoutExpandedChildren(parentNode, childrenData, currentNodes) {
+        const graphEl = document.getElementById('diagnosis-graph');
+        const graphWidth = Math.max(graphEl?.clientWidth || 760, 420);
+        const graphHeight = Math.max(graphEl?.clientHeight || 560, 360);
+        const parentX = Number(parentNode?.x) || graphWidth / 2;
+        const parentY = Number(parentNode?.y) || graphHeight / 2;
+        const direction = expandedChildDirection(parentNode, graphWidth, graphHeight);
+        const childSize = [118, 44];
+        const occupied = (currentNodes || []).map(graphNodeBox);
+        const spacing = 54;
+        const sideOffset = 168;
+        const verticalOffset = 118;
+        const count = childrenData.length;
+
+        return childrenData.map((child, index) => {
+            const centeredOffset = (index - (count - 1) / 2) * spacing;
+            let baseX = parentX;
+            let baseY = parentY;
+            if (direction === 'left') {
+                baseX = parentX - sideOffset;
+                baseY = parentY + centeredOffset;
+            } else if (direction === 'right') {
+                baseX = parentX + sideOffset;
+                baseY = parentY + centeredOffset;
+            } else if (direction === 'up') {
+                baseX = parentX + centeredOffset * 1.25;
+                baseY = parentY - verticalOffset;
+            } else {
+                baseX = parentX + centeredOffset * 1.25;
+                baseY = parentY + verticalOffset;
+            }
+            return {
+                child,
+                ...resolveExpandedChildPosition(baseX, baseY, direction, childSize, occupied, graphWidth, graphHeight)
+            };
+        });
+    }
+
+    function createExpandedChildNode(childId, child, x, y) {
+        return {
+            id: childId,
+            name: child.name,
+            category: 3,
+            node_type: 'parameter',
+            symbol: 'circle',
+            symbolSize: graphNodeSymbolSize('evidence', child.name),
+            value: child.description || '',
+            description: child.description || '',
+            x,
+            y,
+            fixed: false,
+            draggable: true,
+            itemStyle: {
+                color: '#06b6d4',
+                borderColor: graphNodeColor('evidence'),
+                borderWidth: 2,
+                shadowBlur: 7,
+                shadowColor: 'rgba(6,182,212,0.16)'
+            },
+            label: {
+                show: true,
+                position: x > (document.getElementById('diagnosis-graph')?.clientWidth || 760) * 0.78 ? 'left' : 'right',
+                distance: 8,
+                color: '#164e63',
+                textBorderColor: 'rgba(255,255,255,0.96)',
+                textBorderWidth: 3,
+                backgroundColor: 'transparent',
+                borderWidth: 0,
+                padding: 0,
+                fontSize: 11,
+                fontWeight: 'bold',
+                formatter: truncateGraphLabel(child.name, 10)
+            }
+        };
+    }
+
+    function createExpandedChildLink(parentId, childId) {
+        return {
+            source: parentId,
+            target: childId,
+            value: '参数',
+            relation: 'detail',
+            lineStyle: {
+                type: 'dashed',
+                width: 1,
+                color: '#67e8f9',
+                opacity: 0.75,
+                curveness: 0.02
+            }
+        };
     }
 
     async function expandNodeWithData(nodeData, childrenData) {
         const nodeName = nodeData.name;
         const nodeId = nodeData.id || nodeName;
-        
+
         console.log(`[expandNodeWithData] 🔥 开始展开节点: ${nodeName} (ID: ${nodeId})`);
         console.log(`[expandNodeWithData] 收到 ${childrenData.length} 个子节点数据`);
-        
+
         // 检查节点是否已展开
         if (expandedNodes.has(nodeId) || expandedNodes.has(nodeName)) {
             console.log(`[expandNodeWithData] ⚠️ 节点 ${nodeName} 已展开，跳过`);
             return;
         }
-        
+
         try {
             // 获取当前图表数据
             const currentOption = diagnosisChart.getOption();
             const currentNodes = currentOption.series[0].data || [];
             const currentLinks = currentOption.series[0].links || [];
-            
+
             console.log(`[expandNodeWithData] 当前图表节点数: ${currentNodes.length}, 链接数: ${currentLinks.length}`);
-            
+
             // 检查是否已存在相同的子节点（避免重复添加）
             // 说明：以前用 name 去重，会迫使后端把二级节点 name 拼接成“父节点｜xxx”，
             // 导致视觉上重复又冗长。这里改为按 id 去重，二级节点可以用短标题显示。
             const existingNodeIds = new Set(currentNodes.map(n => n.id || n.name));
-            
+
             // 获取父节点的位置（如果存在），用于定位子节点
             const parentNode = currentNodes.find(n => (n.id === nodeId) || (n.name === nodeName));
-            const baseX = parentNode && parentNode.x !== undefined ? parentNode.x : 0;
-            const baseY = parentNode && parentNode.y !== undefined ? parentNode.y : 0;
-            
+            const pendingChildren = childrenData
+                .map((child, index) => ({ child, index, childId: `${nodeId}_child_${index}` }))
+                .filter(item => {
+                    if (existingNodeIds.has(item.childId)) {
+                        console.log(`[expandNodeWithData] ⚠️ 子节点 ${item.childId} 已存在，跳过`);
+                        return false;
+                    }
+                    return true;
+                });
+            const positionedChildren = layoutExpandedChildren(parentNode || nodeData, pendingChildren.map(item => item.child), currentNodes);
+
             // 创建新节点和链接
             const newNodes = [];
             const newLinks = [];
-            
-            childrenData.forEach((child, index) => {
-                // 生成唯一的子节点ID
-                const childId = `${nodeId}_child_${index}`;
 
-                // 检查节点是否已存在（通过 ID 检查）
-                if (existingNodeIds.has(childId)) {
-                    console.log(`[expandNodeWithData] ⚠️ 子节点 ${childId} 已存在，跳过`);
-                    return;
-                }
-                
-                // 创建子节点（二级节点：较小，浅蓝色）
-                newNodes.push({
-                    id: childId,
-                    name: child.name,
-                    category: 3,  // 3=参数（浅蓝色）
-                    symbolSize: 30,  // 较小的节点
-                    value: child.description || '',
-                    description: child.description || '',
-                    // 给子节点一个随机但靠近父节点的位置，帮助力导向布局
-                    x: baseX + (Math.random() - 0.5) * 100,
-                    y: baseY + (Math.random() - 0.5) * 100,
-                    itemStyle: {
-                        color: '#0dcaf0'  // 浅蓝色
-                    },
-                    label: {
-                        show: true,
-                        position: 'right',
-                        fontSize: 10
-                    }
-                });
-                
-                // 创建从父节点到子节点的链接
-                newLinks.push({
-                    source: nodeId,  // 使用父节点ID或名称
-                    target: childId,  // 使用子节点ID
-                    value: '参数',
-                    lineStyle: {
-                        type: 'dashed',  // 虚线表示二级关系
-                        width: 1,
-                        color: '#0dcaf0',  // 浅蓝色
-                        curveness: 0.2  // 较小的弯曲度
-                    }
-                });
+            pendingChildren.forEach((item, index) => {
+                const positioned = positionedChildren[index] || { x: parentNode?.x || 0, y: parentNode?.y || 0 };
+                newNodes.push(createExpandedChildNode(item.childId, item.child, positioned.x, positioned.y));
+                newLinks.push(createExpandedChildLink(nodeId, item.childId));
             });
-            
+
             if (newNodes.length === 0) {
                 console.log(`[expandNodeWithData] ⚠️ 所有子节点都已存在，无需添加`);
                 return;
             }
-            
+
             // 合并新节点和链接到现有数据
             const updatedNodes = [...currentNodes, ...newNodes];
             const updatedLinks = [...currentLinks, ...newLinks];
-            
+
             console.log(`[expandNodeWithData] 📊 准备添加 ${newNodes.length} 个新节点和 ${newLinks.length} 个新链接`);
-            
+
             // 更新图表（使用 setOption 合并数据，确保 roam: true）
             diagnosisChart.setOption({
                 series: [{
@@ -1288,13 +3891,13 @@
                     links: updatedLinks
                 }]
             });
-            
+
             // 标记节点已展开（使用ID和名称双重标记）
             expandedNodes.add(nodeId);
             expandedNodes.add(nodeName);
-            
+
             console.log(`[expandNodeWithData] ✅ 成功展开节点 ${nodeName}，添加了 ${newNodes.length} 个子节点`);
-            
+
         } catch (error) {
             console.error('[expandNodeWithData] ❌ 展开节点失败:', error);
             console.error('[expandNodeWithData] 错误堆栈:', error.stack);
@@ -1306,27 +3909,27 @@
     async function collapseNode(nodeId, nodeName) {
         try {
             console.log(`[collapseNode] 🔄 开始收回节点: ${nodeName} (ID: ${nodeId})`);
-            
+
             // 获取当前图表数据
             const currentOption = diagnosisChart.getOption();
             const currentNodes = currentOption.series[0].data || [];
             const currentLinks = currentOption.series[0].links || [];
-            
+
             // 找到所有以该节点为父节点的子节点ID
             const childNodeIds = new Set();
             currentLinks.forEach(link => {
                 // 检查链接的source是否是当前节点（可能是ID或名称）
                 const sourceId = typeof link.source === 'object' ? (link.source.id || link.source.name) : link.source;
                 const targetId = typeof link.target === 'object' ? (link.target.id || link.target.name) : link.target;
-                
-                if ((sourceId === nodeId || sourceId === nodeName) && 
+
+                if ((sourceId === nodeId || sourceId === nodeName) &&
                     targetId && (targetId.includes('_child_') || currentNodes.find(n => (n.id || n.name) === targetId)?.category === 3)) {
                     childNodeIds.add(targetId);
                 }
             });
-            
+
             console.log(`[collapseNode] 找到 ${childNodeIds.size} 个子节点需要移除`);
-            
+
             if (childNodeIds.size === 0) {
                 console.log(`[collapseNode] ⚠️ 未找到子节点，可能已经收回`);
                 // 即使没找到子节点，也清除展开标记
@@ -1334,18 +3937,18 @@
                 expandedNodes.delete(nodeName);
                 return;
             }
-            
+
             // 移除所有相关的子节点和链接
             const filteredNodes = currentNodes.filter(node => {
                 const nodeIdToCheck = node.id || node.name;
                 // 保留不是子节点的节点
                 return !childNodeIds.has(nodeIdToCheck);
             });
-            
+
             const filteredLinks = currentLinks.filter(link => {
                 const sourceId = typeof link.source === 'object' ? (link.source.id || link.source.name) : link.source;
                 const targetId = typeof link.target === 'object' ? (link.target.id || link.target.name) : link.target;
-                
+
                 // 移除以当前节点为source的链接，或者以子节点为source/target的链接
                 if ((sourceId === nodeId || sourceId === nodeName) && childNodeIds.has(targetId)) {
                     return false;  // 移除父节点到子节点的链接
@@ -1355,7 +3958,7 @@
                 }
                 return true;
             });
-            
+
             // 更新图表
             diagnosisChart.setOption({
                 series: [{
@@ -1363,13 +3966,13 @@
                     links: filteredLinks
                 }]
             });
-            
+
             // 清除展开标记
             expandedNodes.delete(nodeId);
             expandedNodes.delete(nodeName);
-            
+
             console.log(`[collapseNode] ✅ 成功收回节点 ${nodeName}，移除了 ${childNodeIds.size} 个子节点`);
-            
+
         } catch (error) {
             console.error('[collapseNode] ❌ 收回节点失败:', error);
             console.error('[collapseNode] 错误堆栈:', error.stack);
@@ -1380,30 +3983,30 @@
     async function expandNode(nodeData) {
         const nodeName = nodeData.name;
         const nodeId = nodeData.id || nodeName;  // 使用名称作为ID的后备
-        
+
         console.log(`[expandNode] 🔥 开始展开节点: ${nodeName} (ID: ${nodeId})`);
-        
+
         // 检查节点是否已展开（使用ID和名称双重检查）
         if (expandedNodes.has(nodeId) || expandedNodes.has(nodeName)) {
             console.log(`[expandNode] ⚠️ 节点 ${nodeName} 已展开，跳过`);
             return;
         }
-        
+
         // 检查是否有当前故障ID（必须传递以获取动态数据）
         if (!currentFaultId) {
             console.error(`[expandNode] ❌ 错误: currentFaultId 未设置，无法获取动态数据`);
             alert("错误：无法获取故障ID，请刷新页面重试");
             return;
         }
-        
+
         try {
             // 获取节点的子节点数据（传递故障日志ID以获取动态数据）
             const encodedNodeName = encodeURIComponent(nodeName);
             const apiUrl = `/api/graph/details/${currentFaultId}/${encodedNodeName}`;
             console.log(`[expandNode] 📡 请求API: ${apiUrl}`);
-            
+
             const response = await fetch(apiUrl);
-            
+
             if (!response.ok) {
                 console.error(`[expandNode] ❌ API请求失败: ${response.status} ${response.statusText}`);
                 const errorText = await response.text();
@@ -1411,91 +4014,60 @@
                 alert(`获取节点数据失败: ${response.status} ${response.statusText}`);
                 return;
             }
-            
+
             const details = await response.json();
             console.log(`[expandNode] ✅ 收到API响应:`, details);
             console.log(`[expandNode] 子节点数量:`, details.children ? details.children.length : 0);
-            
+
             if (!details.children || details.children.length === 0) {
                 console.log(`[expandNode] ⚠️ 节点 ${nodeName} 没有子节点`);
                 return;
             }
-            
+
             // 获取当前图表数据
             const currentOption = diagnosisChart.getOption();
             const currentNodes = currentOption.series[0].data || [];
             const currentLinks = currentOption.series[0].links || [];
-            
+
             console.log(`[expandNode] 当前图表节点数: ${currentNodes.length}, 链接数: ${currentLinks.length}`);
-            
+
             // 检查是否已存在相同的子节点（避免重复添加）
             const existingNodeNames = new Set(currentNodes.map(n => n.name));
-            
+
             // 获取父节点的位置（如果存在），用于定位子节点
             const parentNode = currentNodes.find(n => (n.id === nodeId) || (n.name === nodeName));
-            const baseX = parentNode && parentNode.x !== undefined ? parentNode.x : 0;
-            const baseY = parentNode && parentNode.y !== undefined ? parentNode.y : 0;
-            
+            const pendingChildren = details.children
+                .map((child, index) => ({ child, index, childId: `${nodeId}_child_${index}` }))
+                .filter(item => {
+                    if (existingNodeNames.has(item.child.name)) {
+                        console.log(`[expandNode] ⚠️ 子节点 ${item.child.name} 已存在，跳过`);
+                        return false;
+                    }
+                    return true;
+                });
+            const positionedChildren = layoutExpandedChildren(parentNode || nodeData, pendingChildren.map(item => item.child), currentNodes);
+
             // 创建新节点和链接
             const newNodes = [];
             const newLinks = [];
-            
-            details.children.forEach((child, index) => {
-                // 检查节点是否已存在（通过名称检查）
-                if (existingNodeNames.has(child.name)) {
-                    console.log(`[expandNode] ⚠️ 子节点 ${child.name} 已存在，跳过`);
-                    return;  // 跳过已存在的节点
-                }
-                
-                // 生成唯一的子节点ID
-                const childId = `${nodeId}_child_${index}`;
-                
-                // 创建子节点（二级节点：较小，浅蓝色）
-                newNodes.push({
-                    id: childId,
-                    name: child.name,
-                    category: 3,  // 3=参数（浅蓝色）
-                    symbolSize: 30,  // 较小的节点
-                    value: child.description || '',
-                    description: child.description || '',
-                    // 给子节点一个随机但靠近父节点的位置，帮助力导向布局
-                    x: baseX + (Math.random() - 0.5) * 100,
-                    y: baseY + (Math.random() - 0.5) * 100,
-                    itemStyle: {
-                        color: '#0dcaf0'  // 浅蓝色
-                    },
-                    label: {
-                        show: true,
-                        position: 'right',
-                        fontSize: 10
-                    }
-                });
-                
-                // 创建从父节点到子节点的链接
-                newLinks.push({
-                    source: nodeId,  // 使用父节点ID或名称
-                    target: childId,  // 使用子节点ID
-                    value: '参数',
-                    lineStyle: {
-                        type: 'dashed',  // 虚线表示二级关系
-                        width: 1,
-                        color: '#0dcaf0',  // 浅蓝色
-                        curveness: 0.2  // 较小的弯曲度
-                    }
-                });
+
+            pendingChildren.forEach((item, index) => {
+                const positioned = positionedChildren[index] || { x: parentNode?.x || 0, y: parentNode?.y || 0 };
+                newNodes.push(createExpandedChildNode(item.childId, item.child, positioned.x, positioned.y));
+                newLinks.push(createExpandedChildLink(nodeId, item.childId));
             });
-            
+
             if (newNodes.length === 0) {
                 console.log(`[expandNode] ⚠️ 所有子节点都已存在，无需添加`);
                 return;
             }
-            
+
             // 合并新节点和链接到现有数据
             const updatedNodes = [...currentNodes, ...newNodes];
             const updatedLinks = [...currentLinks, ...newLinks];
-            
+
             console.log(`[expandNode] 📊 准备添加 ${newNodes.length} 个新节点和 ${newLinks.length} 个新链接`);
-            
+
             // 更新图表（使用 setOption 合并数据）
             diagnosisChart.setOption({
                 series: [{
@@ -1503,13 +4075,13 @@
                     links: updatedLinks
                 }]
             });
-            
+
             // 标记节点已展开（使用ID和名称双重标记）
             expandedNodes.add(nodeId);
             expandedNodes.add(nodeName);
-            
+
             console.log(`[expandNode] ✅ 成功展开节点 ${nodeName}，添加了 ${newNodes.length} 个子节点`);
-            
+
         } catch (error) {
             console.error('[expandNode] ❌ 展开节点失败:', error);
             console.error('[expandNode] 错误堆栈:', error.stack);
@@ -1518,10 +4090,14 @@
     }
 
     function resetKnowledgeGraph() {
-        if (originalGraphData && diagnosisChart) {
-            // 重置为原始数据
-            updateGraphOption(originalGraphData);
+        if (originalGraphData) {
+            // Reset the auxiliary 2D evidence chain; the 3D main view is rendered from the full graph.
+            currentGraphView = 'event';
+            currentGraphData = JSON.parse(JSON.stringify(graphViewPayload(originalGraphData, 'event')));
             expandedNodes.clear();
+            resetGraphNodeDetail();
+            updateGraphViewButtons(currentGraphView);
+            renderKnowledgeGraphView();
             console.log('知识图谱已重置为初始视图');
         }
     }
@@ -1531,11 +4107,11 @@
             alert('请先选择一个故障记录');
             return;
         }
-        
+
         try {
             // 1. 尝试捕获知识图谱图表图片
             let graphImageBase64 = null;
-            
+
             if (diagnosisChart) {
                 try {
                     // 获取图表的Base64图片数据
@@ -1549,10 +4125,17 @@
                     console.warn('无法捕获知识图谱图片:', chartError);
                     // 继续执行，即使没有图片也能导出文档
                 }
+            } else if (knowledgeGraph3D?.renderer) {
+                try {
+                    graphImageBase64 = knowledgeGraph3D.renderer.domElement.toDataURL('image/png');
+                    console.log('3D知识图谱图片已捕获');
+                } catch (chartError) {
+                    console.warn('无法捕获3D知识图谱图片:', chartError);
+                }
             } else {
                 console.warn('知识图谱图表未加载，将导出不含图表的文档');
             }
-            
+
             // 2. 发送POST请求，包含图表图片数据
             const csrfToken = getCsrfToken();
             const response = await fetch('/api/workorder/export', {
@@ -1566,7 +4149,7 @@
                     graph_image: graphImageBase64
                 })
             });
-            
+
             if (!response.ok) {
                 // 兼容：后端可能返回 HTML（例如登录失效被重定向），此时 response.json() 会抛错
                 let msg = '导出失败';
@@ -1582,13 +4165,13 @@
                 }
                 throw new Error(msg);
             }
-            
+
             // 3. 处理下载（POST请求需要手动处理）
             const blob = await response.blob();
             const url = window.URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            
+
             // 优先：使用“当前故障信息”本地生成中文文件名（最稳，不依赖响应头解析）
             // 说明：部分浏览器/下载器对 Content-Disposition 的 filename*/中文解析并不一致，
             // 本地生成可以确保最终下载名一定包含中文设备名称。
@@ -1635,15 +4218,15 @@
                     }
                 }
             }
-            
+
             a.download = filename;
             document.body.appendChild(a);
             a.click();
-            
+
             // 清理
             window.URL.revokeObjectURL(url);
             document.body.removeChild(a);
-            
+
             console.log('工单导出成功');
         } catch (error) {
             console.error('导出工单失败:', error);
@@ -1656,7 +4239,7 @@
             alert('错误：无法获取故障ID');
             return;
         }
-        
+
         try {
             const csrfToken = getCsrfToken();
             const response = await fetch(`/api/faults/${faultId}/dispatch`, {
@@ -1666,30 +4249,30 @@
                     ...(csrfToken ? { 'X-CSRFToken': csrfToken } : {})
                 }
             });
-            
+
             const data = await response.json();
-            
+
             if (response.ok && data.success) {
                 // 更新按钮显示
                 const dispatchBtn = document.getElementById('dispatch-fault-btn');
                 const resolveBtn = document.getElementById('resolve-fault-btn');
                 dispatchBtn.style.display = 'none';
                 resolveBtn.style.display = 'inline-block';
-                
+
                 // 更新模态框中的状态显示
                 const statusBadge = document.querySelector('#fault-details .badge');
                 if (statusBadge) {
                     statusBadge.className = 'badge badge-soft-info';
                     statusBadge.textContent = '处理中';
                 }
-                
+
                 // 关闭模态框
                 const modal = bootstrap.Modal.getInstance(document.getElementById('diagnosisModal'));
                 modal.hide();
-                
+
                 // 重新加载故障列表以更新状态显示
                 await loadFaults();
-                
+
                 // 显示成功提示
                 alert('派单成功！故障状态已更新为"处理中"。');
             } else {
@@ -1706,11 +4289,11 @@
             alert('错误：无法获取故障ID');
             return;
         }
-        
+
         if (!confirm('确认维修已完成？此操作将标记故障为"已解决"并重置设备状态为正常。')) {
             return;
         }
-        
+
         try {
             const csrfToken = getCsrfToken();
             const response = await fetch(`/api/faults/${faultId}/resolve`, {
@@ -1720,30 +4303,30 @@
                     ...(csrfToken ? { 'X-CSRFToken': csrfToken } : {})
                 }
             });
-            
+
             const data = await response.json();
-            
+
             if (response.ok && data.success) {
                 // 更新按钮显示
                 const resolveBtn = document.getElementById('resolve-fault-btn');
                 const archivedBtn = document.getElementById('archived-btn');
                 resolveBtn.style.display = 'none';
                 archivedBtn.style.display = 'inline-block';
-                
+
                 // 更新模态框中的状态显示
                 const statusBadge = document.querySelector('#fault-details .badge');
                 if (statusBadge) {
                     statusBadge.className = 'badge badge-soft-success';
                     statusBadge.textContent = '已解决';
                 }
-                
+
                 // 关闭模态框
                 const modal = bootstrap.Modal.getInstance(document.getElementById('diagnosisModal'));
                 modal.hide();
-                
+
                 // 重新加载故障列表以更新状态显示
                 await loadFaults();
-                
+
                 // 显示成功提示
                 alert('维修完成！故障已标记为"已解决"，复位指令已下发到设备。设备将在下次心跳时自动复位为正常状态。');
             } else {
@@ -1961,33 +4544,33 @@
             const searchTerm = searchInput ? searchInput.value.trim().toLowerCase() : '';
             const statusFilter = document.getElementById('status-filter').value;
             const deviceFilter = document.getElementById('device-filter').value;
-            
+
             let matchesSearch = true;
             if (searchTerm) {
                 const searchStr = (
-                    (fault.device_id || '') + 
-                    (fault.fault_type || '') + 
-                    (fault.fault_code || '') + 
+                    (fault.device_id || '') +
+                    (fault.fault_type || '') +
+                    (fault.fault_code || '') +
                     (fault.location || '')
                 ).toLowerCase();
                 matchesSearch = searchStr.includes(searchTerm);
             }
-            
+
             const matchesStatus = !statusFilter || fault.status === statusFilter;
             const matchesDevice = !deviceFilter || fault.device_id === deviceFilter;
-            
+
             return matchesSearch && matchesStatus && matchesDevice;
         });
-        
+
         if (filtered.length === 0) {
             alert('没有数据可导出');
             return;
         }
-        
+
         // 生成CSV内容
         let csvContent = '状态,严重程度,故障描述,机组,时间,故障代码\n';
         filtered.forEach(fault => {
-            const status = fault.status === 'pending' ? '待处理' : 
+            const status = fault.status === 'pending' ? '待处理' :
                           fault.status === 'processing' ? '处理中' : '已解决';
             const sevRaw = String(fault.severity || '').trim().toLowerCase();
             const severity = sevRaw === 'severe' ? '严重' :
@@ -2005,17 +4588,17 @@
             }).format(new Date(fault.fault_time));
             csvContent += `${status},${severity},"${fault.fault_type}",${fault.device_id},${time},${fault.fault_code || ''}\n`;
         });
-        
+
         // 下载CSV文件
         // 1. Get current time (北京时间)
         const now = new Date();
         const nowBj = formatDateTimeForSnapshot(now); // YYYY-MM-DD HH:MM:SS
         const dateStr = nowBj.split(' ')[0];
         const timeStr = nowBj.split(' ')[1].replace(/:/g, '-'); // e.g., "14-30-05"
-        
+
         // 2. Generate Filename with Timestamp
         const filename = `故障日志_${dateStr}_${timeStr}.csv`;
-        
+
         const blob = new Blob(['\ufeff' + csvContent], { type: 'text/csv;charset=utf-8;' });
         const link = document.createElement('a');
         const url = URL.createObjectURL(blob);
@@ -2062,7 +4645,7 @@
     function handleURLParams() {
         const urlParams = new URLSearchParams(window.location.search);
         const searchQuery = urlParams.get('search');
-        
+
         if (searchQuery) {
             const searchInput = document.getElementById('fault-search');
             if (searchInput) {
@@ -2082,26 +4665,41 @@
     document.addEventListener('DOMContentLoaded', function() {
         // 首次加载数据
         loadFaults();
-        
+
         // 处理URL参数（全局搜索跳转）
         handleURLParams();
-        
+
         // 定时刷新数据（但保持当前的过滤状态和滚动位置）
         // 修复：使用2000ms轮询间隔，确保故障日志实时更新（降低服务器负载）
         const pollingInterval = 2000;  // 2秒刷新一次，确保故障日志实时更新
-        
+
         // 开始定时刷新（保持当前的过滤状态和滚动位置）
         const refreshInterval = setInterval(loadFaults, pollingInterval);
-        
+
         // 调试日志：确认轮询已启动
         console.log(`[Faults页面] 故障日志自动刷新已启动，间隔: ${pollingInterval}ms`);
-        
+
         // 响应式
         window.addEventListener('resize', function() {
             if (diagnosisChart) {
                 diagnosisChart.resize();
             }
+            resizeKnowledgeGraph3D();
         });
+
+        const diagnosisModalEl = document.getElementById('diagnosisModal');
+        if (diagnosisModalEl) {
+            diagnosisModalEl.addEventListener('hidden.bs.modal', function() {
+                stopAiPolling();
+                stopGraphReasoningPolling();
+                pendingKnowledgeGraphRender = false;
+                disposeKnowledgeGraph3D();
+                if (diagnosisChart) {
+                    diagnosisChart.dispose();
+                    diagnosisChart = null;
+                }
+            });
+        }
     });
 </script>
 {% endblock %}

@@ -5,9 +5,9 @@ API路由蓝图
 from flask import Blueprint, request, jsonify
 from flask_login import login_required
 from datetime import datetime, timedelta
-from edgewind.models import db, Device, DataPoint, WorkOrder, SystemConfig, FaultSnapshot, HistoryData, NodePendingCommand
+from edgewind.models import db, Device, DataPoint, WorkOrder, SystemConfig, FaultSnapshot, HistoryData, NodePendingCommand, AIAnalysisTask
 from edgewind.full_frame_binary import FullFrameBinaryError, decode_full_frame_binary
-from edgewind.knowledge_graph import FAULT_KNOWLEDGE_GRAPH, FAULT_CODE_MAP, generate_ai_report, get_fault_knowledge_graph
+from edgewind.knowledge_graph import FAULT_KNOWLEDGE_GRAPH, FAULT_CODE_MAP, generate_ai_report, get_fault_knowledge_graph, build_reasoning_graph
 from edgewind.utils import (
     save_to_buffer, get_latest_normal_data, get_latest_fault_data,
     node_fault_states, node_snapshot_saved, save_fault_snapshot, create_work_order_from_fault
@@ -343,6 +343,28 @@ def init_api_blueprint(app, socketio, executor, nodes, commands, report_modes, d
     db_executor = executor
     socketio_instance = socketio
     app_instance = app
+
+
+def _auto_enqueue_fault_graph_reasoning(work_order_id: int | None) -> None:
+    """Best-effort AI graph enqueue after a committed work order; never affects upload responses."""
+    if not work_order_id or not app_instance:
+        return
+    if not app_instance.config.get("EDGEWIND_AI_AUTO_GRAPH_ON_FAULT"):
+        return
+    try:
+        from edgewind.routes.ai import ai_service
+        if ai_service is None:
+            logger.info("[AI] auto fault graph skipped work_order_id=%s reason=service_not_ready", work_order_id)
+            return
+        task, status = ai_service.submit_fault_graph_auto(int(work_order_id))
+        logger.info(
+            "[AI] auto fault graph submit work_order_id=%s status=%s task_id=%s",
+            work_order_id,
+            status,
+            getattr(task, "task_id", None),
+        )
+    except Exception as exc:
+        logger.info("[AI] auto fault graph skipped work_order_id=%s reason=%s", work_order_id, exc)
 
 
 def _get_report_mode(node_id: str | None) -> str:
@@ -1160,6 +1182,7 @@ def upload_data():
         # 会导致“故障快照有，但故障管理/系统故障日志没有”的错觉。
         prev_fault = node_fault_states.get(device_id, 'E00')
         curr_fault = fault_code or 'E00'
+        created_work_order_id = None
 
         if prev_fault == 'E00' and curr_fault != 'E00':
             # 2秒内去重（防止网络重发/并发导致同秒两条）
@@ -1176,12 +1199,15 @@ def upload_data():
             ).order_by(WorkOrder.fault_time.desc()).first()
 
             if not (recent and expected_fault_name and (recent.fault_type == expected_fault_name or expected_fault_name in (recent.fault_type or ''))):
-                create_work_order_from_fault(db, device_id, curr_fault, device.location, fault_time=now_utc)
+                work_order = create_work_order_from_fault(db, device_id, curr_fault, device.location, fault_time=now_utc)
+                created_work_order_id = getattr(work_order, "id", None)
 
         # 更新故障状态机（用于事件判定）
         node_fault_states[device_id] = curr_fault
 
         db.session.commit()
+        if created_work_order_id and db_executor:
+            db_executor.submit(_auto_enqueue_fault_graph_reasoning, created_work_order_id)
 
         # 4.1) WebSocket：/api/upload 也推送全局状态更新（保证实时监测“系统故障日志”能更新）
         try:
@@ -1845,8 +1871,10 @@ def _handle_fault_database_operation(node_id, fault_code, data):
                 logger.info(f"⏭️ 跳过去重：{node_id} 在2秒内已创建同类故障工单 ({fault_code})")
                 return
 
-            create_work_order_from_fault(db, node_id, fault_code, device.location, fault_time=now_utc)
+            work_order = create_work_order_from_fault(db, node_id, fault_code, device.location, fault_time=now_utc)
+            created_work_order_id = getattr(work_order, "id", None)
             db.session.commit()
+            _auto_enqueue_fault_graph_reasoning(created_work_order_id)
             logger.info(f"✅ WorkOrder已创建: {node_id}")
         except Exception as e:
             db.session.rollback()
@@ -2281,6 +2309,35 @@ def _make_short_title(text: str, max_len: int = 12) -> str:
     return s
 
 
+@api_bp.route('/knowledge_graph/work-orders/<int:work_order_id>', methods=['GET'])
+@login_required
+def get_work_order_knowledge_graph(work_order_id: int):
+    """获取工单级知识图谱：静态图谱 + 已缓存的 DeepSeek 推理结果。"""
+    try:
+        order = WorkOrder.query.get(work_order_id)
+        if not order:
+            return jsonify({'error': 'Work order not found'}), 404
+
+        fault_code = _infer_fault_code_from_fault_type(order.fault_type)
+        if fault_code == 'E00':
+            device = Device.query.filter_by(device_id=order.device_id).first()
+            device_fault = getattr(device, 'fault_code', None) if device else None
+            if device_fault and device_fault != 'E00':
+                fault_code = device_fault
+
+        task = AIAnalysisTask.query.filter(
+            AIAnalysisTask.work_order_id == order.id,
+            AIAnalysisTask.task_type == 'fault_graph_reasoning',
+        ).order_by(AIAnalysisTask.created_at.desc()).first()
+        graph_data = build_reasoning_graph(fault_code, task=task, work_order_id=order.id)
+        if graph_data:
+            return jsonify(graph_data), 200
+        return jsonify({'error': 'Fault code not found'}), 404
+    except Exception as e:
+        logger.exception("[AI] work-order knowledge graph failed work_order_id=%s", work_order_id)
+        return jsonify({'error': str(e)}), 500
+
+
 @api_bp.route('/knowledge_graph/<fault_code>', methods=['GET'])
 def get_knowledge_graph(fault_code):
     """获取故障诊断知识图谱"""
@@ -2491,6 +2548,7 @@ def _delete_work_order_record(order_id):
         'fault_type': order.fault_type,
         'status': order.status,
     }
+    AIAnalysisTask.query.filter_by(work_order_id=order.id).delete(synchronize_session=False)
     db.session.delete(order)
     db.session.commit()
     logger.info(
@@ -2531,6 +2589,11 @@ def _delete_work_order_records(order_ids):
             'status': order.status,
         }
         deleted_infos.append(deleted_info)
+
+    if found_ids:
+        AIAnalysisTask.query.filter(AIAnalysisTask.work_order_id.in_(found_ids)).delete(synchronize_session=False)
+
+    for order in orders:
         db.session.delete(order)
 
     db.session.commit()
@@ -3429,10 +3492,17 @@ def admin_cleanup_old_data():
         history_deleted = HistoryData.query.filter(HistoryData.timestamp < cutoff).delete(synchronize_session=False)
 
         # 3) 删除已完成工单（resolved/fixed）
-        workorders_deleted = WorkOrder.query.filter(
+        old_work_order_query = WorkOrder.query.filter(
             WorkOrder.fault_time < cutoff,
             WorkOrder.status.in_(['resolved', 'fixed'])
-        ).delete(synchronize_session=False)
+        )
+        old_work_order_ids = [row.id for row in old_work_order_query.with_entities(WorkOrder.id).all()]
+        ai_tasks_deleted = 0
+        if old_work_order_ids:
+            ai_tasks_deleted = AIAnalysisTask.query.filter(
+                AIAnalysisTask.work_order_id.in_(old_work_order_ids)
+            ).delete(synchronize_session=False)
+        workorders_deleted = old_work_order_query.delete(synchronize_session=False)
 
         db.session.commit()
         return jsonify({
@@ -3440,7 +3510,8 @@ def admin_cleanup_old_data():
             'details': {
                 'datapoints_deleted': int(datapoints_deleted or 0),
                 'history_deleted': int(history_deleted or 0),
-                'workorders_deleted': int(workorders_deleted or 0)
+                'workorders_deleted': int(workorders_deleted or 0),
+                'ai_tasks_deleted': int(ai_tasks_deleted or 0)
             }
         }), 200
     except Exception as e:
@@ -3456,6 +3527,7 @@ def admin_clear_all_data():
         # 注意：保留用户/设备表，避免系统不可登录或设备列表丢失
         datapoints_deleted = DataPoint.query.delete(synchronize_session=False)
         history_deleted = HistoryData.query.delete(synchronize_session=False)
+        ai_tasks_deleted = AIAnalysisTask.query.delete(synchronize_session=False)
         workorders_deleted = WorkOrder.query.delete(synchronize_session=False)
         snapshots_deleted = FaultSnapshot.query.delete(synchronize_session=False)
         db.session.commit()
@@ -3464,6 +3536,7 @@ def admin_clear_all_data():
             'details': {
                 'datapoints_deleted': int(datapoints_deleted or 0),
                 'history_deleted': int(history_deleted or 0),
+                'ai_tasks_deleted': int(ai_tasks_deleted or 0),
                 'workorders_deleted': int(workorders_deleted or 0),
                 'snapshots_deleted': int(snapshots_deleted or 0)
             }

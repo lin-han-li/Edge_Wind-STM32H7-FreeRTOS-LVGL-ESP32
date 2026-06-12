@@ -82,3 +82,16 @@ class Config:
     MAX_HTTP_BUFFER_SIZE = 2e6  # 2MB
     MAX_CONNECTIONS = 1000
 
+    # ==================== DeepSeek AI 配置 ====================
+    DEEPSEEK_ENABLED = os.environ.get('DEEPSEEK_ENABLED', 'false').strip().lower() in ('1', 'true', 'yes', 'on')
+    DEEPSEEK_API_KEY = os.environ.get('DEEPSEEK_API_KEY', '').strip()
+    DEEPSEEK_BASE_URL = os.environ.get('DEEPSEEK_BASE_URL', 'https://api.deepseek.com').strip().rstrip('/')
+    DEEPSEEK_MODEL = os.environ.get('DEEPSEEK_MODEL', 'deepseek-v4-pro').strip()
+    DEEPSEEK_TIMEOUT_SEC = int(os.environ.get('DEEPSEEK_TIMEOUT_SEC', 60))
+    DEEPSEEK_MAX_RETRIES = int(os.environ.get('DEEPSEEK_MAX_RETRIES', 1))
+    DEEPSEEK_MAX_TOKENS = int(os.environ.get('DEEPSEEK_MAX_TOKENS', 1600))
+    EDGEWIND_AI_QUEUE_MAX = int(os.environ.get('EDGEWIND_AI_QUEUE_MAX', 5))
+    EDGEWIND_AI_CONTEXT_MAX_CHARS = int(os.environ.get('EDGEWIND_AI_CONTEXT_MAX_CHARS', 12000))
+    EDGEWIND_AI_PROMPT_VERSION = os.environ.get('EDGEWIND_AI_PROMPT_VERSION', 'v1').strip()
+    EDGEWIND_AI_AUTO_GRAPH_ON_FAULT = os.environ.get('EDGEWIND_AI_AUTO_GRAPH_ON_FAULT', 'false').strip().lower() in ('1', 'true', 'yes', 'on')
+

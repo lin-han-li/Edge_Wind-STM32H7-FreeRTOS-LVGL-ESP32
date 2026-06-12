@@ -27,6 +27,10 @@ ESP_DROPPED_INVALID_RE = re.compile(r"Dropped invalid RX packet,\s+reason=(\d+)"
 ESP_SPI_STATS_RE = re.compile(r"\bspi_stats\s+(.*)")
 KV_INT_RE = re.compile(r"([A-Za-z0-9_]+)=(-?\d+)")
 JOURNAL_SHORT_UNIX_RE = re.compile(r"^(\d+(?:\.\d+)?)\s")
+CLOUD_RAW_FULL_SIG = "raw_lens=[(0, 4096, 2048)"
+CLOUD_EMIT_LIMITED_SIG = "emit_lens=[(0, 1024, 512)"
+CLOUD_EMIT_FULL_SIG = "emit_lens=[(0, 4096, 2048)"
+CLOUD_EXPECTED_FULL_BODY_BYTES = 49348
 
 NACK_REASON_NAMES = {
     "1": "CRC_FAIL",
@@ -50,6 +54,14 @@ SPI_BASELINE_10M = {
 def is_cloud_error_line(line):
     lower = line.lower().replace("error=none", "")
     return any(k in lower for k in ["node_timeout", "offline", "bad-frame", "traceback", "error", " 500 ", " 502 ", "timeout"])
+
+
+def classify_cloud_series_lens(line):
+    return {
+        "raw_full": CLOUD_RAW_FULL_SIG in line,
+        "emit_limited": CLOUD_EMIT_LIMITED_SIG in line,
+        "emit_full_regression": CLOUD_EMIT_FULL_SIG in line,
+    }
 
 
 def parse_int_kv(text):
@@ -84,7 +96,9 @@ class Monitor:
             "esp_report_read_ok": 0,
             "esp_report_read_fail": 0,
             "cloud_full_series": 0,
-            "cloud_raw_4096_2048": 0,
+            "cloud_raw_full_series": 0,
+            "cloud_emit_limited_series": 0,
+            "cloud_emit_full_regression": 0,
             "cloud_reconnects": 0,
             "cloud_errors": 0,
             "serial_errors": [],
@@ -218,8 +232,13 @@ class Monitor:
                     self.stats["cloud_full_series"] += 1
                     m_ts = JOURNAL_SHORT_UNIX_RE.match(line)
                     self.cloud_series_times.append(float(m_ts.group(1)) if m_ts else now)
-                if "raw_lens=[(0, 4096, 2048)" in line and "emit_lens=[(0, 4096, 2048)" in line:
-                    self.stats["cloud_raw_4096_2048"] += 1
+                lens = classify_cloud_series_lens(line)
+                if lens["raw_full"]:
+                    self.stats["cloud_raw_full_series"] += 1
+                if lens["emit_limited"]:
+                    self.stats["cloud_emit_limited_series"] += 1
+                if lens["emit_full_regression"]:
+                    self.stats["cloud_emit_full_regression"] += 1
                 if is_cloud_error_line(line):
                     self.stats["cloud_errors"] += 1
                     if len(self.stats["cloud_errors_text"]) < 20:
@@ -356,9 +375,12 @@ class Monitor:
         ]
         result = {
             "cloud_journal_full_series": 0,
-            "cloud_journal_raw_4096_2048": 0,
+            "cloud_journal_raw_full_series": 0,
+            "cloud_journal_emit_limited_series": 0,
+            "cloud_journal_emit_full_regression": 0,
             "cloud_journal_series_interval_ms": {},
             "cloud_journal_errors": 0,
+            "cloud_journal_runtime_errors": 0,
             "cloud_journal_error_text": "",
         }
         try:
@@ -379,8 +401,17 @@ class Monitor:
                     m_ts = JOURNAL_SHORT_UNIX_RE.match(line)
                     if m_ts:
                         journal_series_times.append(float(m_ts.group(1)))
-                if "raw_lens=[(0, 4096, 2048)" in line and "emit_lens=[(0, 4096, 2048)" in line:
-                    result["cloud_journal_raw_4096_2048"] += 1
+                lens = classify_cloud_series_lens(line)
+                if lens["raw_full"]:
+                    result["cloud_journal_raw_full_series"] += 1
+                if lens["emit_limited"]:
+                    result["cloud_journal_emit_limited_series"] += 1
+                if lens["emit_full_regression"]:
+                    result["cloud_journal_emit_full_regression"] += 1
+                if is_cloud_error_line(line):
+                    result["cloud_journal_runtime_errors"] += 1
+                    if not result["cloud_journal_error_text"]:
+                        result["cloud_journal_error_text"] = line[:500]
             result["cloud_journal_series_interval_ms"] = self.percentiles([
                 (cur - prev) * 1000.0 for prev, cur in zip(journal_series_times, journal_series_times[1:])
             ])
@@ -455,6 +486,32 @@ class Monitor:
             }
         return payload
 
+    @staticmethod
+    def validate_release_web_smooth(summary):
+        failures = []
+
+        def require(condition, message):
+            if not condition:
+                failures.append(message)
+
+        require(summary.get("stm_full_starts", 0) > 0, "no STM32 full-frame starts observed")
+        require(summary.get("stm_full_timeout", 0) == 0, "STM32 full-frame timeout observed")
+        require(summary.get("stm_http_fail", 0) == 0, "STM32 HTTP failure observed")
+        require(summary.get("stm_long_frame_intervals_gt5s", 0) == 0, "STM32 full-frame interval exceeded 5s")
+        require(summary.get("esp_report_read_ok", 0) > 0, "no ESP32 successful full-frame HTTP read observed")
+        success_rate = summary.get("esp_http_success_rate")
+        require(success_rate is not None and success_rate >= 0.995, "ESP32 HTTP success rate below 99.5%")
+        require(CLOUD_EXPECTED_FULL_BODY_BYTES in summary.get("esp_payload_lengths", []), "ESP32 full-frame body length 49348 not observed")
+        require(summary.get("cloud_effective_full_series", 0) > 0, "no cloud full-frame series log observed")
+        require(summary.get("cloud_effective_raw_full_series", 0) > 0, "cloud raw full 4096/2048 evidence missing")
+        require(summary.get("cloud_effective_emit_limited_series", 0) > 0, "cloud emit limited 1024/512 evidence missing")
+        require(summary.get("cloud_effective_emit_full_regression", 0) == 0, "cloud emitted full 4096/2048 data to UI")
+        require(summary.get("cloud_errors", 0) == 0, "cloud live log errors observed")
+        require(summary.get("cloud_journal_errors", 0) == 0, "cloud journal query failed")
+        require(summary.get("cloud_journal_runtime_errors", 0) == 0, "cloud journal runtime errors observed")
+        require(not summary.get("serial_errors"), "serial monitor errors observed")
+        return failures
+
     def write_progress(self, path, elapsed):
         payload = self.build_common_metrics(elapsed)
         with open(path, "w", encoding="utf-8") as f:
@@ -519,14 +576,33 @@ class Monitor:
             summary.get("cloud_full_series", 0),
             summary.get("cloud_journal_full_series", 0),
         )
-        summary["cloud_effective_raw_4096_2048"] = max(
-            summary.get("cloud_raw_4096_2048", 0),
-            summary.get("cloud_journal_raw_4096_2048", 0),
+        summary["cloud_effective_raw_full_series"] = max(
+            summary.get("cloud_raw_full_series", 0),
+            summary.get("cloud_journal_raw_full_series", 0),
         )
+        summary["cloud_effective_emit_limited_series"] = max(
+            summary.get("cloud_emit_limited_series", 0),
+            summary.get("cloud_journal_emit_limited_series", 0),
+        )
+        summary["cloud_effective_emit_full_regression"] = max(
+            summary.get("cloud_emit_full_regression", 0),
+            summary.get("cloud_journal_emit_full_regression", 0),
+        )
+        assertion_failures = self.validate_release_web_smooth(summary) if self.args.assert_release_web_smooth else []
+        summary["release_web_smooth_assert"] = {
+            "enabled": bool(self.args.assert_release_web_smooth),
+            "ok": not assertion_failures,
+            "failures": assertion_failures,
+        }
         with open(summary_json, "w", encoding="utf-8") as f:
             json.dump(summary, f, ensure_ascii=False, indent=2)
         self.write_progress(progress_json, self.args.duration)
         print(json.dumps(summary, ensure_ascii=False, indent=2))
+        if assertion_failures:
+            print("release web smooth assertion failed:", file=sys.stderr)
+            for failure in assertion_failures:
+                print(f"- {failure}", file=sys.stderr)
+            raise SystemExit(1)
 
 
 def main():
@@ -542,6 +618,7 @@ def main():
     parser.add_argument("--esp-baud", type=int, default=115200)
     parser.add_argument("--ssh-config", default=os.path.abspath("ALiYunFuWuQi/ssh_config"))
     parser.add_argument("--progress-interval", type=int, default=10)
+    parser.add_argument("--assert-release-web-smooth", action="store_true")
     Monitor(parser.parse_args()).run()
 
 

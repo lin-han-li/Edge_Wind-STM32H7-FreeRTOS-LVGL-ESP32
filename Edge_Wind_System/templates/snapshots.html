@@ -111,6 +111,29 @@
         min-height: 340px;
         margin-top: 0.75rem;
     }
+
+    .snapshot-ai-card {
+        border: 1px solid #dbeafe;
+        background: #f8fafc;
+        border-radius: 8px;
+        padding: 0.75rem;
+        margin: 0.75rem 0 1rem;
+    }
+
+    .snapshot-ai-result ul {
+        padding-left: 1.1rem;
+        margin-bottom: 0;
+    }
+
+    @keyframes spin {
+        from { transform: rotate(0deg); }
+        to { transform: rotate(360deg); }
+    }
+
+    .spin {
+        animation: spin 1s linear infinite;
+        display: inline-block;
+    }
     
     .channel-tabs {
         margin-top: 1rem;
@@ -292,6 +315,8 @@
 <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
 <script>
     let currentEvents = [];
+    let currentSnapshotEvent = null;
+    let currentSnapshotAiPollTimer = null;
     
     // 故障类型映射
     const FAULT_NAMES = {
@@ -318,6 +343,19 @@
     const EDGEWIND_FFT_BINS = 2048;
     const EDGEWIND_WAVEFORM_LAST_MS = ((EDGEWIND_WAVEFORM_POINTS - 1) / EDGEWIND_SAMPLE_RATE_HZ) * 1000.0;
     const EDGEWIND_FREQ_RES_HZ = EDGEWIND_SAMPLE_RATE_HZ / (2 * EDGEWIND_FFT_BINS); // 6.25 Hz/bin
+
+    function escapeHtml(s) {
+        return String(s ?? '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    function getCsrfToken() {
+        return document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+    }
     
     // 刷新页面数据
     async function refreshPage() {
@@ -630,6 +668,11 @@
     // 渲染快照详情
     function renderSnapshotDetail(data) {
         const container = document.getElementById('snapshotDetailContent');
+        currentSnapshotEvent = {
+            device_id: data.device_id,
+            fault_code: data.fault_code,
+            timestamp: data.timestamp
+        };
         
         const types = ['before', 'after', 'before_recovery', 'after_recovery'];
         const availableTypes = types.filter(type => data.snapshots[type] && data.snapshots[type].length > 0);
@@ -641,9 +684,21 @@
         
         let html = `
             <div class="mb-3">
-                <h6>设备: ${data.device_id}</h6>
-                <h6>故障: ${data.fault_code} - ${FAULT_NAMES[data.fault_code]}</h6>
-                <h6>时间: ${data.timestamp}</h6>
+                <h6>设备: ${escapeHtml(data.device_id)}</h6>
+                <h6>故障: ${escapeHtml(data.fault_code)} - ${escapeHtml(FAULT_NAMES[data.fault_code] || '未知故障')}</h6>
+                <h6>时间: ${escapeHtml(data.timestamp)}</h6>
+            </div>
+            <div class="snapshot-ai-card">
+                <div class="d-flex justify-content-between align-items-center gap-2">
+                    <div>
+                        <strong class="text-info"><i class="bi bi-stars"></i> DeepSeek 快照证据解释</strong>
+                        <div class="small text-muted" id="snapshot-ai-status">只分析统计摘要、频谱峰值和历史窗口，不发送原始全量帧。</div>
+                    </div>
+                    <button class="btn btn-sm btn-outline-info" id="snapshot-ai-btn" type="button" onclick="requestSnapshotExplanation(false)">
+                        <i class="bi bi-stars"></i> 解释证据
+                    </button>
+                </div>
+                <div class="snapshot-ai-result mt-2" id="snapshot-ai-result" style="display:none;"></div>
             </div>
             <ul class="nav nav-tabs" id="snapshotTabs" role="tablist">
         `;
@@ -733,6 +788,151 @@
                 });
             });
         }, 300);
+    }
+
+    function stopSnapshotAiPolling() {
+        if (currentSnapshotAiPollTimer) {
+            clearInterval(currentSnapshotAiPollTimer);
+            currentSnapshotAiPollTimer = null;
+        }
+    }
+
+    function setSnapshotAiState(disabled, text, status, level = 'muted') {
+        const btn = document.getElementById('snapshot-ai-btn');
+        const statusEl = document.getElementById('snapshot-ai-status');
+        if (btn) {
+            btn.disabled = !!disabled;
+            btn.innerHTML = text || '<i class="bi bi-stars"></i> 解释证据';
+        }
+        if (statusEl && status) {
+            statusEl.className = `small text-${level}`;
+            statusEl.textContent = status;
+        }
+    }
+
+    function friendlyAiError(message) {
+        const value = String(message || '');
+        const lower = value.toLowerCase();
+        if (lower.includes('nameresolutionerror') || lower.includes('failed to resolve')) {
+            return 'DeepSeek API 域名解析失败，请检查当前网络、DNS 或代理/TUN 状态，稍后重试。';
+        }
+        if (lower.includes('request timed out') || lower.includes('read timed out') || lower.includes('connecttimeout')) {
+            return 'DeepSeek API 请求超时，请检查网络连通性，稍后重试。';
+        }
+        if (lower.includes('authentication failed') || lower.includes('http 401') || lower.includes('http 403')) {
+            return 'DeepSeek API 鉴权失败，请检查服务器环境变量中的 DEEPSEEK_API_KEY。';
+        }
+        if (lower.includes('http 429')) {
+            return 'DeepSeek API 当前限流，请稍后重试。';
+        }
+        return value || 'DeepSeek 分析失败。';
+    }
+
+    function renderAiList(title, items) {
+        const list = Array.isArray(items) ? items.filter(Boolean) : [];
+        if (!list.length) return '';
+        return `
+            <div class="mt-2">
+                <div class="fw-bold">${escapeHtml(title)}</div>
+                <ul>${list.map(item => `<li>${escapeHtml(item)}</li>`).join('')}</ul>
+            </div>
+        `;
+    }
+
+    function renderSnapshotAiResult(task) {
+        const resultEl = document.getElementById('snapshot-ai-result');
+        if (!resultEl) return;
+        const result = task?.result || {};
+        const text = task?.result_text || '';
+        if (!text && !result.summary) {
+            resultEl.style.display = 'none';
+            resultEl.textContent = '';
+            return;
+        }
+        const confidence = (typeof result.confidence === 'number') ? result.confidence.toFixed(2) : '未给出';
+        resultEl.style.display = 'block';
+        resultEl.innerHTML = `
+            <div class="fw-bold mb-1">解释摘要</div>
+            <div>${escapeHtml(result.summary || text || '无')}</div>
+            <div class="d-flex flex-wrap gap-2 mt-2">
+                <span class="badge bg-warning text-dark">风险: ${escapeHtml(result.risk_level || '需人工复核')}</span>
+                <span class="badge bg-info text-dark">置信度: ${escapeHtml(confidence)}</span>
+            </div>
+            ${renderAiList('证据', result.evidence)}
+            ${renderAiList('可能根因', result.root_causes)}
+            ${renderAiList('建议步骤', result.actions)}
+            ${renderAiList('需要人工确认', result.human_review)}
+            ${renderAiList('数据不足项', result.data_gaps)}
+        `;
+    }
+
+    async function requestSnapshotExplanation(force = false) {
+        if (!currentSnapshotEvent) {
+            showError('当前没有可分析的快照事件');
+            return;
+        }
+        stopSnapshotAiPolling();
+        setSnapshotAiState(true, '<i class="bi bi-arrow-repeat spin"></i> 提交中...', force ? '正在重新提交 DeepSeek 快照解释...' : '正在提交 DeepSeek 快照解释...', 'info');
+        try {
+            const csrfToken = getCsrfToken();
+            const response = await fetch('/api/ai/snapshots/explanation', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(csrfToken ? { 'X-CSRFToken': csrfToken } : {})
+                },
+                body: JSON.stringify({ ...currentSnapshotEvent, force })
+            });
+            const data = await response.json();
+            if (!response.ok || !data.success) {
+                setSnapshotAiState(false, '<i class="bi bi-stars"></i> 解释证据', data.error || 'DeepSeek 快照解释提交失败', data.status === 'disabled' ? 'muted' : 'danger');
+                return;
+            }
+            renderSnapshotAiResult(data.task);
+            if (data.task?.status === 'succeeded') {
+                setSnapshotAiState(false, '<i class="bi bi-stars"></i> 重新解释', data.status === 'cached' ? '已读取缓存的快照解释。' : 'DeepSeek 快照解释完成。', 'success');
+                return;
+            }
+            setSnapshotAiState(true, '<i class="bi bi-arrow-repeat spin"></i> 分析中...', 'DeepSeek 快照解释已入队...', 'info');
+            pollSnapshotAiTask(data.task?.task_id);
+        } catch (error) {
+            console.error('[Snapshot AI] submit failed:', error);
+            setSnapshotAiState(false, '<i class="bi bi-stars"></i> 解释证据', 'DeepSeek 快照解释请求失败。', 'danger');
+        }
+    }
+
+    function pollSnapshotAiTask(taskId) {
+        if (!taskId) return;
+        let attempts = 0;
+        currentSnapshotAiPollTimer = setInterval(async () => {
+            attempts += 1;
+            if (attempts > 80) {
+                stopSnapshotAiPolling();
+                setSnapshotAiState(false, '<i class="bi bi-stars"></i> 解释证据', 'DeepSeek 快照解释等待超时，后台可能仍在处理。', 'warning');
+                return;
+            }
+            try {
+                const response = await fetch(`/api/ai/tasks/${encodeURIComponent(taskId)}`, { method: 'GET' });
+                const data = await response.json();
+                if (!response.ok || !data.success) throw new Error(data.error || 'task query failed');
+                const task = data.task || {};
+                renderSnapshotAiResult(task);
+                if (task.status === 'queued' || task.status === 'running') {
+                    setSnapshotAiState(true, '<i class="bi bi-arrow-repeat spin"></i> 分析中...', task.status === 'queued' ? 'DeepSeek 快照解释排队中...' : 'DeepSeek 快照解释生成中...', 'info');
+                    return;
+                }
+                stopSnapshotAiPolling();
+                if (task.status === 'succeeded') {
+                    setSnapshotAiState(false, '<i class="bi bi-stars"></i> 重新解释', `DeepSeek 快照解释完成，耗时 ${task.latency_ms || 0} ms。`, 'success');
+                } else {
+                    setSnapshotAiState(false, '<i class="bi bi-stars"></i> 解释证据', friendlyAiError(task.error_message || 'DeepSeek 快照解释失败。'), 'danger');
+                }
+            } catch (error) {
+                console.warn('[Snapshot AI] poll failed:', error);
+                stopSnapshotAiPolling();
+                setSnapshotAiState(false, '<i class="bi bi-stars"></i> 解释证据', 'DeepSeek 快照解释状态读取失败。', 'warning');
+            }
+        }, 1500);
     }
     
     // 渲染通道快照（使用选项卡切换通道）
@@ -1192,6 +1392,14 @@
     
     // 页面加载时初始化
     document.addEventListener('DOMContentLoaded', function() {
+        const modalEl = document.getElementById('snapshotDetailModal');
+        if (modalEl) {
+            modalEl.addEventListener('hidden.bs.modal', function() {
+                stopSnapshotAiPolling();
+                currentSnapshotEvent = null;
+            });
+        }
+
         // 支持从其他页面“带参数跳转”到某个快照事件：
         // /snapshots?device_id=...&fault_code=...&timestamp=YYYY-MM-DD%20HH:MM:SS
         (async () => {

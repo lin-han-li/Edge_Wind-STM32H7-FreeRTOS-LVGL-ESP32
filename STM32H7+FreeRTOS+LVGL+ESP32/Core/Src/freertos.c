@@ -111,6 +111,10 @@ void HAL_Delay(uint32_t Delay)
 #define EW_SUSPEND_ESP_DURING_SYNC 1
 #endif
 
+#ifndef EW_BOOT_QSPI_SYNC_ENABLE
+#define EW_BOOT_QSPI_SYNC_ENABLE 1
+#endif
+
 #ifndef ESP32_SPI_AUTOTEST_ON_BOOT
 #define ESP32_SPI_AUTOTEST_ON_BOOT 0
 #endif
@@ -518,6 +522,7 @@ void Main_Task(void *argument)
 {
   /* USER CODE BEGIN Main_Task */
 
+#if EW_BOOT_QSPI_SYNC_ENABLE
 #ifdef EW_SUSPEND_ESP_DURING_SYNC
   if (EdgeCommHandle) {
     osThreadSuspend(EdgeCommHandle);
@@ -560,6 +565,9 @@ void Main_Task(void *argument)
     osThreadResume(EdgeCommHandle);
     printf("[QSPI_FS] resumed ESP task\r\n");
   }
+#endif
+#else
+  printf("[QSPI_FS] boot sync skipped\r\n");
 #endif
 
   /* Infinite loop */

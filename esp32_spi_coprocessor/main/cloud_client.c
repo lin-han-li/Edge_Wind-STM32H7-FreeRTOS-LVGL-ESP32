@@ -51,10 +51,10 @@ static const char *TAG = "cloud_client";
 #define CLOUD_FULL_RAW_RESPONSE_HEADER_MAX_LEN 768U
 #define CLOUD_FULL_RAW_IO_TIMEOUT_MS 1200U
 #ifndef CLOUD_FULL_RAW_MAX_REUSE
-#define CLOUD_FULL_RAW_MAX_REUSE 96U
+#define CLOUD_FULL_RAW_MAX_REUSE 2048U
 #endif
 #define CLOUD_FULL_RAW_WRITE_BLOCK_ABORT_MS 1200U
-#define CLOUD_FULL_RAW_WRITE_RETRY_MAX 0U
+#define CLOUD_FULL_RAW_WRITE_RETRY_MAX 2U
 #define CLOUD_FULL_RAW_WRITE_RETRY_DELAY_MS 20U
 
 typedef enum {
@@ -405,7 +405,6 @@ static esp_err_t full_raw_write_all(void *ctx,
 #endif
     const size_t write_chunk_limit = report_codec_full_binary_write_chunk_limit(config);
     const uint32_t write_delay_ms = report_codec_full_binary_write_delay_ms(config);
-    const int64_t write_abort_us = esp_timer_get_time() + ((int64_t) CLOUD_FULL_RAW_WRITE_BLOCK_ABORT_MS * 1000LL);
 
     if (sock < 0 || (data == NULL && data_len > 0U)) {
         return ESP_ERR_INVALID_ARG;
@@ -414,23 +413,18 @@ static esp_err_t full_raw_write_all(void *ctx,
     while (offset < data_len) {
         size_t write_len = data_len - offset;
         ssize_t written;
+        int64_t write_start_us;
         if (write_len > write_chunk_limit) {
             write_len = write_chunk_limit;
         }
-        if (raw_deadline_expired(deadline_us) || raw_deadline_expired(write_abort_us)) {
+        if (raw_deadline_expired(deadline_us)) {
             return ESP_ERR_TIMEOUT;
         }
+        write_start_us = esp_timer_get_time();
         written = send(sock, bytes + offset, write_len, 0);
-        if (raw_deadline_expired(write_abort_us)) {
-            ESP_LOGW(TAG,
-                     "full raw body write abort offset=%u len=%u limit_ms=%u",
-                     (unsigned int) offset,
-                     (unsigned int) data_len,
-                     (unsigned int) CLOUD_FULL_RAW_WRITE_BLOCK_ABORT_MS);
-            return ESP_ERR_TIMEOUT;
-        }
         if (written <= 0) {
             int saved_errno = errno;
+            int64_t write_ms = (esp_timer_get_time() - write_start_us) / 1000LL;
 #if CLOUD_FULL_RAW_WRITE_RETRY_MAX == 0
             ESP_LOGW(TAG,
                      "full raw body send failed ret=%d errno=%d offset=%u len=%u",
@@ -440,13 +434,25 @@ static esp_err_t full_raw_write_all(void *ctx,
                      (unsigned int) data_len);
             return ESP_FAIL;
 #else
-            if (retry_count >= CLOUD_FULL_RAW_WRITE_RETRY_MAX) {
+            if (write_ms >= (int64_t) CLOUD_FULL_RAW_WRITE_BLOCK_ABORT_MS) {
                 ESP_LOGW(TAG,
-                         "full raw body send failed ret=%d errno=%d offset=%u len=%u",
+                         "full raw body send stalled ret=%d errno=%d offset=%u len=%u write_ms=%lld limit_ms=%u",
                          (int) written,
                          saved_errno,
                          (unsigned int) offset,
-                         (unsigned int) data_len);
+                         (unsigned int) data_len,
+                         (long long) write_ms,
+                         (unsigned int) CLOUD_FULL_RAW_WRITE_BLOCK_ABORT_MS);
+            }
+            if (retry_count >= CLOUD_FULL_RAW_WRITE_RETRY_MAX) {
+                ESP_LOGW(TAG,
+                         "full raw body send failed ret=%d errno=%d offset=%u len=%u retry=%u/%u",
+                         (int) written,
+                         saved_errno,
+                         (unsigned int) offset,
+                         (unsigned int) data_len,
+                         (unsigned int) retry_count,
+                         (unsigned int) CLOUD_FULL_RAW_WRITE_RETRY_MAX);
                 return ESP_FAIL;
             }
             ++retry_count;

@@ -110,6 +110,64 @@ class WorkOrder(db.Model):
     fault_type = db.Column(db.String(100))
     ai_recommendation = db.Column(db.Text)
     status = db.Column(db.String(20), default='pending')  # pending, processing, fixed
+    ai_analysis_tasks = db.relationship('AIAnalysisTask', backref='work_order', lazy=True, cascade='all, delete-orphan')
+
+
+class AIAnalysisTask(db.Model):
+    """DeepSeek analysis task audit table."""
+    __tablename__ = 'ai_analysis_tasks'
+
+    id = db.Column(db.Integer, primary_key=True)
+    task_id = db.Column(db.String(64), unique=True, nullable=False, index=True)
+    task_type = db.Column(db.String(40), default='work_order_diagnosis', nullable=False, index=True)
+    target_key = db.Column(db.String(200), index=True)
+    target_label = db.Column(db.String(200))
+    work_order_id = db.Column(db.Integer, db.ForeignKey('work_orders.id'), nullable=False, index=True)
+    device_id = db.Column(db.String(100), nullable=False, index=True)
+    fault_code = db.Column(db.String(20), index=True)
+    model = db.Column(db.String(100), nullable=False)
+    prompt_version = db.Column(db.String(40), nullable=False)
+    context_hash = db.Column(db.String(64))
+    sanitized_context_summary = db.Column(db.Text)
+    status = db.Column(db.String(20), default='queued', nullable=False, index=True)
+    result_json = db.Column(db.Text)
+    result_text = db.Column(db.Text)
+    error_message = db.Column(db.Text)
+    latency_ms = db.Column(db.Integer)
+    created_by_user_id = db.Column(db.Integer, db.ForeignKey('users.id'), index=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+    started_at = db.Column(db.DateTime)
+    finished_at = db.Column(db.DateTime)
+
+    def to_dict(self, include_result=True):
+        result = None
+        if include_result and self.result_json:
+            try:
+                result = json.loads(self.result_json)
+            except Exception:
+                result = None
+        return {
+            'id': self.id,
+            'task_id': self.task_id,
+            'task_type': self.task_type,
+            'target_key': self.target_key,
+            'target_label': self.target_label,
+            'work_order_id': self.work_order_id,
+            'device_id': self.device_id,
+            'fault_code': self.fault_code,
+            'model': self.model,
+            'prompt_version': self.prompt_version,
+            'context_hash': self.context_hash,
+            'status': self.status,
+            'result': result,
+            'result_text': self.result_text if include_result else None,
+            'error_message': self.error_message,
+            'latency_ms': self.latency_ms,
+            'created_by_user_id': self.created_by_user_id,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'started_at': self.started_at.isoformat() if self.started_at else None,
+            'finished_at': self.finished_at.isoformat() if self.finished_at else None,
+        }
 
 
 class SystemConfig(db.Model):

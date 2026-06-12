@@ -173,11 +173,16 @@ def _select_async_mode():
     app.logger.info(f"FORCE_ASYNC_MODE={force}")
 
     def _try_eventlet():
+        # Keep stdlib socket/ssl unpatched. Patching socket also patches ssl in
+        # this eventlet version, which breaks outgoing DeepSeek HTTPS requests
+        # after Flask/urllib imports. We still use eventlet as the SocketIO
+        # async engine, but leave normal HTTPS clients on the OS network stack.
+        os.environ.setdefault("EVENTLET_NO_GREENDNS", "yes")
         import eventlet  # noqa: F401
         # Windows + SQLAlchemy 场景下，thread 相关 monkey_patch 有概率导致锁语义差异，
         # 进而触发 “cannot notify on un-acquired lock”。
         # 这里禁用 thread patch，只保留 socket/select/time 等 I/O 相关 patch。
-        eventlet.monkey_patch(thread=False)
+        eventlet.monkey_patch(socket=False, select=True, time=True, thread=False)
         return 'eventlet'
 
     def _try_gevent():
@@ -286,6 +291,7 @@ db_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="DB-Worker")
 from edgewind.routes.auth import auth_bp
 from edgewind.routes.pages import pages_bp
 from edgewind.routes.api import api_bp, init_api_blueprint, register_device, upload_data, node_heartbeat, node_full_frame_bin, delete_node_history
+from edgewind.routes.ai import ai_bp, init_ai_blueprint
 
 # 初始化API蓝图
 init_api_blueprint(
@@ -298,11 +304,13 @@ init_api_blueprint(
     node_downsample_commands,
     node_upload_points_commands,
 )
+init_ai_blueprint(app)
 
 # 注册蓝图
 app.register_blueprint(auth_bp)
 app.register_blueprint(pages_bp)
 app.register_blueprint(api_bp)
+app.register_blueprint(ai_bp)
 
 app.logger.info("所有路由蓝图已注册")
 
@@ -323,6 +331,42 @@ app.logger.info("WebSocket事件处理器已初始化")
 # ==================== 数据库初始化 ====================
 with app.app_context():
     db.create_all()
+    try:
+        from datetime import datetime
+        from sqlalchemy import text
+        from edgewind.models import AIAnalysisTask
+        if str(db.engine.url).startswith('sqlite'):
+            cols = {
+                row[1]
+                for row in db.session.execute(text("PRAGMA table_info(ai_analysis_tasks)")).fetchall()
+            }
+            ai_schema_changed = False
+            if 'task_type' not in cols:
+                db.session.execute(text(
+                    "ALTER TABLE ai_analysis_tasks "
+                    "ADD COLUMN task_type VARCHAR(40) NOT NULL DEFAULT 'work_order_diagnosis'"
+                ))
+                ai_schema_changed = True
+            if 'target_key' not in cols:
+                db.session.execute(text("ALTER TABLE ai_analysis_tasks ADD COLUMN target_key VARCHAR(200)"))
+                ai_schema_changed = True
+            if 'target_label' not in cols:
+                db.session.execute(text("ALTER TABLE ai_analysis_tasks ADD COLUMN target_label VARCHAR(200)"))
+                ai_schema_changed = True
+            if ai_schema_changed:
+                db.session.commit()
+                app.logger.info("AIAnalysisTask schema has been extended for typed AI tasks")
+        stale_ai_tasks = AIAnalysisTask.query.filter(AIAnalysisTask.status.in_(['queued', 'running'])).update({
+            'status': 'failed',
+            'error_message': 'server restarted before AI analysis finished',
+            'finished_at': datetime.utcnow(),
+        }, synchronize_session=False)
+        if stale_ai_tasks:
+            db.session.commit()
+            app.logger.warning("已标记 %s 个重启前未完成的 AI 任务为失败", stale_ai_tasks)
+    except Exception as e:
+        db.session.rollback()
+        app.logger.warning("AI 任务恢复检查失败: %s", e)
     
     # 创建默认管理员账户
     admin_username = (os.environ.get('EDGEWIND_ADMIN_USERNAME') or 'Edge_Wind').strip() or 'Edge_Wind'
