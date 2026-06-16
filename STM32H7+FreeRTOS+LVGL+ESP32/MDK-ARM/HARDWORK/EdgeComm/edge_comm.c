@@ -15,6 +15,7 @@
 #include "SPI_AD7606.h"
 #include "ad_acq_buffers.h"
 #include "edgewind_ai.h"
+#include "edgewind_ai_preprocess_params.h"
 #include "edgewind_units.h"
 #include "ESP32SPI/esp32_spi_debug.h"
 #include "usart.h"
@@ -30,6 +31,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdarg.h>
+#include <math.h>
 
 #ifndef EW_USE_ESP32_SPI_UI
 #define EW_USE_ESP32_SPI_UI 1
@@ -61,6 +63,13 @@
 #ifndef ESP32_SPI_RESULT_OK
 #define ESP32_SPI_RESULT_OK 0
 #endif
+
+#ifdef EDGEWIND_AI_RAWLITE_SIZE
+#define ESP_AI_HAS_RAWLITE 1
+#else
+#define ESP_AI_HAS_RAWLITE 0
+#endif
+
 #ifndef ESP32_SPI_NACK_BUSY
 #define ESP32_SPI_NACK_BUSY 5U
 #endif
@@ -121,6 +130,15 @@
 #endif
 #ifndef EDGEWIND_AI_STATS_LOG_MS
 #define EDGEWIND_AI_STATS_LOG_MS 5000U
+#endif
+#ifndef EDGEWIND_AI_GOLDEN_SELFTEST
+#define EDGEWIND_AI_GOLDEN_SELFTEST 0
+#endif
+#ifndef EDGEWIND_AI_GOLDEN_MAX_VECTORS
+#define EDGEWIND_AI_GOLDEN_MAX_VECTORS 64U
+#endif
+#ifndef EDGEWIND_AI_GOLDEN_DIR
+#define EDGEWIND_AI_GOLDEN_DIR "0:/ai_golden"
 #endif
 #ifndef EDGEWIND_DSP_SNAPSHOT_LOG_MS
 #define EDGEWIND_DSP_SNAPSHOT_LOG_MS 5000U
@@ -241,6 +259,7 @@ static void ESP_Log(const char *format, ...);
 static UART_HandleTypeDef *ESP_GetLogUart(void);
 static void ESP_SetFaultCode(const char *code);
 static void ESP_Console_HandleLine(char *line);
+static void ESP_AI_GoldenSelfTest(void);
 static void StrTrimInPlace(char *s);
 void ESP_UI_Internal_OnLog(const char *line);
 static void ESP_SetServerReportMode(uint8_t full);
@@ -305,6 +324,19 @@ static uint8_t ESP_AI_SelectReportedClass(const EdgeWind_AI_Result_t *result)
     return g_ai_reported_class;
 }
 
+static int ESP_AI_ProbPermille(float p)
+{
+    if ((p != p) || (p < 0.0f))
+    {
+        return 0;
+    }
+    if (p > 1.0f)
+    {
+        p = 1.0f;
+    }
+    return (int)((p * 1000.0f) + 0.5f);
+}
+
 static void ESP_AI_UpdateFaultCode(const float analog_v[4][AD_ACQ_POINTS])
 {
     static uint32_t last_ai_log_tick = 0U;
@@ -326,10 +358,18 @@ static void ESP_AI_UpdateFaultCode(const float analog_v[4][AD_ACQ_POINTS])
     ret = EdgeWind_AI_RunOnAnalogWindow(analog_v, &result);
     if (ret != 0)
     {
+        if ((g_ai_fault_code_initialized == 0U) || (strncmp(g_fault_code, "E00", 3U) != 0))
+        {
+            strncpy(g_fault_code, "E00", sizeof(g_fault_code) - 1U);
+            g_fault_code[sizeof(g_fault_code) - 1U] = '\0';
+            g_ai_reported_class = 0U;
+            g_ai_fault_code_initialized = 1U;
+            ESP_Log("[AI] runtime error ret=%d; fallback report=E00\r\n", ret);
+        }
         if ((uint32_t)(now_tick - last_ai_log_tick) >= EDGEWIND_AI_STATS_LOG_MS)
         {
             last_ai_log_tick = now_tick;
-            ESP_Log("[AI] runtime error ret=%d; keep fault=%s\r\n", ret, g_fault_code);
+            ESP_Log("[AI] runtime error ret=%d; report=%s\r\n", ret, g_fault_code);
         }
         return;
     }
@@ -347,12 +387,19 @@ static void ESP_AI_UpdateFaultCode(const float analog_v[4][AD_ACQ_POINTS])
     if ((uint32_t)(now_tick - last_ai_log_tick) >= EDGEWIND_AI_STATS_LOG_MS)
     {
         last_ai_log_tick = now_tick;
-        ESP_Log("[AI] pred=%s/%s conf=%d.%03d report=%s feat=%lums infer=%lums total=%lums\r\n",
+        ESP_Log("[AI] pred=%s/%s conf=%d.%03d report=%s ppermil=[%d,%d,%d,%d,%d,%d,%d] feat=%lums infer=%lums total=%lums\r\n",
                 result.fault_code,
                 EdgeWind_AI_ClassName(result.class_id),
                 (int)result.confidence,
                 (int)((result.confidence - (float)((int)result.confidence)) * 1000.0f),
                 reported_code,
+                ESP_AI_ProbPermille(result.probabilities[0]),
+                ESP_AI_ProbPermille(result.probabilities[1]),
+                ESP_AI_ProbPermille(result.probabilities[2]),
+                ESP_AI_ProbPermille(result.probabilities[3]),
+                ESP_AI_ProbPermille(result.probabilities[4]),
+                ESP_AI_ProbPermille(result.probabilities[5]),
+                ESP_AI_ProbPermille(result.probabilities[6]),
                 (unsigned long)result.feature_ms,
                 (unsigned long)result.inference_ms,
                 (unsigned long)result.total_ms);
@@ -382,6 +429,20 @@ static bool ESP_AcquisitionWindowAllZero(float (*src)[WAVEFORM_POINTS])
 #ifndef AXI_SRAM_SECTION
 #define AXI_SRAM_SECTION __attribute__((section(".axi_sram")))
 #endif
+
+typedef struct
+{
+    float dwt[EDGEWIND_AI_DWT_SIZE];
+    float feat[EDGEWIND_AI_FEAT_SIZE];
+#if ESP_AI_HAS_RAWLITE
+    float rawlite[EDGEWIND_AI_RAWLITE_SIZE];
+#endif
+    float spec[EDGEWIND_AI_SPEC_SIZE];
+    float expected[EDGEWIND_AI_CLASS_COUNT];
+} ESP_AI_GoldenBuffers_t;
+
+static ESP_AI_GoldenBuffers_t g_ai_golden_expected AXI_SRAM_SECTION;
+static ESP_AI_GoldenBuffers_t g_ai_golden_generated AXI_SRAM_SECTION;
 
 Channel_Data_t node_channels[4] AXI_SRAM_SECTION;
 volatile uint8_t g_esp_ready = 0U;
@@ -1136,6 +1197,301 @@ static bool esp_sd_try_mount(uint32_t wait_ms)
     }
 
     return (f_mount(&SDFatFS, (TCHAR const *)SDPath, 1) == FR_OK);
+}
+
+static FRESULT ESP_AI_GoldenReadFloats(const char *path, float *dst, uint32_t count)
+{
+    FIL fil;
+    UINT br = 0U;
+    FRESULT res;
+    UINT need = (UINT)(count * sizeof(float));
+
+    if ((path == NULL) || (dst == NULL))
+    {
+        return FR_INVALID_PARAMETER;
+    }
+    res = f_open(&fil, path, FA_READ);
+    if (res != FR_OK)
+    {
+        return res;
+    }
+    res = f_read(&fil, dst, need, &br);
+    (void)f_close(&fil);
+    if (res != FR_OK)
+    {
+        return res;
+    }
+    return (br == need) ? FR_OK : FR_INT_ERR;
+}
+
+static FRESULT ESP_AI_GoldenLoadRawWindow(const char *path, float out[4][AD_ACQ_POINTS])
+{
+    FIL fil;
+    FRESULT res;
+    int16_t tmp[128];
+    UINT br = 0U;
+
+    if ((path == NULL) || (out == NULL))
+    {
+        return FR_INVALID_PARAMETER;
+    }
+    res = f_open(&fil, path, FA_READ);
+    if (res != FR_OK)
+    {
+        return res;
+    }
+
+    for (uint32_t ch = 0U; ch < 4U; ++ch)
+    {
+        uint32_t off = 0U;
+        while (off < AD_ACQ_POINTS)
+        {
+            uint32_t n = AD_ACQ_POINTS - off;
+            if (n > (sizeof(tmp) / sizeof(tmp[0])))
+            {
+                n = sizeof(tmp) / sizeof(tmp[0]);
+            }
+            res = f_read(&fil, tmp, (UINT)(n * sizeof(tmp[0])), &br);
+            if ((res != FR_OK) || (br != (UINT)(n * sizeof(tmp[0]))))
+            {
+                (void)f_close(&fil);
+                return (res != FR_OK) ? res : FR_INT_ERR;
+            }
+            for (uint32_t i = 0U; i < n; ++i)
+            {
+                out[ch][off + i] = ((float)tmp[i]) * 0.001f;
+            }
+            off += n;
+        }
+    }
+
+    (void)f_close(&fil);
+    return FR_OK;
+}
+
+static uint8_t ESP_AI_GoldenArgMax(const float *p, uint32_t count)
+{
+    uint8_t best = 0U;
+    float best_v = -3.402823466e+38F;
+    for (uint32_t i = 0U; i < count; ++i)
+    {
+        float v = p[i];
+        if (v > best_v)
+        {
+            best_v = v;
+            best = (uint8_t)i;
+        }
+    }
+    return best;
+}
+
+static float ESP_AI_GoldenMaxAbsDiff(const float *a, const float *b, uint32_t count)
+{
+    float max_diff = 0.0f;
+    for (uint32_t i = 0U; i < count; ++i)
+    {
+        float d = fabsf(a[i] - b[i]);
+        if (d > max_diff)
+        {
+            max_diff = d;
+        }
+    }
+    return max_diff;
+}
+
+static void ESP_AI_GoldenLogResult(const char *tag,
+                                   uint32_t id,
+                                   const EdgeWind_AI_Result_t *result,
+                                   const float *expected,
+                                   float max_prob_diff,
+                                   float feat_diff,
+                                   float dwt_diff,
+                                   float rawlite_diff,
+                                   float spec_diff)
+{
+    uint8_t expected_id = ESP_AI_GoldenArgMax(expected, EDGEWIND_AI_CLASS_COUNT);
+    ESP_Log("[AI_GOLDEN_%s] id=%lu expected=%s pred=%s conf=%d.%03d max_prob_diff=%d.%06d input_diff=[feat:%d.%06d,dwt:%d.%06d,rawlite:%d.%06d,spec:%d.%06d] ppermil=[%d,%d,%d,%d,%d,%d,%d]\r\n",
+            tag,
+            (unsigned long)id,
+            EdgeWind_AI_ClassCode(expected_id),
+            result->fault_code,
+            (int)result->confidence,
+            (int)((result->confidence - (float)((int)result->confidence)) * 1000.0f),
+            (int)max_prob_diff,
+            (int)((max_prob_diff - (float)((int)max_prob_diff)) * 1000000.0f),
+            (int)feat_diff,
+            (int)((feat_diff - (float)((int)feat_diff)) * 1000000.0f),
+            (int)dwt_diff,
+            (int)((dwt_diff - (float)((int)dwt_diff)) * 1000000.0f),
+            (int)rawlite_diff,
+            (int)((rawlite_diff - (float)((int)rawlite_diff)) * 1000000.0f),
+            (int)spec_diff,
+            (int)((spec_diff - (float)((int)spec_diff)) * 1000000.0f),
+            ESP_AI_ProbPermille(result->probabilities[0]),
+            ESP_AI_ProbPermille(result->probabilities[1]),
+            ESP_AI_ProbPermille(result->probabilities[2]),
+            ESP_AI_ProbPermille(result->probabilities[3]),
+            ESP_AI_ProbPermille(result->probabilities[4]),
+            ESP_AI_ProbPermille(result->probabilities[5]),
+            ESP_AI_ProbPermille(result->probabilities[6]));
+}
+
+static void ESP_AI_GoldenSelfTest(void)
+{
+    char path[96];
+    uint32_t count = 0U;
+    uint32_t direct_ok = 0U;
+    uint32_t raw_ok = 0U;
+
+    if (EDGEWIND_AI_GOLDEN_SELFTEST == 0)
+    {
+        ESP_Log("[AI_GOLDEN] disabled. Rebuild with EDGEWIND_AI_GOLDEN_SELFTEST=1 to run SD golden vectors.\r\n");
+        return;
+    }
+
+    if (!esp_sd_try_mount(500U))
+    {
+        ESP_Log("[AI_GOLDEN] SD mount failed; expected %s/raw_00.bin\r\n", EDGEWIND_AI_GOLDEN_DIR);
+        return;
+    }
+
+    ESP_Log("[AI_GOLDEN] start dir=%s max=%lu\r\n", EDGEWIND_AI_GOLDEN_DIR, (unsigned long)EDGEWIND_AI_GOLDEN_MAX_VECTORS);
+    for (uint32_t id = 0U; id < EDGEWIND_AI_GOLDEN_MAX_VECTORS; ++id)
+    {
+        EdgeWind_AI_Result_t result;
+        FRESULT res;
+        int ret;
+        float max_prob_diff;
+        float feat_diff = 0.0f;
+        float dwt_diff = 0.0f;
+        float rawlite_diff = 0.0f;
+        float spec_diff = 0.0f;
+        uint8_t expected_id;
+        uint8_t inputs_loaded = 0U;
+
+        (void)snprintf(path, sizeof(path), "%s/raw_%02lu.bin", EDGEWIND_AI_GOLDEN_DIR, (unsigned long)id);
+        res = ESP_AI_GoldenLoadRawWindow(path, ADSA_B);
+        if (res != FR_OK)
+        {
+            if (id == 0U)
+            {
+                ESP_Log("[AI_GOLDEN] first raw missing/unreadable: %s res=%d\r\n", path, (int)res);
+            }
+            break;
+        }
+
+        (void)snprintf(path, sizeof(path), "%s/expected_%02lu.bin", EDGEWIND_AI_GOLDEN_DIR, (unsigned long)id);
+        res = ESP_AI_GoldenReadFloats(path, g_ai_golden_expected.expected, EDGEWIND_AI_CLASS_COUNT);
+        if (res != FR_OK)
+        {
+            ESP_Log("[AI_GOLDEN] expected read failed id=%lu path=%s res=%d\r\n", (unsigned long)id, path, (int)res);
+            break;
+        }
+        expected_id = ESP_AI_GoldenArgMax(g_ai_golden_expected.expected, EDGEWIND_AI_CLASS_COUNT);
+
+        (void)snprintf(path, sizeof(path), "%s/input_dwt_%02lu.bin", EDGEWIND_AI_GOLDEN_DIR, (unsigned long)id);
+        res = ESP_AI_GoldenReadFloats(path, g_ai_golden_expected.dwt, EDGEWIND_AI_DWT_SIZE);
+        if (res == FR_OK)
+        {
+            (void)snprintf(path, sizeof(path), "%s/input_feat_%02lu.bin", EDGEWIND_AI_GOLDEN_DIR, (unsigned long)id);
+            res = ESP_AI_GoldenReadFloats(path, g_ai_golden_expected.feat, EDGEWIND_AI_FEAT_SIZE);
+        }
+#if ESP_AI_HAS_RAWLITE
+        if (res == FR_OK)
+        {
+            (void)snprintf(path, sizeof(path), "%s/input_rawlite_%02lu.bin", EDGEWIND_AI_GOLDEN_DIR, (unsigned long)id);
+            res = ESP_AI_GoldenReadFloats(path, g_ai_golden_expected.rawlite, EDGEWIND_AI_RAWLITE_SIZE);
+        }
+#endif
+        if (res == FR_OK)
+        {
+            (void)snprintf(path, sizeof(path), "%s/input_spec_%02lu.bin", EDGEWIND_AI_GOLDEN_DIR, (unsigned long)id);
+            res = ESP_AI_GoldenReadFloats(path, g_ai_golden_expected.spec, EDGEWIND_AI_SPEC_SIZE);
+        }
+        if (res == FR_OK)
+        {
+            inputs_loaded = 1U;
+            ret = EdgeWind_AI_DebugRunNormalizedInputs(g_ai_golden_expected.dwt,
+                                                       g_ai_golden_expected.feat,
+#if ESP_AI_HAS_RAWLITE
+                                                       g_ai_golden_expected.rawlite,
+#else
+                                                       NULL,
+#endif
+                                                       g_ai_golden_expected.spec,
+                                                       &result);
+            if (ret == 0)
+            {
+                max_prob_diff = ESP_AI_GoldenMaxAbsDiff(result.probabilities, g_ai_golden_expected.expected, EDGEWIND_AI_CLASS_COUNT);
+                if ((result.class_id == expected_id) && (max_prob_diff <= 0.02f))
+                {
+                    direct_ok++;
+                }
+                ESP_AI_GoldenLogResult("DIRECT", id, &result, g_ai_golden_expected.expected, max_prob_diff, 0.0f, 0.0f, 0.0f, 0.0f);
+            }
+            else
+            {
+                ESP_Log("[AI_GOLDEN_DIRECT] id=%lu ret=%d\r\n", (unsigned long)id, ret);
+            }
+        }
+        else
+        {
+            ESP_Log("[AI_GOLDEN_DIRECT] id=%lu normalized input missing res=%d; skip direct check\r\n", (unsigned long)id, (int)res);
+        }
+
+        ret = EdgeWind_AI_DebugExtractInputs((const float (*)[AD_ACQ_POINTS])ADSA_B,
+                                             g_ai_golden_generated.dwt,
+                                             g_ai_golden_generated.feat,
+#if ESP_AI_HAS_RAWLITE
+                                             g_ai_golden_generated.rawlite,
+#else
+                                             NULL,
+#endif
+                                             g_ai_golden_generated.spec);
+        if (ret != 0)
+        {
+            ESP_Log("[AI_GOLDEN_RAW] id=%lu extract ret=%d\r\n", (unsigned long)id, ret);
+            break;
+        }
+
+        ret = EdgeWind_AI_RunOnAnalogWindow((const float (*)[AD_ACQ_POINTS])ADSA_B, &result);
+        if (ret != 0)
+        {
+            ESP_Log("[AI_GOLDEN_RAW] id=%lu run ret=%d\r\n", (unsigned long)id, ret);
+            break;
+        }
+
+        max_prob_diff = ESP_AI_GoldenMaxAbsDiff(result.probabilities, g_ai_golden_expected.expected, EDGEWIND_AI_CLASS_COUNT);
+        if ((result.class_id == expected_id) && (max_prob_diff <= 0.02f))
+        {
+            raw_ok++;
+        }
+        if (inputs_loaded != 0U)
+        {
+            feat_diff = ESP_AI_GoldenMaxAbsDiff(g_ai_golden_generated.feat, g_ai_golden_expected.feat, EDGEWIND_AI_FEAT_SIZE);
+            dwt_diff = ESP_AI_GoldenMaxAbsDiff(g_ai_golden_generated.dwt, g_ai_golden_expected.dwt, EDGEWIND_AI_DWT_SIZE);
+#if ESP_AI_HAS_RAWLITE
+            rawlite_diff = ESP_AI_GoldenMaxAbsDiff(g_ai_golden_generated.rawlite, g_ai_golden_expected.rawlite, EDGEWIND_AI_RAWLITE_SIZE);
+#else
+            rawlite_diff = 0.0f;
+#endif
+            spec_diff = ESP_AI_GoldenMaxAbsDiff(g_ai_golden_generated.spec, g_ai_golden_expected.spec, EDGEWIND_AI_SPEC_SIZE);
+        }
+        ESP_AI_GoldenLogResult("RAW",
+                               id,
+                               &result,
+                               g_ai_golden_expected.expected,
+                               max_prob_diff,
+                               feat_diff,
+                               dwt_diff,
+                               rawlite_diff,
+                               spec_diff);
+        count++;
+    }
+    ESP_Log("[AI_GOLDEN] done count=%lu direct_ok=%lu raw_ok=%lu threshold=0.02\r\n",
+            (unsigned long)count,
+            (unsigned long)direct_ok,
+            (unsigned long)raw_ok);
 }
 
 static FRESULT esp_cfg_ensure_dir(void)
@@ -1971,8 +2327,15 @@ static void ESP_Console_HandleLine(char *line)
         return;
     }
 
+    if (strcmp(line, "fullstat") == 0 || strcmp(line, "FULLSTAT") == 0)
     {
         ESP_SPI_FullPrintStatus();
+        return;
+    }
+
+    if (strcmp(line, "aigolden") == 0 || strcmp(line, "AIGOLDEN") == 0)
+    {
+        ESP_AI_GoldenSelfTest();
         return;
     }
 
@@ -1981,6 +2344,7 @@ static void ESP_Console_HandleLine(char *line)
         ESP_Log("[控制台] 可用命令：\r\n");
         ESP_Log("  - auto/wifi/tcp/reg/report : SPI cloud upload control\r\n");
         ESP_Log("  - spiping/fullstat/full1/full10/fullon/fulloff : SPI diagnostics\r\n");
+        ESP_Log("  - aigolden : run SD AI golden-vector alignment when compiled in\r\n");
         ESP_Log("  - E00/E01/E02... ：切换上报故障码\r\n");
         ESP_Log("  - help 或 ?      ：显示帮助\r\n");
         return;

@@ -18,6 +18,9 @@ NEXT_AI_HANDOFF_*.md
 __pycache__/
 *.py[cod]
 .pytest_cache/
+venv/
+venv*/
+.venv/
 
 # OS/editor
 Thumbs.db
@@ -32,7 +35,13 @@ Thumbs.db
 # Local validation captures
 test_logs/
 
-# Local JavaScript dependencies and generated work outputs
+# Local dependencies, build outputs, and generated work outputs
 node_modules/
 outputs/
 report_work/
+Edge_Wind_System/venv*/
+esp32_spi_coprocessor/build/
+STM32H7+FreeRTOS+LVGL+ESP32/Core/Inc/Backup/
+STM32H7+FreeRTOS+LVGL+ESP32/Core/Src/Backup/
+STM32H7+FreeRTOS+LVGL+ESP32/MDK-ARM/DebugConfig/
+STM32H7+FreeRTOS+LVGL+ESP32/MDK-ARM/STM32H750XBH6/

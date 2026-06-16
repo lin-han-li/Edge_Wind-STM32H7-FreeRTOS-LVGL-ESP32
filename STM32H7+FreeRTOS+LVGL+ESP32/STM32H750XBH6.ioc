@@ -1066,7 +1066,7 @@ STMicroelectronics.X-CUBE-AI.10.2.0.IPParameters=HeapSize,StackSize,ModelName-dc
 STMicroelectronics.X-CUBE-AI.10.2.0.InternalRamActivationBufferMaxSize=AI_NETWORK_DATA_ACTIVATIONS_SIZE
 STMicroelectronics.X-CUBE-AI.10.2.0.ExternalRamActivationBufferMaxSize=524288
 STMicroelectronics.X-CUBE-AI.10.2.0.ExternalRamActivationBufferStartAddr=0xC0600000
-STMicroelectronics.X-CUBE-AI.10.2.0.LatestDirectoryUsed-dc39c142f5a094e7d1a7c571dd2a85498169e191eaba9ff1da70ae515eace6f7=C\:\\Users\\pengjianzhong\\Desktop\\MY_Project\\EdgeWind_AI_Training\\models\\dataset_v62_startup_accuracy_multiscale_torch_cuda_20260513_121606_keras_tflite
+STMicroelectronics.X-CUBE-AI.10.2.0.LatestDirectoryUsed-dc39c142f5a094e7d1a7c571dd2a85498169e191eaba9ff1da70ae515eace6f7=C\:\\Users\\pengjianzhong\\Desktop\\MY_Project\\EdgeWind_AI_Training\\stm32_deploy_packages\\dataset_v68_wind_sensor_public_fused_single_v6_single7_20260616_031448\\model
 STMicroelectronics.X-CUBE-AI.10.2.0.MaximumNumberOfInputLayer=3
 STMicroelectronics.X-CUBE-AI.10.2.0.MaximumNumberOfOutputLayer=1
 STMicroelectronics.X-CUBE-AI.10.2.0.MaximumSizeOfInputLayer=1,1,1
@@ -1080,7 +1080,7 @@ STMicroelectronics.X-CUBE-AI.10.2.0.ModelMacc-dc39c142f5a094e7d1a7c571dd2a854981
 STMicroelectronics.X-CUBE-AI.10.2.0.ModelName-dc39c142f5a094e7d1a7c571dd2a85498169e191eaba9ff1da70ae515eace6f7=network
 STMicroelectronics.X-CUBE-AI.10.2.0.ModelNameList=network
 STMicroelectronics.X-CUBE-AI.10.2.0.ModelRamOccupation-dc39c142f5a094e7d1a7c571dd2a85498169e191eaba9ff1da70ae515eace6f7=304028
-STMicroelectronics.X-CUBE-AI.10.2.0.ModelStructureFile-dc39c142f5a094e7d1a7c571dd2a85498169e191eaba9ff1da70ae515eace6f7=C\:\\Users\\pengjianzhong\\Desktop\\MY_Project\\EdgeWind_AI_Training\\models\\dataset_v62_startup_accuracy_multiscale_torch_cuda_20260513_121606_keras_tflite\\model_float32.tflite
+STMicroelectronics.X-CUBE-AI.10.2.0.ModelStructureFile-dc39c142f5a094e7d1a7c571dd2a85498169e191eaba9ff1da70ae515eace6f7=C\:\\Users\\pengjianzhong\\Desktop\\MY_Project\\EdgeWind_AI_Training\\stm32_deploy_packages\\dataset_v68_wind_sensor_public_fused_single_v6_single7_20260616_031448\\model\\model_float32.tflite
 STMicroelectronics.X-CUBE-AI.10.2.0.ModelType-dc39c142f5a094e7d1a7c571dd2a85498169e191eaba9ff1da70ae515eace6f7=STM32Cube.AI MCU runtime
 STMicroelectronics.X-CUBE-AI.10.2.0.ReadyForCodeGeneration=true
 STMicroelectronics.X-CUBE-AI.10.2.0.StackSize=0x2000

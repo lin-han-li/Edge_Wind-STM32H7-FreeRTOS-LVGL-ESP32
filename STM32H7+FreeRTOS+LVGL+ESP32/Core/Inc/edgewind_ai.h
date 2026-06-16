@@ -25,6 +25,16 @@ typedef struct
 
 int EdgeWind_AI_Init(void);
 int EdgeWind_AI_RunOnAnalogWindow(const float analog_v[4][AD_ACQ_POINTS], EdgeWind_AI_Result_t *result);
+int EdgeWind_AI_DebugExtractInputs(const float analog_v[4][AD_ACQ_POINTS],
+                                   float *dwt_norm,
+                                   float *feat_norm,
+                                   float *rawlite_norm,
+                                   float *spec_norm);
+int EdgeWind_AI_DebugRunNormalizedInputs(const float *dwt_norm,
+                                         const float *feat_norm,
+                                         const float *rawlite_norm,
+                                         const float *spec_norm,
+                                         EdgeWind_AI_Result_t *result);
 const char *EdgeWind_AI_ClassCode(uint8_t class_id);
 const char *EdgeWind_AI_ClassName(uint8_t class_id);
 

@@ -36,6 +36,13 @@
 #define EDGEWIND_AI_ZERO_D_MAX_V          (0.08f)
 #define EDGEWIND_AI_ZERO_AB_MEAN_V        (0.075f)
 #define EDGEWIND_AI_ZERO_CD_MEAN_V        (0.045f)
+#define EDGEWIND_AI_RAWLITE_DIFF_COUNT    (EDGEWIND_AI_WINDOW_POINTS - 1U)
+
+#ifdef EDGEWIND_AI_RAWLITE_SIZE
+#define EDGEWIND_AI_HAS_RAWLITE           (1U)
+#else
+#define EDGEWIND_AI_HAS_RAWLITE           (0U)
+#endif
 
 #ifndef AXI_SRAM_SECTION
 #define AXI_SRAM_SECTION __attribute__((section(".axi_sram")))
@@ -107,6 +114,8 @@ static float s_fft_output[EDGEWIND_AI_WINDOW_POINTS] AXI_SRAM_SECTION DMA_ALIGN3
 static float s_dwt_a[EDGEWIND_AI_WAVELET_BLOCK_POINTS] AXI_SRAM_SECTION DMA_ALIGN32;
 static float s_dwt_next[520] AXI_SRAM_SECTION DMA_ALIGN32;
 static float s_dwt_detail[520] AXI_SRAM_SECTION DMA_ALIGN32;
+static float s_quantile_values[EDGEWIND_AI_WINDOW_POINTS] AXI_SRAM_SECTION DMA_ALIGN32;
+static float s_quantile_work[EDGEWIND_AI_WINDOW_POINTS] AXI_SRAM_SECTION DMA_ALIGN32;
 
 static float EdgeWind_AI_SafeFloat(float value)
 {
@@ -241,9 +250,15 @@ int EdgeWind_AI_Init(void)
 
     EdgeWind_AI_EnableCycleCounter();
     s_ai_ready = 1U;
+#if (EDGEWIND_AI_HAS_RAWLITE != 0U)
+    printf("[AI] runtime ready act=0x%08lX size=%lu input=dwt/feat/rawlite/spec unit=train_mV\r\n",
+           (unsigned long)EDGEWIND_AI_ACTIVATION_ADDR,
+           (unsigned long)AI_NETWORK_DATA_ACTIVATIONS_SIZE);
+#else
     printf("[AI] runtime ready act=0x%08lX size=%lu input=dwt/feat/spec unit=train_mV\r\n",
            (unsigned long)EDGEWIND_AI_ACTIVATION_ADDR,
            (unsigned long)AI_NETWORK_DATA_ACTIVATIONS_SIZE);
+#endif
     return 0;
 }
 
@@ -265,6 +280,104 @@ static float EdgeWind_AI_FftMagAt(uint16_t bin)
     re = s_fft_output[(uint32_t)bin * 2U];
     im = s_fft_output[((uint32_t)bin * 2U) + 1U];
     return sqrtf((re * re) + (im * im)) * scale;
+}
+
+static void EdgeWind_AI_SwapFloat(float *a, float *b)
+{
+    float t = *a;
+    *a = *b;
+    *b = t;
+}
+
+static float EdgeWind_AI_SelectKth(float *data, uint32_t count, uint32_t kth)
+{
+    uint32_t left = 0U;
+    uint32_t right = count - 1U;
+
+    while (left < right)
+    {
+        uint32_t pivot_idx = left + ((right - left) >> 1U);
+        float pivot;
+        uint32_t store = left;
+
+        EdgeWind_AI_SwapFloat(&data[pivot_idx], &data[right]);
+        pivot = data[right];
+        for (uint32_t i = left; i < right; ++i)
+        {
+            if (data[i] < pivot)
+            {
+                EdgeWind_AI_SwapFloat(&data[store], &data[i]);
+                store++;
+            }
+        }
+        EdgeWind_AI_SwapFloat(&data[right], &data[store]);
+
+        if (kth == store)
+        {
+            return data[store];
+        }
+        if (kth < store)
+        {
+            if (store == 0U)
+            {
+                return data[0];
+            }
+            right = store - 1U;
+        }
+        else
+        {
+            left = store + 1U;
+        }
+    }
+
+    return data[left];
+}
+
+static float EdgeWind_AI_Quantile(const float *values, uint32_t count, float q)
+{
+    float pos;
+    uint32_t lo;
+    uint32_t hi;
+    float frac;
+    float vlo;
+    float vhi;
+
+    if (count == 0U)
+    {
+        return 0.0f;
+    }
+    if (count == 1U)
+    {
+        return values[0];
+    }
+    if (q < 0.0f)
+    {
+        q = 0.0f;
+    }
+    if (q > 1.0f)
+    {
+        q = 1.0f;
+    }
+
+    pos = q * (float)(count - 1U);
+    lo = (uint32_t)floorf(pos);
+    hi = lo + 1U;
+    if (hi >= count)
+    {
+        hi = lo;
+    }
+    frac = pos - (float)lo;
+
+    memcpy(s_quantile_work, values, count * sizeof(float));
+    vlo = EdgeWind_AI_SelectKth(s_quantile_work, count, lo);
+    if (hi == lo)
+    {
+        return vlo;
+    }
+
+    memcpy(s_quantile_work, values, count * sizeof(float));
+    vhi = EdgeWind_AI_SelectKth(s_quantile_work, count, hi);
+    return vlo + ((vhi - vlo) * frac);
 }
 
 static void EdgeWind_AI_ExtractFeatureInput(const float analog_v[4][AD_ACQ_POINTS], float *feat_norm)
@@ -632,18 +745,366 @@ static void EdgeWind_AI_ExtractSpecInput(const float analog_v[4][AD_ACQ_POINTS],
     }
 }
 
+#if (EDGEWIND_AI_HAS_RAWLITE != 0U)
+static void EdgeWind_AI_ExtractRawliteInput(const float analog_v[4][AD_ACQ_POINTS], float *rawlite_norm)
+{
+    float raw[EDGEWIND_AI_RAWLITE_SIZE];
+    float mean[4];
+    float rms[4];
+    float ac_rms[4];
+    float stdv[4];
+    float minv[4];
+    float maxv[4];
+    float ptp[4];
+    float crest[4];
+    float slope_max[4];
+    float slope_p99[4];
+    float step_count[4];
+    float sat_count[4];
+    float tone[3][4];
+    float ring[4];
+    uint32_t idx = 0U;
+
+    for (uint32_t ch = 0U; ch < 4U; ++ch)
+    {
+        double sum = 0.0;
+        double sum_sq = 0.0;
+        float abs_max = 0.0f;
+        float prev = EdgeWind_AI_AnalogToTrainMv(analog_v[ch][0]);
+        uint32_t diff_count = 0U;
+
+        minv[ch] = prev;
+        maxv[ch] = prev;
+        slope_max[ch] = 0.0f;
+        step_count[ch] = 0.0f;
+        sat_count[ch] = 0.0f;
+
+        for (uint32_t i = 0U; i < EDGEWIND_AI_WINDOW_POINTS; ++i)
+        {
+            float x = EdgeWind_AI_AnalogToTrainMv(analog_v[ch][i]);
+            float ax = fabsf(x);
+
+            sum += (double)x;
+            sum_sq += (double)x * (double)x;
+            if (x < minv[ch]) minv[ch] = x;
+            if (x > maxv[ch]) maxv[ch] = x;
+            if (ax > abs_max) abs_max = ax;
+            if (ax >= 4900.0f) sat_count[ch] += 1.0f;
+
+            if (i > 0U)
+            {
+                float diff = fabsf(x - prev);
+                s_quantile_values[diff_count++] = diff;
+                if (diff > slope_max[ch]) slope_max[ch] = diff;
+                if (diff > 80.0f) step_count[ch] += 1.0f;
+            }
+            prev = x;
+        }
+
+        mean[ch] = (float)(sum / (double)EDGEWIND_AI_WINDOW_POINTS);
+        rms[ch] = sqrtf((float)(sum_sq / (double)EDGEWIND_AI_WINDOW_POINTS) + EDGEWIND_AI_EPS);
+        slope_p99[ch] = EdgeWind_AI_Quantile(s_quantile_values, diff_count, 0.99f);
+
+        {
+            double var_sum = 0.0;
+            for (uint32_t i = 0U; i < EDGEWIND_AI_WINDOW_POINTS; ++i)
+            {
+                float centered = EdgeWind_AI_AnalogToTrainMv(analog_v[ch][i]) - mean[ch];
+                var_sum += (double)centered * (double)centered;
+            }
+            {
+                float var = (float)(var_sum / (double)EDGEWIND_AI_WINDOW_POINTS);
+                if (var < 0.0f) var = 0.0f;
+                stdv[ch] = sqrtf(var);
+                ac_rms[ch] = sqrtf(var + EDGEWIND_AI_EPS);
+            }
+        }
+
+        ptp[ch] = maxv[ch] - minv[ch];
+        crest[ch] = abs_max / (rms[ch] + EDGEWIND_AI_EPS);
+    }
+
+    for (uint32_t ch = 0U; ch < 4U; ++ch)
+    {
+        raw[idx++] = mean[ch];
+        raw[idx++] = rms[ch];
+        raw[idx++] = ac_rms[ch];
+        raw[idx++] = stdv[ch];
+        raw[idx++] = minv[ch];
+        raw[idx++] = maxv[ch];
+        raw[idx++] = ptp[ch];
+        raw[idx++] = crest[ch];
+        raw[idx++] = slope_max[ch];
+        raw[idx++] = slope_p99[ch];
+        raw[idx++] = step_count[ch];
+        raw[idx++] = sat_count[ch];
+    }
+
+    {
+        double ab_common_sum = 0.0;
+        double ab_common_sq = 0.0;
+        float ab_common_min = FLT_MAX;
+        float ab_common_max = -FLT_MAX;
+        double ab_diff_sum = 0.0;
+        double ab_diff_sq = 0.0;
+        float ab_diff_min = FLT_MAX;
+        float ab_diff_max = -FLT_MAX;
+        double ab_num = 0.0;
+        double ac_num = 0.0;
+        double bc_num = 0.0;
+        double cd_num = 0.0;
+        double a_den = 0.0;
+        double b_den = 0.0;
+        double c_den = 0.0;
+        double d_den = 0.0;
+        double c_diff_sq = 0.0;
+        uint32_t c_diff_count = 0U;
+
+        for (uint32_t i = 0U; i < EDGEWIND_AI_WINDOW_POINTS; ++i)
+        {
+            float a = EdgeWind_AI_AnalogToTrainMv(analog_v[0][i]);
+            float b = EdgeWind_AI_AnalogToTrainMv(analog_v[1][i]);
+            float c = EdgeWind_AI_AnalogToTrainMv(analog_v[2][i]);
+            float d = EdgeWind_AI_AnalogToTrainMv(analog_v[3][i]);
+            float ac = a - mean[0];
+            float bc = b - mean[1];
+            float cc = c - mean[2];
+            float dc = d - mean[3];
+            float ab_common = 0.5f * (a + b);
+            float ab_diff = 0.5f * (a - b);
+
+            ab_common_sum += (double)ab_common;
+            ab_common_sq += (double)ab_common * (double)ab_common;
+            if (ab_common < ab_common_min) ab_common_min = ab_common;
+            if (ab_common > ab_common_max) ab_common_max = ab_common;
+
+            ab_diff_sum += (double)ab_diff;
+            ab_diff_sq += (double)ab_diff * (double)ab_diff;
+            if (ab_diff < ab_diff_min) ab_diff_min = ab_diff;
+            if (ab_diff > ab_diff_max) ab_diff_max = ab_diff;
+
+            ab_num += (double)ac * (double)bc;
+            ac_num += (double)ac * (double)cc;
+            bc_num += (double)bc * (double)cc;
+            cd_num += (double)cc * (double)dc;
+            a_den += (double)ac * (double)ac;
+            b_den += (double)bc * (double)bc;
+            c_den += (double)cc * (double)cc;
+            d_den += (double)dc * (double)dc;
+
+            if (i > 0U)
+            {
+                float c_prev = EdgeWind_AI_AnalogToTrainMv(analog_v[2][i - 1U]);
+                float c_diff = c - c_prev;
+                c_diff_sq += (double)c_diff * (double)c_diff;
+                s_quantile_values[c_diff_count++] = c_diff;
+            }
+        }
+
+        raw[idx++] = (float)(ab_common_sum / (double)EDGEWIND_AI_WINDOW_POINTS);
+        raw[idx++] = sqrtf((float)(ab_common_sq / (double)EDGEWIND_AI_WINDOW_POINTS) + EDGEWIND_AI_EPS);
+        raw[idx++] = ab_common_max - ab_common_min;
+        raw[idx++] = (float)(ab_diff_sum / (double)EDGEWIND_AI_WINDOW_POINTS);
+        raw[idx++] = sqrtf((float)(ab_diff_sq / (double)EDGEWIND_AI_WINDOW_POINTS) + EDGEWIND_AI_EPS);
+        raw[idx++] = ab_diff_max - ab_diff_min;
+        raw[idx++] = (float)(ab_num / (sqrt(a_den * b_den) + 1.0e-6));
+        raw[idx++] = (float)(ac_num / (sqrt(a_den * c_den) + 1.0e-6));
+        raw[idx++] = (float)(bc_num / (sqrt(b_den * c_den) + 1.0e-6));
+        raw[idx++] = (float)(cd_num / (sqrt(c_den * d_den) + 1.0e-6));
+        raw[idx++] = sqrtf((float)(c_diff_sq / (double)c_diff_count) + EDGEWIND_AI_EPS);
+        raw[idx++] = -EdgeWind_AI_Quantile(s_quantile_values, c_diff_count, 0.01f);
+        raw[idx++] = EdgeWind_AI_Quantile(s_quantile_values, c_diff_count, 0.99f);
+
+        for (uint32_t i = 0U; i < c_diff_count; ++i)
+        {
+            s_quantile_values[i] = fabsf(s_quantile_values[i]);
+        }
+        raw[idx++] = EdgeWind_AI_Quantile(s_quantile_values, c_diff_count, 0.99f);
+    }
+
+    for (uint32_t ch = 0U; ch < 4U; ++ch)
+    {
+        for (uint32_t i = 0U; i < EDGEWIND_AI_WINDOW_POINTS; ++i)
+        {
+            s_fft_input[i] = EdgeWind_AI_AnalogToTrainMv(analog_v[ch][i]) - mean[ch];
+        }
+        arm_rfft_fast_f32(&s_rfft, s_fft_input, s_fft_output, 0);
+
+        tone[0][ch] = EdgeWind_AI_FftMagAt(8U);
+        tone[1][ch] = EdgeWind_AI_FftMagAt(16U);
+        tone[2][ch] = EdgeWind_AI_FftMagAt(24U);
+
+        {
+            double sum_power = 0.0;
+            uint32_t count = 0U;
+            for (uint32_t k = 192U; k <= 832U; ++k)
+            {
+                float mag = EdgeWind_AI_FftMagAt((uint16_t)k);
+                sum_power += (double)mag * (double)mag;
+                count++;
+            }
+            ring[ch] = sqrtf((float)(sum_power / (double)count) + EDGEWIND_AI_EPS);
+        }
+    }
+
+    for (uint32_t f = 0U; f < 3U; ++f)
+    {
+        for (uint32_t ch = 0U; ch < 4U; ++ch)
+        {
+            raw[idx++] = tone[f][ch];
+        }
+    }
+    for (uint32_t ch = 0U; ch < 4U; ++ch)
+    {
+        raw[idx++] = ring[ch];
+    }
+
+    for (uint32_t i = 0U; i < EDGEWIND_AI_RAWLITE_SIZE; ++i)
+    {
+        rawlite_norm[i] = EdgeWind_AI_Normalize(raw[i],
+                                                g_edgewind_ai_rawlite_mean[i],
+        g_edgewind_ai_rawlite_scale[i]);
+    }
+}
+#endif
+
+static void EdgeWind_AI_FillModelInputs(const float analog_v[4][AD_ACQ_POINTS], ai_buffer *input)
+{
+    float *input_dwt = (float *)input[0].data;
+    float *input_feat = (float *)input[1].data;
+#if (EDGEWIND_AI_HAS_RAWLITE != 0U)
+    float *input_rawlite = (float *)input[2].data;
+    float *input_spec = (float *)input[3].data;
+#else
+    float *input_spec = (float *)input[2].data;
+#endif
+
+    EdgeWind_AI_ExtractDwtInput(analog_v, input_dwt);
+    EdgeWind_AI_ExtractFeatureInput(analog_v, input_feat);
+#if (EDGEWIND_AI_HAS_RAWLITE != 0U)
+    EdgeWind_AI_ExtractRawliteInput(analog_v, input_rawlite);
+#endif
+    EdgeWind_AI_ExtractSpecInput(analog_v, input_spec);
+}
+
+static void EdgeWind_AI_FillResultFromOutput(EdgeWind_AI_Result_t *result,
+                                             uint32_t feature_ms,
+                                             uint32_t inference_ms,
+                                             uint32_t total_ms)
+{
+    const float *prob = (const float *)s_output[0].data;
+    uint8_t best_id = 0U;
+    float best_conf = -FLT_MAX;
+
+    memset(result, 0, sizeof(*result));
+    result->feature_ms = feature_ms;
+    result->inference_ms = inference_ms;
+    result->total_ms = total_ms;
+
+    for (uint32_t i = 0U; i < EDGEWIND_AI_CLASS_COUNT; ++i)
+    {
+        float p = EdgeWind_AI_SafeFloat(prob[i]);
+        result->probabilities[i] = p;
+        if (p > best_conf)
+        {
+            best_conf = p;
+            best_id = (uint8_t)i;
+        }
+    }
+
+    result->class_id = best_id;
+    result->confidence = best_conf;
+    strncpy(result->fault_code, EdgeWind_AI_ClassCode(best_id), sizeof(result->fault_code) - 1U);
+    result->fault_code[sizeof(result->fault_code) - 1U] = '\0';
+}
+
+int EdgeWind_AI_DebugExtractInputs(const float analog_v[4][AD_ACQ_POINTS],
+                                   float *dwt_norm,
+                                   float *feat_norm,
+                                   float *rawlite_norm,
+                                   float *spec_norm)
+{
+    if ((analog_v == NULL) || (dwt_norm == NULL) || (feat_norm == NULL) || (spec_norm == NULL))
+    {
+        return -1;
+    }
+#if (EDGEWIND_AI_HAS_RAWLITE != 0U)
+    if (rawlite_norm == NULL)
+    {
+        return -1;
+    }
+#else
+    (void)rawlite_norm;
+#endif
+    if (EdgeWind_AI_Init() != 0)
+    {
+        return -2;
+    }
+
+    EdgeWind_AI_ExtractDwtInput(analog_v, dwt_norm);
+    EdgeWind_AI_ExtractFeatureInput(analog_v, feat_norm);
+#if (EDGEWIND_AI_HAS_RAWLITE != 0U)
+    EdgeWind_AI_ExtractRawliteInput(analog_v, rawlite_norm);
+#endif
+    EdgeWind_AI_ExtractSpecInput(analog_v, spec_norm);
+    return 0;
+}
+
+int EdgeWind_AI_DebugRunNormalizedInputs(const float *dwt_norm,
+                                         const float *feat_norm,
+                                         const float *rawlite_norm,
+                                         const float *spec_norm,
+                                         EdgeWind_AI_Result_t *result)
+{
+    uint32_t total_start;
+    uint32_t inference_start;
+    ai_i32 batch;
+
+    if ((dwt_norm == NULL) || (feat_norm == NULL) || (spec_norm == NULL) || (result == NULL))
+    {
+        return -1;
+    }
+#if (EDGEWIND_AI_HAS_RAWLITE != 0U)
+    if (rawlite_norm == NULL)
+    {
+        return -1;
+    }
+#else
+    (void)rawlite_norm;
+#endif
+    if (EdgeWind_AI_Init() != 0)
+    {
+        return -2;
+    }
+
+    total_start = HAL_GetTick();
+    memcpy((float *)s_input[0].data, dwt_norm, EDGEWIND_AI_DWT_SIZE * sizeof(float));
+    memcpy((float *)s_input[1].data, feat_norm, EDGEWIND_AI_FEAT_SIZE * sizeof(float));
+#if (EDGEWIND_AI_HAS_RAWLITE != 0U)
+    memcpy((float *)s_input[2].data, rawlite_norm, EDGEWIND_AI_RAWLITE_SIZE * sizeof(float));
+    memcpy((float *)s_input[3].data, spec_norm, EDGEWIND_AI_SPEC_SIZE * sizeof(float));
+#else
+    memcpy((float *)s_input[2].data, spec_norm, EDGEWIND_AI_SPEC_SIZE * sizeof(float));
+#endif
+
+    inference_start = HAL_GetTick();
+    batch = ai_network_run(s_network, s_input, s_output);
+    if (batch != 1)
+    {
+        EdgeWind_AI_PrintError("debug_run", ai_network_get_error(s_network));
+        return -3;
+    }
+
+    EdgeWind_AI_FillResultFromOutput(result, 0U, HAL_GetTick() - inference_start, HAL_GetTick() - total_start);
+    return 0;
+}
+
 int EdgeWind_AI_RunOnAnalogWindow(const float analog_v[4][AD_ACQ_POINTS], EdgeWind_AI_Result_t *result)
 {
     ai_i32 batch;
-    const float *prob;
-    float *input_dwt;
-    float *input_feat;
-    float *input_spec;
     uint32_t total_start;
     uint32_t feature_start;
     uint32_t inference_start;
-    uint8_t best_id = 0U;
-    float best_conf = -FLT_MAX;
 
     if ((analog_v == NULL) || (result == NULL))
     {
@@ -666,13 +1127,7 @@ int EdgeWind_AI_RunOnAnalogWindow(const float analog_v[4][AD_ACQ_POINTS], EdgeWi
     total_start = HAL_GetTick();
     feature_start = total_start;
 
-    input_dwt = (float *)s_input[0].data;
-    input_feat = (float *)s_input[1].data;
-    input_spec = (float *)s_input[2].data;
-
-    EdgeWind_AI_ExtractDwtInput(analog_v, input_dwt);
-    EdgeWind_AI_ExtractFeatureInput(analog_v, input_feat);
-    EdgeWind_AI_ExtractSpecInput(analog_v, input_spec);
+    EdgeWind_AI_FillModelInputs(analog_v, s_input);
     result->feature_ms = HAL_GetTick() - feature_start;
 
     inference_start = HAL_GetTick();
@@ -686,21 +1141,6 @@ int EdgeWind_AI_RunOnAnalogWindow(const float analog_v[4][AD_ACQ_POINTS], EdgeWi
         return -3;
     }
 
-    prob = (const float *)s_output[0].data;
-    for (uint32_t i = 0U; i < EDGEWIND_AI_CLASS_COUNT; ++i)
-    {
-        float p = EdgeWind_AI_SafeFloat(prob[i]);
-        result->probabilities[i] = p;
-        if (p > best_conf)
-        {
-            best_conf = p;
-            best_id = (uint8_t)i;
-        }
-    }
-
-    result->class_id = best_id;
-    result->confidence = best_conf;
-    strncpy(result->fault_code, EdgeWind_AI_ClassCode(best_id), sizeof(result->fault_code) - 1U);
-    result->fault_code[sizeof(result->fault_code) - 1U] = '\0';
+    EdgeWind_AI_FillResultFromOutput(result, result->feature_ms, result->inference_ms, result->total_ms);
     return 0;
 }
