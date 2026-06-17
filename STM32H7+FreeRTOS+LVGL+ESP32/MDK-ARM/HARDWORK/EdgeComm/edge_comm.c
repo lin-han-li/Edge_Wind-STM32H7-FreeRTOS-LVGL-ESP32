@@ -337,7 +337,14 @@ static int ESP_AI_ProbPermille(float p)
     return (int)((p * 1000.0f) + 0.5f);
 }
 
-static void ESP_AI_UpdateFaultCode(const float analog_v[4][AD_ACQ_POINTS])
+static const float s_ai_default_aux4[EDGEWIND_AI_AUX_SIZE] =
+{
+    72.5f, 66.5f, 53.0f, 59.0f
+};
+
+static void ESP_AI_UpdateFaultCode(const float analog_v[4][AD_ACQ_POINTS],
+                                   const float aux4[EDGEWIND_AI_AUX_SIZE],
+                                   uint8_t aux4_valid_mask)
 {
     static uint32_t last_ai_log_tick = 0U;
     static uint32_t last_ai_run_tick = 0U;
@@ -355,7 +362,7 @@ static void ESP_AI_UpdateFaultCode(const float analog_v[4][AD_ACQ_POINTS])
     }
     last_ai_run_tick = now_tick;
 
-    ret = EdgeWind_AI_RunOnAnalogWindow(analog_v, &result);
+    ret = EdgeWind_AI_RunOnAnalogWindow(analog_v, aux4, aux4_valid_mask, &result);
     if (ret != 0)
     {
         if ((g_ai_fault_code_initialized == 0U) || (strncmp(g_fault_code, "E00", 3U) != 0))
@@ -369,7 +376,10 @@ static void ESP_AI_UpdateFaultCode(const float analog_v[4][AD_ACQ_POINTS])
         if ((uint32_t)(now_tick - last_ai_log_tick) >= EDGEWIND_AI_STATS_LOG_MS)
         {
             last_ai_log_tick = now_tick;
-            ESP_Log("[AI] runtime error ret=%d; report=%s\r\n", ret, g_fault_code);
+            ESP_Log("[AI] runtime error ret=%d; report=%s aux_valid=0x%02X\r\n",
+                    ret,
+                    g_fault_code,
+                    (unsigned int)aux4_valid_mask);
         }
         return;
     }
@@ -387,12 +397,18 @@ static void ESP_AI_UpdateFaultCode(const float analog_v[4][AD_ACQ_POINTS])
     if ((uint32_t)(now_tick - last_ai_log_tick) >= EDGEWIND_AI_STATS_LOG_MS)
     {
         last_ai_log_tick = now_tick;
-        ESP_Log("[AI] pred=%s/%s conf=%d.%03d report=%s ppermil=[%d,%d,%d,%d,%d,%d,%d] feat=%lums infer=%lums total=%lums\r\n",
+        ESP_Log("[AI] pred=%s/%s conf=%d.%03d report=%s model=%s aux4=[%.1f,%.1f,%.1f,%.1f] valid=0x%02X ppermil=[%d,%d,%d,%d,%d,%d,%d] feat=%lums infer=%lums total=%lums\r\n",
                 result.fault_code,
                 EdgeWind_AI_ClassName(result.class_id),
                 (int)result.confidence,
                 (int)((result.confidence - (float)((int)result.confidence)) * 1000.0f),
                 reported_code,
+                EdgeWind_AI_ModelVersion(),
+                (double)result.aux4[0],
+                (double)result.aux4[1],
+                (double)result.aux4[2],
+                (double)result.aux4[3],
+                (unsigned int)result.aux4_valid_mask,
                 ESP_AI_ProbPermille(result.probabilities[0]),
                 ESP_AI_ProbPermille(result.probabilities[1]),
                 ESP_AI_ProbPermille(result.probabilities[2]),
@@ -438,6 +454,7 @@ typedef struct
     float rawlite[EDGEWIND_AI_RAWLITE_SIZE];
 #endif
     float spec[EDGEWIND_AI_SPEC_SIZE];
+    float aux[EDGEWIND_AI_AUX_SIZE];
     float expected[EDGEWIND_AI_CLASS_COUNT];
 } ESP_AI_GoldenBuffers_t;
 
@@ -1307,10 +1324,11 @@ static void ESP_AI_GoldenLogResult(const char *tag,
                                    float feat_diff,
                                    float dwt_diff,
                                    float rawlite_diff,
-                                   float spec_diff)
+                                   float spec_diff,
+                                   float aux_diff)
 {
     uint8_t expected_id = ESP_AI_GoldenArgMax(expected, EDGEWIND_AI_CLASS_COUNT);
-    ESP_Log("[AI_GOLDEN_%s] id=%lu expected=%s pred=%s conf=%d.%03d max_prob_diff=%d.%06d input_diff=[feat:%d.%06d,dwt:%d.%06d,rawlite:%d.%06d,spec:%d.%06d] ppermil=[%d,%d,%d,%d,%d,%d,%d]\r\n",
+    ESP_Log("[AI_GOLDEN_%s] id=%lu expected=%s pred=%s conf=%d.%03d max_prob_diff=%d.%06d input_diff=[feat:%d.%06d,dwt:%d.%06d,rawlite:%d.%06d,spec:%d.%06d,aux:%d.%06d] ppermil=[%d,%d,%d,%d,%d,%d,%d]\r\n",
             tag,
             (unsigned long)id,
             EdgeWind_AI_ClassCode(expected_id),
@@ -1327,6 +1345,8 @@ static void ESP_AI_GoldenLogResult(const char *tag,
             (int)((rawlite_diff - (float)((int)rawlite_diff)) * 1000000.0f),
             (int)spec_diff,
             (int)((spec_diff - (float)((int)spec_diff)) * 1000000.0f),
+            (int)aux_diff,
+            (int)((aux_diff - (float)((int)aux_diff)) * 1000000.0f),
             ESP_AI_ProbPermille(result->probabilities[0]),
             ESP_AI_ProbPermille(result->probabilities[1]),
             ESP_AI_ProbPermille(result->probabilities[2]),
@@ -1366,6 +1386,7 @@ static void ESP_AI_GoldenSelfTest(void)
         float dwt_diff = 0.0f;
         float rawlite_diff = 0.0f;
         float spec_diff = 0.0f;
+        float aux_diff = 0.0f;
         uint8_t expected_id;
         uint8_t inputs_loaded = 0U;
 
@@ -1408,6 +1429,11 @@ static void ESP_AI_GoldenSelfTest(void)
             (void)snprintf(path, sizeof(path), "%s/input_spec_%02lu.bin", EDGEWIND_AI_GOLDEN_DIR, (unsigned long)id);
             res = ESP_AI_GoldenReadFloats(path, g_ai_golden_expected.spec, EDGEWIND_AI_SPEC_SIZE);
         }
+        if ((res == FR_OK) && (EdgeWind_AI_UsesAuxInput() != 0U))
+        {
+            (void)snprintf(path, sizeof(path), "%s/input_aux_%02lu.bin", EDGEWIND_AI_GOLDEN_DIR, (unsigned long)id);
+            res = ESP_AI_GoldenReadFloats(path, g_ai_golden_expected.aux, EDGEWIND_AI_AUX_SIZE);
+        }
         if (res == FR_OK)
         {
             inputs_loaded = 1U;
@@ -1419,6 +1445,7 @@ static void ESP_AI_GoldenSelfTest(void)
                                                        NULL,
 #endif
                                                        g_ai_golden_expected.spec,
+                                                       (EdgeWind_AI_UsesAuxInput() != 0U) ? g_ai_golden_expected.aux : NULL,
                                                        &result);
             if (ret == 0)
             {
@@ -1427,7 +1454,7 @@ static void ESP_AI_GoldenSelfTest(void)
                 {
                     direct_ok++;
                 }
-                ESP_AI_GoldenLogResult("DIRECT", id, &result, g_ai_golden_expected.expected, max_prob_diff, 0.0f, 0.0f, 0.0f, 0.0f);
+                ESP_AI_GoldenLogResult("DIRECT", id, &result, g_ai_golden_expected.expected, max_prob_diff, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
             }
             else
             {
@@ -1440,6 +1467,7 @@ static void ESP_AI_GoldenSelfTest(void)
         }
 
         ret = EdgeWind_AI_DebugExtractInputs((const float (*)[AD_ACQ_POINTS])ADSA_B,
+                                             s_ai_default_aux4,
                                              g_ai_golden_generated.dwt,
                                              g_ai_golden_generated.feat,
 #if ESP_AI_HAS_RAWLITE
@@ -1447,14 +1475,18 @@ static void ESP_AI_GoldenSelfTest(void)
 #else
                                              NULL,
 #endif
-                                             g_ai_golden_generated.spec);
+                                             g_ai_golden_generated.spec,
+                                             (EdgeWind_AI_UsesAuxInput() != 0U) ? g_ai_golden_generated.aux : NULL);
         if (ret != 0)
         {
             ESP_Log("[AI_GOLDEN_RAW] id=%lu extract ret=%d\r\n", (unsigned long)id, ret);
             break;
         }
 
-        ret = EdgeWind_AI_RunOnAnalogWindow((const float (*)[AD_ACQ_POINTS])ADSA_B, &result);
+        ret = EdgeWind_AI_RunOnAnalogWindow((const float (*)[AD_ACQ_POINTS])ADSA_B,
+                                            s_ai_default_aux4,
+                                            0x0FU,
+                                            &result);
         if (ret != 0)
         {
             ESP_Log("[AI_GOLDEN_RAW] id=%lu run ret=%d\r\n", (unsigned long)id, ret);
@@ -1476,6 +1508,10 @@ static void ESP_AI_GoldenSelfTest(void)
             rawlite_diff = 0.0f;
 #endif
             spec_diff = ESP_AI_GoldenMaxAbsDiff(g_ai_golden_generated.spec, g_ai_golden_expected.spec, EDGEWIND_AI_SPEC_SIZE);
+            if (EdgeWind_AI_UsesAuxInput() != 0U)
+            {
+                aux_diff = ESP_AI_GoldenMaxAbsDiff(g_ai_golden_generated.aux, g_ai_golden_expected.aux, EDGEWIND_AI_AUX_SIZE);
+            }
         }
         ESP_AI_GoldenLogResult("RAW",
                                id,
@@ -1485,7 +1521,8 @@ static void ESP_AI_GoldenSelfTest(void)
                                feat_diff,
                                dwt_diff,
                                rawlite_diff,
-                               spec_diff);
+                               spec_diff,
+                               aux_diff);
         count++;
     }
     ESP_Log("[AI_GOLDEN] done count=%lu direct_ok=%lu raw_ok=%lu threshold=0.02\r\n",
@@ -1967,15 +2004,21 @@ void ESP_Update_Data_And_FFT(void)
 
     uint8_t ready = 0;
     float (*src)[WAVEFORM_POINTS] = NULL;
+    const float *aux4 = s_ai_default_aux4;
+    uint8_t aux4_valid_mask = 0U;
     if (ADS131A04_flag == 1 && last_ready != 1)
     {
         ready = 1;
         src = ADSA_B;
+        aux4 = ADSA_AUX4;
+        aux4_valid_mask = ADSA_AUX4_valid_mask;
     }
     else if (ADS131A04_flag2 == 2 && last_ready != 2)
     {
         ready = 2;
         src = ADSA_B2;
+        aux4 = ADSA_AUX4_2;
+        aux4_valid_mask = ADSA_AUX4_2_valid_mask;
     }
     else
     {
@@ -2011,7 +2054,7 @@ void ESP_Update_Data_And_FFT(void)
         return;
     }
 
-    ESP_AI_UpdateFaultCode((const float (*)[AD_ACQ_POINTS])src);
+    ESP_AI_UpdateFaultCode((const float (*)[AD_ACQ_POINTS])src, aux4, aux4_valid_mask);
     ESP_RtosYield();
 
     double sum0 = 0.0, sum1 = 0.0, sum2 = 0.0, sum3 = 0.0;
@@ -2098,11 +2141,19 @@ void ESP_Update_Data_And_FFT(void)
         uint16_t raw1 = AD7606_DebugRaw[1];
         uint16_t raw2 = AD7606_DebugRaw[2];
         uint16_t raw3 = AD7606_DebugRaw[3];
+        uint16_t raw4 = AD7606_DebugRaw[4];
+        uint16_t raw5 = AD7606_DebugRaw[5];
+        uint16_t raw6 = AD7606_DebugRaw[6];
+        uint16_t raw7 = AD7606_DebugRaw[7];
         float av0 = AD7606_DebugVolts[0];
         float av1 = AD7606_DebugVolts[1];
         float av2 = AD7606_DebugVolts[2];
         float av3 = AD7606_DebugVolts[3];
-        ESP_Log("[DSP] snapshot seq=%lu pub=%lu drop=%lu ready=%u dt=%lums cv=[%.1f,%.1f,%.1f,%.1f] rms=[%.1f,%.1f,%.1f,%.1f] range=[%.1f..%.1f,%.1f..%.1f,%.1f..%.1f,%.1f..%.1f] adc_raw=[%04X,%04X,%04X,%04X] adc_v=[%.5f,%.5f,%.5f,%.5f] flags=%d/%d idx=%d/%d busy=%u db7=%u\r\n",
+        float av4 = AD7606_DebugVolts[4];
+        float av5 = AD7606_DebugVolts[5];
+        float av6 = AD7606_DebugVolts[6];
+        float av7 = AD7606_DebugVolts[7];
+        ESP_Log("[DSP] snapshot seq=%lu pub=%lu drop=%lu ready=%u dt=%lums cv=[%.1f,%.1f,%.1f,%.1f] rms=[%.1f,%.1f,%.1f,%.1f] range=[%.1f..%.1f,%.1f..%.1f,%.1f..%.1f,%.1f..%.1f] aux4=[%.1f,%.1f,%.1f,%.1f] aux_valid=0x%02X adc_raw=[%04X,%04X,%04X,%04X,%04X,%04X,%04X,%04X] adc_v=[%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,%.5f] flags=%d/%d idx=%d/%d busy=%u db7=%u\r\n",
                 (unsigned long)g_upload_snapshot_seq,
                 (unsigned long)g_upload_snapshot_publish_count,
                 (unsigned long)g_upload_snapshot_drop_count,
@@ -2124,14 +2175,27 @@ void ESP_Update_Data_And_FFT(void)
                 (double)max2,
                 (double)min3,
                 (double)max3,
+                (double)aux4[0],
+                (double)aux4[1],
+                (double)aux4[2],
+                (double)aux4[3],
+                (unsigned int)aux4_valid_mask,
                 (unsigned int)raw0,
                 (unsigned int)raw1,
                 (unsigned int)raw2,
                 (unsigned int)raw3,
+                (unsigned int)raw4,
+                (unsigned int)raw5,
+                (unsigned int)raw6,
+                (unsigned int)raw7,
                 (double)av0,
                 (double)av1,
                 (double)av2,
                 (double)av3,
+                (double)av4,
+                (double)av5,
+                (double)av6,
+                (double)av7,
                 ADS131A04_flag,
                 ADS131A04_flag2,
                 number,

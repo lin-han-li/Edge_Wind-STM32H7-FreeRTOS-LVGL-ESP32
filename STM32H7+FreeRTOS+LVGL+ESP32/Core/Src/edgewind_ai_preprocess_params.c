@@ -2,6 +2,10 @@
 
 /* Generated from C:/Users/pengjianzhong/Desktop/MY_Project/EdgeWind_AI_Training/models/dataset_v68_wind_sensor_public_fused_single_v6_single7_tflite_20260616_031448/preprocess.npz. */
 
+/* V69 aux4 placeholders. Replace with the generated V69 preprocess output before switching to a 4-input network. */
+const float g_edgewind_ai_aux_mean[4U] = {72.5f, 66.5f, 53.0f, 59.0f};
+const float g_edgewind_ai_aux_scale[4U] = {26.25f, 24.25f, 22.5f, 25.5f};
+
 const float g_edgewind_ai_feat_mean[116U] = {
     2486.96362f, -2265.77588f, 1997.35791f, 429.066559f, 2497.27393f, 2277.27856f,
     2012.47522f, 449.3396f, 155.379547f, 142.384109f, 160.541412f, 106.425629f,

@@ -89,6 +89,10 @@ const osMutexAttr_t Thread_Mutex_attr = {
 #if USE_AD7606
 static volatile uint8_t g_ad7606_started = 0;
 static uint16_t g_ad7606_raw[8];
+static float g_aux4_sum_v[AD_AUX4_COUNT];
+static float g_aux4_sum2_v[AD_AUX4_COUNT];
+static uint32_t g_aux4_count = 0U;
+static uint32_t g_aux4_count2 = 0U;
 #endif
 
 /* USER CODE END PV */
@@ -103,6 +107,104 @@ void MX_FREERTOS_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+#if USE_AD7606
+static const float s_aux4_range_lo[AD_AUX4_COUNT] = {20.0f, 18.0f, 8.0f, 8.0f};
+static const float s_aux4_range_hi[AD_AUX4_COUNT] = {125.0f, 115.0f, 98.0f, 110.0f};
+static const float s_aux4_defaults[AD_AUX4_COUNT] = {72.5f, 66.5f, 53.0f, 59.0f};
+
+static float AD7606_Aux4Clamp(float value, float lo, float hi)
+{
+  if (value < lo)
+  {
+    return lo;
+  }
+  if (value > hi)
+  {
+    return hi;
+  }
+  return value;
+}
+
+static float AD7606_Aux4DecodeFromAnalogV(uint32_t aux_idx, float analog_v)
+{
+  float v = AD7606_Aux4Clamp(analog_v, 0.5f, 4.5f);
+  float t = (v - 0.5f) / 4.0f;
+  if (aux_idx >= AD_AUX4_COUNT)
+  {
+    return 0.0f;
+  }
+  return s_aux4_range_lo[aux_idx] + (t * (s_aux4_range_hi[aux_idx] - s_aux4_range_lo[aux_idx]));
+}
+
+static void AD7606_Aux4SetDefaults(float dst[AD_AUX4_COUNT])
+{
+  for (uint32_t i = 0U; i < AD_AUX4_COUNT; ++i)
+  {
+    dst[i] = s_aux4_defaults[i];
+  }
+}
+
+static void AD7606_Aux4ResetAccum(float sum_v[AD_AUX4_COUNT], uint32_t *count)
+{
+  for (uint32_t i = 0U; i < AD_AUX4_COUNT; ++i)
+  {
+    sum_v[i] = 0.0f;
+  }
+  if (count != NULL)
+  {
+    *count = 0U;
+  }
+}
+
+static void AD7606_Aux4AddSample(float sum_v[AD_AUX4_COUNT], uint32_t *count)
+{
+  for (uint32_t i = 0U; i < AD_AUX4_COUNT; ++i)
+  {
+    float analog_v = AD7606_RawToVoltsF(g_ad7606_raw[4U + i]);
+    AD7606_DebugVolts[4U + i] = analog_v;
+    AD7606_Aux4Values[i] = AD7606_Aux4DecodeFromAnalogV(i, analog_v);
+    sum_v[i] += analog_v;
+  }
+  if (count != NULL)
+  {
+    (*count)++;
+  }
+}
+
+static uint8_t AD7606_Aux4PublishMean(float dst[AD_AUX4_COUNT],
+                                      const float sum_v[AD_AUX4_COUNT],
+                                      uint32_t count)
+{
+  uint8_t valid_mask = 0U;
+
+  if (count == 0U)
+  {
+    AD7606_Aux4SetDefaults(dst);
+    AD7606_Aux4ValidMask = 0U;
+    return 0U;
+  }
+
+  for (uint32_t i = 0U; i < AD_AUX4_COUNT; ++i)
+  {
+    float mean_v = sum_v[i] / (float)count;
+    AD7606_DebugVolts[4U + i] = mean_v;
+    if ((mean_v < 0.25f) || (mean_v > 4.75f))
+    {
+      dst[i] = s_aux4_defaults[i];
+    }
+    else
+    {
+      dst[i] = AD7606_Aux4DecodeFromAnalogV(i, mean_v);
+      valid_mask |= (uint8_t)(1U << i);
+    }
+    AD7606_Aux4Values[i] = dst[i];
+  }
+
+  AD7606_Aux4ValidMask = valid_mask;
+  return valid_mask;
+}
+#endif
 
 /* USER CODE END 0 */
 
@@ -172,6 +274,13 @@ int main(void)
 #if USE_AD7606
   AD7606_Init();
   g_ad7606_started = 0;
+  AD7606_Aux4SetDefaults(ADSA_AUX4);
+  AD7606_Aux4SetDefaults(ADSA_AUX4_2);
+  ADSA_AUX4_valid_mask = 0U;
+  ADSA_AUX4_2_valid_mask = 0U;
+  AD7606_Aux4ValidMask = 0U;
+  AD7606_Aux4ResetAccum(g_aux4_sum_v, &g_aux4_count);
+  AD7606_Aux4ResetAccum(g_aux4_sum2_v, &g_aux4_count2);
 #endif
   HAL_TIM_Base_Start_IT(&htim2);
 
@@ -371,9 +480,12 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
       {
         ADSA_B[ch][number] = ADS131A04_Buf[ch];
       }
+      AD7606_Aux4AddSample(g_aux4_sum_v, &g_aux4_count);
       number++;
       if (number == AD_ACQ_POINTS)
       {
+        ADSA_AUX4_valid_mask = AD7606_Aux4PublishMean(ADSA_AUX4, g_aux4_sum_v, g_aux4_count);
+        AD7606_Aux4ResetAccum(g_aux4_sum_v, &g_aux4_count);
         ADS131A04_flag = 1;
         ADS131A04_flag2 = 0;
         number = 0;
@@ -386,9 +498,12 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
       {
         ADSA_B2[ch][number2] = ADS131A04_Buf[ch];
       }
+      AD7606_Aux4AddSample(g_aux4_sum2_v, &g_aux4_count2);
       number2++;
       if (number2 == AD_ACQ_POINTS)
       {
+        ADSA_AUX4_2_valid_mask = AD7606_Aux4PublishMean(ADSA_AUX4_2, g_aux4_sum2_v, g_aux4_count2);
+        AD7606_Aux4ResetAccum(g_aux4_sum2_v, &g_aux4_count2);
         ADS131A04_flag2 = 2;
         ADS131A04_flag = 0;
         number = 0;

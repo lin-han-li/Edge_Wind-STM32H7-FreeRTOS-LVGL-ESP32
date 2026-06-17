@@ -44,6 +44,23 @@
 #define EDGEWIND_AI_HAS_RAWLITE           (0U)
 #endif
 
+#define EDGEWIND_AI_MODEL_VERSION_V68     "dataset_v68_wind_sensor_public_fused_single_v6"
+#define EDGEWIND_AI_MODEL_VERSION_V69     "dataset_v69_wind_sensor_aux4_public_fused_single"
+
+#if (AI_NETWORK_IN_NUM == 4)
+#define EDGEWIND_AI_HAS_AUX_INPUT         (1U)
+#else
+#define EDGEWIND_AI_HAS_AUX_INPUT         (0U)
+#endif
+
+#if (AI_NETWORK_IN_NUM != 3) && (AI_NETWORK_IN_NUM != 4)
+#error "EdgeWind AI expects a 3-input v68 or 4-input v69 network"
+#endif
+
+#if (EDGEWIND_AI_HAS_RAWLITE != 0U) && (EDGEWIND_AI_HAS_AUX_INPUT != 0U)
+#error "EdgeWind v69 aux4 path does not support raw-lite input"
+#endif
+
 #ifndef AXI_SRAM_SECTION
 #define AXI_SRAM_SECTION __attribute__((section(".axi_sram")))
 #endif
@@ -158,6 +175,36 @@ const char *EdgeWind_AI_ClassName(uint8_t class_id)
     return s_class_names[class_id];
 }
 
+const char *EdgeWind_AI_ModelVersion(void)
+{
+#if (EDGEWIND_AI_HAS_AUX_INPUT != 0U)
+    return EDGEWIND_AI_MODEL_VERSION_V69;
+#else
+    return EDGEWIND_AI_MODEL_VERSION_V68;
+#endif
+}
+
+uint8_t EdgeWind_AI_UsesAuxInput(void)
+{
+    return (uint8_t)EDGEWIND_AI_HAS_AUX_INPUT;
+}
+
+static void EdgeWind_AI_CopyAux4(EdgeWind_AI_Result_t *result,
+                                 const float aux4[EDGEWIND_AI_AUX_SIZE],
+                                 uint8_t aux4_valid_mask)
+{
+    if (result == NULL)
+    {
+        return;
+    }
+
+    result->aux4_valid_mask = aux4_valid_mask;
+    for (uint32_t i = 0U; i < EDGEWIND_AI_AUX_SIZE; ++i)
+    {
+        result->aux4[i] = (aux4 != NULL) ? aux4[i] : 0.0f;
+    }
+}
+
 static uint8_t EdgeWind_AI_IsPowerOnZeroWindow(const float analog_v[4][AD_ACQ_POINTS])
 {
     float max_abs[4] = {0.0f, 0.0f, 0.0f, 0.0f};
@@ -190,13 +237,17 @@ static uint8_t EdgeWind_AI_IsPowerOnZeroWindow(const float analog_v[4][AD_ACQ_PO
     return 0U;
 }
 
-static void EdgeWind_AI_SetNormalResult(EdgeWind_AI_Result_t *result, uint32_t elapsed_ms)
+static void EdgeWind_AI_SetNormalResult(EdgeWind_AI_Result_t *result,
+                                        const float aux4[EDGEWIND_AI_AUX_SIZE],
+                                        uint8_t aux4_valid_mask,
+                                        uint32_t elapsed_ms)
 {
     memset(result, 0, sizeof(*result));
     result->class_id = 0U;
     result->confidence = 1.0f;
     result->probabilities[0] = 1.0f;
     result->total_ms = elapsed_ms;
+    EdgeWind_AI_CopyAux4(result, aux4, aux4_valid_mask);
     strncpy(result->fault_code, EdgeWind_AI_ClassCode(0U), sizeof(result->fault_code) - 1U);
     result->fault_code[sizeof(result->fault_code) - 1U] = '\0';
 }
@@ -247,15 +298,27 @@ int EdgeWind_AI_Init(void)
         printf("[AI] get io buffers failed\r\n");
         return -3;
     }
+    if (((uint32_t)AI_NETWORK_IN_NUM != 3U) && ((uint32_t)AI_NETWORK_IN_NUM != 4U))
+    {
+        printf("[AI] unsupported input count=%lu\r\n", (unsigned long)AI_NETWORK_IN_NUM);
+        return -4;
+    }
 
     EdgeWind_AI_EnableCycleCounter();
     s_ai_ready = 1U;
 #if (EDGEWIND_AI_HAS_RAWLITE != 0U)
-    printf("[AI] runtime ready act=0x%08lX size=%lu input=dwt/feat/rawlite/spec unit=train_mV\r\n",
+    printf("[AI] runtime ready model=%s act=0x%08lX size=%lu input=dwt/feat/rawlite/spec unit=train_mV\r\n",
+           EdgeWind_AI_ModelVersion(),
+           (unsigned long)EDGEWIND_AI_ACTIVATION_ADDR,
+           (unsigned long)AI_NETWORK_DATA_ACTIVATIONS_SIZE);
+#elif (EDGEWIND_AI_HAS_AUX_INPUT != 0U)
+    printf("[AI] runtime ready model=%s act=0x%08lX size=%lu input=dwt/feat/spec/aux unit=train_mV\r\n",
+           EdgeWind_AI_ModelVersion(),
            (unsigned long)EDGEWIND_AI_ACTIVATION_ADDR,
            (unsigned long)AI_NETWORK_DATA_ACTIVATIONS_SIZE);
 #else
-    printf("[AI] runtime ready act=0x%08lX size=%lu input=dwt/feat/spec unit=train_mV\r\n",
+    printf("[AI] runtime ready model=%s act=0x%08lX size=%lu input=dwt/feat/spec unit=train_mV\r\n",
+           EdgeWind_AI_ModelVersion(),
            (unsigned long)EDGEWIND_AI_ACTIVATION_ADDR,
            (unsigned long)AI_NETWORK_DATA_ACTIVATIONS_SIZE);
 #endif
@@ -968,13 +1031,27 @@ static void EdgeWind_AI_ExtractRawliteInput(const float analog_v[4][AD_ACQ_POINT
 }
 #endif
 
-static void EdgeWind_AI_FillModelInputs(const float analog_v[4][AD_ACQ_POINTS], ai_buffer *input)
+static void EdgeWind_AI_ExtractAuxInput(const float aux4[EDGEWIND_AI_AUX_SIZE], float *aux_norm)
+{
+    for (uint32_t i = 0U; i < EDGEWIND_AI_AUX_SIZE; ++i)
+    {
+        float raw = (aux4 != NULL) ? aux4[i] : g_edgewind_ai_aux_mean[i];
+        aux_norm[i] = EdgeWind_AI_Normalize(raw, g_edgewind_ai_aux_mean[i], g_edgewind_ai_aux_scale[i]);
+    }
+}
+
+static void EdgeWind_AI_FillModelInputs(const float analog_v[4][AD_ACQ_POINTS],
+                                        const float aux4[EDGEWIND_AI_AUX_SIZE],
+                                        ai_buffer *input)
 {
     float *input_dwt = (float *)input[0].data;
     float *input_feat = (float *)input[1].data;
 #if (EDGEWIND_AI_HAS_RAWLITE != 0U)
     float *input_rawlite = (float *)input[2].data;
     float *input_spec = (float *)input[3].data;
+#elif (EDGEWIND_AI_HAS_AUX_INPUT != 0U)
+    float *input_spec = (float *)input[2].data;
+    float *input_aux = (float *)input[3].data;
 #else
     float *input_spec = (float *)input[2].data;
 #endif
@@ -985,9 +1062,16 @@ static void EdgeWind_AI_FillModelInputs(const float analog_v[4][AD_ACQ_POINTS], 
     EdgeWind_AI_ExtractRawliteInput(analog_v, input_rawlite);
 #endif
     EdgeWind_AI_ExtractSpecInput(analog_v, input_spec);
+#if (EDGEWIND_AI_HAS_AUX_INPUT != 0U)
+    EdgeWind_AI_ExtractAuxInput(aux4, input_aux);
+#else
+    (void)aux4;
+#endif
 }
 
 static void EdgeWind_AI_FillResultFromOutput(EdgeWind_AI_Result_t *result,
+                                             const float aux4[EDGEWIND_AI_AUX_SIZE],
+                                             uint8_t aux4_valid_mask,
                                              uint32_t feature_ms,
                                              uint32_t inference_ms,
                                              uint32_t total_ms)
@@ -1000,6 +1084,7 @@ static void EdgeWind_AI_FillResultFromOutput(EdgeWind_AI_Result_t *result,
     result->feature_ms = feature_ms;
     result->inference_ms = inference_ms;
     result->total_ms = total_ms;
+    EdgeWind_AI_CopyAux4(result, aux4, aux4_valid_mask);
 
     for (uint32_t i = 0U; i < EDGEWIND_AI_CLASS_COUNT; ++i)
     {
@@ -1019,10 +1104,12 @@ static void EdgeWind_AI_FillResultFromOutput(EdgeWind_AI_Result_t *result,
 }
 
 int EdgeWind_AI_DebugExtractInputs(const float analog_v[4][AD_ACQ_POINTS],
+                                   const float aux4[EDGEWIND_AI_AUX_SIZE],
                                    float *dwt_norm,
                                    float *feat_norm,
                                    float *rawlite_norm,
-                                   float *spec_norm)
+                                   float *spec_norm,
+                                   float *aux_norm)
 {
     if ((analog_v == NULL) || (dwt_norm == NULL) || (feat_norm == NULL) || (spec_norm == NULL))
     {
@@ -1036,6 +1123,15 @@ int EdgeWind_AI_DebugExtractInputs(const float analog_v[4][AD_ACQ_POINTS],
 #else
     (void)rawlite_norm;
 #endif
+#if (EDGEWIND_AI_HAS_AUX_INPUT != 0U)
+    if ((aux4 == NULL) || (aux_norm == NULL))
+    {
+        return -1;
+    }
+#else
+    (void)aux4;
+    (void)aux_norm;
+#endif
     if (EdgeWind_AI_Init() != 0)
     {
         return -2;
@@ -1047,6 +1143,9 @@ int EdgeWind_AI_DebugExtractInputs(const float analog_v[4][AD_ACQ_POINTS],
     EdgeWind_AI_ExtractRawliteInput(analog_v, rawlite_norm);
 #endif
     EdgeWind_AI_ExtractSpecInput(analog_v, spec_norm);
+#if (EDGEWIND_AI_HAS_AUX_INPUT != 0U)
+    EdgeWind_AI_ExtractAuxInput(aux4, aux_norm);
+#endif
     return 0;
 }
 
@@ -1054,6 +1153,7 @@ int EdgeWind_AI_DebugRunNormalizedInputs(const float *dwt_norm,
                                          const float *feat_norm,
                                          const float *rawlite_norm,
                                          const float *spec_norm,
+                                         const float *aux_norm,
                                          EdgeWind_AI_Result_t *result)
 {
     uint32_t total_start;
@@ -1072,6 +1172,14 @@ int EdgeWind_AI_DebugRunNormalizedInputs(const float *dwt_norm,
 #else
     (void)rawlite_norm;
 #endif
+#if (EDGEWIND_AI_HAS_AUX_INPUT != 0U)
+    if (aux_norm == NULL)
+    {
+        return -1;
+    }
+#else
+    (void)aux_norm;
+#endif
     if (EdgeWind_AI_Init() != 0)
     {
         return -2;
@@ -1083,6 +1191,9 @@ int EdgeWind_AI_DebugRunNormalizedInputs(const float *dwt_norm,
 #if (EDGEWIND_AI_HAS_RAWLITE != 0U)
     memcpy((float *)s_input[2].data, rawlite_norm, EDGEWIND_AI_RAWLITE_SIZE * sizeof(float));
     memcpy((float *)s_input[3].data, spec_norm, EDGEWIND_AI_SPEC_SIZE * sizeof(float));
+#elif (EDGEWIND_AI_HAS_AUX_INPUT != 0U)
+    memcpy((float *)s_input[2].data, spec_norm, EDGEWIND_AI_SPEC_SIZE * sizeof(float));
+    memcpy((float *)s_input[3].data, aux_norm, EDGEWIND_AI_AUX_SIZE * sizeof(float));
 #else
     memcpy((float *)s_input[2].data, spec_norm, EDGEWIND_AI_SPEC_SIZE * sizeof(float));
 #endif
@@ -1095,11 +1206,14 @@ int EdgeWind_AI_DebugRunNormalizedInputs(const float *dwt_norm,
         return -3;
     }
 
-    EdgeWind_AI_FillResultFromOutput(result, 0U, HAL_GetTick() - inference_start, HAL_GetTick() - total_start);
+    EdgeWind_AI_FillResultFromOutput(result, NULL, 0U, 0U, HAL_GetTick() - inference_start, HAL_GetTick() - total_start);
     return 0;
 }
 
-int EdgeWind_AI_RunOnAnalogWindow(const float analog_v[4][AD_ACQ_POINTS], EdgeWind_AI_Result_t *result)
+int EdgeWind_AI_RunOnAnalogWindow(const float analog_v[4][AD_ACQ_POINTS],
+                                  const float aux4[EDGEWIND_AI_AUX_SIZE],
+                                  uint8_t aux4_valid_mask,
+                                  EdgeWind_AI_Result_t *result)
 {
     ai_i32 batch;
     uint32_t total_start;
@@ -1110,11 +1224,17 @@ int EdgeWind_AI_RunOnAnalogWindow(const float analog_v[4][AD_ACQ_POINTS], EdgeWi
     {
         return -1;
     }
+#if (EDGEWIND_AI_HAS_AUX_INPUT != 0U)
+    if (aux4 == NULL)
+    {
+        return -1;
+    }
+#endif
 
     total_start = HAL_GetTick();
     if (EdgeWind_AI_IsPowerOnZeroWindow(analog_v) != 0U)
     {
-        EdgeWind_AI_SetNormalResult(result, HAL_GetTick() - total_start);
+        EdgeWind_AI_SetNormalResult(result, aux4, aux4_valid_mask, HAL_GetTick() - total_start);
         return 0;
     }
 
@@ -1127,7 +1247,7 @@ int EdgeWind_AI_RunOnAnalogWindow(const float analog_v[4][AD_ACQ_POINTS], EdgeWi
     total_start = HAL_GetTick();
     feature_start = total_start;
 
-    EdgeWind_AI_FillModelInputs(analog_v, s_input);
+    EdgeWind_AI_FillModelInputs(analog_v, aux4, s_input);
     result->feature_ms = HAL_GetTick() - feature_start;
 
     inference_start = HAL_GetTick();
@@ -1141,6 +1261,11 @@ int EdgeWind_AI_RunOnAnalogWindow(const float analog_v[4][AD_ACQ_POINTS], EdgeWi
         return -3;
     }
 
-    EdgeWind_AI_FillResultFromOutput(result, result->feature_ms, result->inference_ms, result->total_ms);
+    EdgeWind_AI_FillResultFromOutput(result,
+                                     aux4,
+                                     aux4_valid_mask,
+                                     result->feature_ms,
+                                     result->inference_ms,
+                                     result->total_ms);
     return 0;
 }

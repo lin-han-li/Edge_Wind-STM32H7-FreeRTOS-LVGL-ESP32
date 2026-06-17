@@ -116,6 +116,13 @@
 
 v69 当前只作为下一集成线记录，AI 端已有 smoke 结果，但尚无完整 STM32 deploy package，不能替换 v68 上板主线。
 
+当前监测端实现状态（2026-06-16）：
+
+- 已接入 AD7606 ch4-ch7 的 aux4 采集、窗口均值、0.5V..4.5V 解码和 valid mask。
+- 已新增 `ADSA_AUX4` / `ADSA_AUX4_2` 与 `ADSA_AUX4_valid_mask` / `ADSA_AUX4_2_valid_mask`，跟随 `ADSA_B` / `ADSA_B2` 双缓冲发布。
+- `EdgeWind_AI_RunOnAnalogWindow()` 已改成 `analog_v + aux4 + result` 兼容接口；当前 v68 `AI_NETWORK_IN_NUM=3` 时 aux4 只进入结果缓存和串口日志，不喂入模型。
+- ESP32 SPI summary/full payload 暂不扩展 aux4 字段；v69 板端稳定后再单独改 Web/ESP32 协议。
+
 - 模型族：`dataset_v69_wind_sensor_aux4_public_fused_single`
 - 网络形态：仍是单个 7 类 `network`
 - 新增输入：`X_aux[4]`
@@ -149,6 +156,9 @@ v69 采样约定：
 
 - AD7606 ch0-ch3 仍作为高速 4ch x 4096 AI 波形。
 - AD7606 ch4-ch7 作为低速 aux4，每个 AI 窗口发布一组值。
+- aux4 解码固定使用 `AD7606_RawToVoltsF()` 的外部低压模拟量，不再二次补偿前端分压。
+- 0.5V..4.5V 映射范围固定为 `20..125 C`、`18..115 C`、`8..98 %RH`、`8..110 %`。
+- 窗口均值低于 0.25V 或高于 4.75V 时，该通道使用默认均值 `72.5, 66.5, 53.0, 59.0` 并清除 valid mask 对应 bit。
 - 若 timing pressure 出现，允许 aux4 持有上一窗口值，不允许拖慢 ch0-ch3 高速采样。
 
 ## 已接入的模型文件
@@ -193,6 +203,7 @@ AI 推理输出：
 - `feature_ms`
 - `inference_ms`
 - `total_ms`
+- 串口 bring-up 日志额外输出 `model_version`、`aux4[4]`、`aux_valid`；当前不进入 ESP32 SPI payload。
 
 ESP32 SPI summary payload 当前保留：
 
@@ -309,6 +320,6 @@ python tools\check_stm32_clock_baseline.py
 
 1. 先完成 v68 HIL 基线验收：normal 连续 5 分钟、七类回放、记录 top1/confidence/ppermil/耗时和 Web full frame 状态。
 2. AI 端只在 v68 基线通过后推进 v69 全量训练与正式部署包；smoke 模型不得上板替换 v68。
-3. v69 监测端接入时先只扩展 `X_aux[4]` 和串口 bring-up 日志，不强制扩展 ESP32/Web 协议。
+3. 监测端已完成 aux4 采集和串口 bring-up 日志的 v68 兼容接入；下一步等 AI 端正式 v69 STM32 deploy package 后再替换 `network` 和预处理参数。
 4. v69 板端稳定后，再把 `probabilities[7]`、AI 耗时、aux4 作为可选 JSON 字段加入上传和 Web 展示。
 5. 若后续重新启用 guard/router，必须重新定义三端契约，不能直接覆盖 v68/v69 单模型接口。
