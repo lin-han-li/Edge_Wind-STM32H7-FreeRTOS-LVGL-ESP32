@@ -12,9 +12,7 @@ extern "C" {
 #define EDGEWIND_AI_SPEC_BINS (512U)
 #define EDGEWIND_AI_CHANNELS  (4U)
 #define EDGEWIND_AI_SPEC_SIZE (EDGEWIND_AI_SPEC_BINS * EDGEWIND_AI_CHANNELS)
-#ifndef EDGEWIND_AI_AUX_SIZE
 #define EDGEWIND_AI_AUX_SIZE  (4U)
-#endif
 
 extern const float g_edgewind_ai_feat_mean[EDGEWIND_AI_FEAT_SIZE];
 extern const float g_edgewind_ai_feat_scale[EDGEWIND_AI_FEAT_SIZE];

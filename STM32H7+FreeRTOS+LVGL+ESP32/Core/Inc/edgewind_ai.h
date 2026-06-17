@@ -2,6 +2,7 @@
 #define EDGEWIND_AI_H
 
 #include "ad_acq_buffers.h"
+#include "edgewind_ai_preprocess_params.h"
 
 #include <stdint.h>
 
@@ -11,8 +12,9 @@ extern "C" {
 
 #define EDGEWIND_AI_CLASS_COUNT       (7U)
 #define EDGEWIND_AI_CONFIDENCE_MIN    (0.80f)
-#ifndef EDGEWIND_AI_AUX_SIZE
-#define EDGEWIND_AI_AUX_SIZE          (AD_AUX4_COUNT)
+
+#if (EDGEWIND_AI_AUX_SIZE != AD_AUX4_COUNT)
+#error "EdgeWind aux4 size must match the AD7606 ch4..ch7 window count"
 #endif
 
 typedef struct

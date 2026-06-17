@@ -45,7 +45,7 @@
 #endif
 
 #define EDGEWIND_AI_MODEL_VERSION_V68     "dataset_v68_wind_sensor_public_fused_single_v6"
-#define EDGEWIND_AI_MODEL_VERSION_V69     "dataset_v69_wind_sensor_aux4_public_fused_single"
+#define EDGEWIND_AI_MODEL_VERSION_V69     "dataset_v69_wind_sensor_aux4_public_fused_single_publicfix"
 
 #if (AI_NETWORK_IN_NUM == 4)
 #define EDGEWIND_AI_HAS_AUX_INPUT         (1U)
@@ -55,6 +55,21 @@
 
 #if (AI_NETWORK_IN_NUM != 3) && (AI_NETWORK_IN_NUM != 4)
 #error "EdgeWind AI expects a 3-input v68 or 4-input v69 network"
+#endif
+
+#if (EDGEWIND_AI_HAS_AUX_INPUT != 0U)
+#if (AI_NETWORK_IN_1_SIZE != EDGEWIND_AI_AUX_SIZE) || \
+    (AI_NETWORK_IN_2_SIZE != EDGEWIND_AI_DWT_SIZE) || \
+    (AI_NETWORK_IN_3_SIZE != EDGEWIND_AI_FEAT_SIZE) || \
+    (AI_NETWORK_IN_4_SIZE != EDGEWIND_AI_SPEC_SIZE)
+#error "EdgeWind v69 network input order must be X_aux, X_dwt, X_feat, X_spec"
+#endif
+#else
+#if (AI_NETWORK_IN_1_SIZE != EDGEWIND_AI_DWT_SIZE) || \
+    (AI_NETWORK_IN_2_SIZE != EDGEWIND_AI_FEAT_SIZE) || \
+    (AI_NETWORK_IN_3_SIZE != EDGEWIND_AI_SPEC_SIZE)
+#error "EdgeWind v68 network input order must be X_dwt, X_feat, X_spec"
+#endif
 #endif
 
 #if (EDGEWIND_AI_HAS_RAWLITE != 0U) && (EDGEWIND_AI_HAS_AUX_INPUT != 0U)
@@ -1044,16 +1059,20 @@ static void EdgeWind_AI_FillModelInputs(const float analog_v[4][AD_ACQ_POINTS],
                                         const float aux4[EDGEWIND_AI_AUX_SIZE],
                                         ai_buffer *input)
 {
+#if (EDGEWIND_AI_HAS_AUX_INPUT != 0U)
+    float *input_aux = (float *)input[0].data;
+    float *input_dwt = (float *)input[1].data;
+    float *input_feat = (float *)input[2].data;
+    float *input_spec = (float *)input[3].data;
+#else
     float *input_dwt = (float *)input[0].data;
     float *input_feat = (float *)input[1].data;
 #if (EDGEWIND_AI_HAS_RAWLITE != 0U)
     float *input_rawlite = (float *)input[2].data;
     float *input_spec = (float *)input[3].data;
-#elif (EDGEWIND_AI_HAS_AUX_INPUT != 0U)
-    float *input_spec = (float *)input[2].data;
-    float *input_aux = (float *)input[3].data;
 #else
     float *input_spec = (float *)input[2].data;
+#endif
 #endif
 
     EdgeWind_AI_ExtractDwtInput(analog_v, input_dwt);
@@ -1186,15 +1205,19 @@ int EdgeWind_AI_DebugRunNormalizedInputs(const float *dwt_norm,
     }
 
     total_start = HAL_GetTick();
+#if (EDGEWIND_AI_HAS_RAWLITE != 0U)
     memcpy((float *)s_input[0].data, dwt_norm, EDGEWIND_AI_DWT_SIZE * sizeof(float));
     memcpy((float *)s_input[1].data, feat_norm, EDGEWIND_AI_FEAT_SIZE * sizeof(float));
-#if (EDGEWIND_AI_HAS_RAWLITE != 0U)
     memcpy((float *)s_input[2].data, rawlite_norm, EDGEWIND_AI_RAWLITE_SIZE * sizeof(float));
     memcpy((float *)s_input[3].data, spec_norm, EDGEWIND_AI_SPEC_SIZE * sizeof(float));
 #elif (EDGEWIND_AI_HAS_AUX_INPUT != 0U)
-    memcpy((float *)s_input[2].data, spec_norm, EDGEWIND_AI_SPEC_SIZE * sizeof(float));
-    memcpy((float *)s_input[3].data, aux_norm, EDGEWIND_AI_AUX_SIZE * sizeof(float));
+    memcpy((float *)s_input[0].data, aux_norm, EDGEWIND_AI_AUX_SIZE * sizeof(float));
+    memcpy((float *)s_input[1].data, dwt_norm, EDGEWIND_AI_DWT_SIZE * sizeof(float));
+    memcpy((float *)s_input[2].data, feat_norm, EDGEWIND_AI_FEAT_SIZE * sizeof(float));
+    memcpy((float *)s_input[3].data, spec_norm, EDGEWIND_AI_SPEC_SIZE * sizeof(float));
 #else
+    memcpy((float *)s_input[0].data, dwt_norm, EDGEWIND_AI_DWT_SIZE * sizeof(float));
+    memcpy((float *)s_input[1].data, feat_norm, EDGEWIND_AI_FEAT_SIZE * sizeof(float));
     memcpy((float *)s_input[2].data, spec_norm, EDGEWIND_AI_SPEC_SIZE * sizeof(float));
 #endif
 

@@ -2,7 +2,7 @@
   ******************************************************************************
   * @file    network.h
   * @author  AST Embedded Analytics Research Platform
-  * @date    2026-06-16T04:11:14+0800
+  * @date    2026-06-17T01:41:18+0800
   * @brief   AI Tool Automatic Code Generator for Embedded NN computing
   ******************************************************************************
   * @attention
@@ -31,7 +31,7 @@
 #define AI_NETWORK_OUTPUTS_IN_ACTIVATIONS  (4)
 
 /******************************************************************************/
-#define AI_NETWORK_IN_NUM        (3)
+#define AI_NETWORK_IN_NUM        (4)
 
 AI_DEPRECATED
 #define AI_NETWORK_IN \
@@ -41,25 +41,31 @@ AI_DEPRECATED
   AI_NETWORK_IN_1_SIZE, \
   AI_NETWORK_IN_2_SIZE, \
   AI_NETWORK_IN_3_SIZE, \
+  AI_NETWORK_IN_4_SIZE, \
 }
 #define AI_NETWORK_IN_SIZE_BYTES { \
   AI_NETWORK_IN_1_SIZE_BYTES, \
   AI_NETWORK_IN_2_SIZE_BYTES, \
   AI_NETWORK_IN_3_SIZE_BYTES, \
+  AI_NETWORK_IN_4_SIZE_BYTES, \
 }
 #define AI_NETWORK_IN_1_FORMAT      (AI_BUFFER_FORMAT_FLOAT)
-#define AI_NETWORK_IN_1_CHANNEL     (104)
-#define AI_NETWORK_IN_1_SIZE        (104)
-#define AI_NETWORK_IN_1_SIZE_BYTES  (416)
+#define AI_NETWORK_IN_1_CHANNEL     (4)
+#define AI_NETWORK_IN_1_SIZE        (4)
+#define AI_NETWORK_IN_1_SIZE_BYTES  (16)
 #define AI_NETWORK_IN_2_FORMAT      (AI_BUFFER_FORMAT_FLOAT)
-#define AI_NETWORK_IN_2_CHANNEL     (116)
-#define AI_NETWORK_IN_2_SIZE        (116)
-#define AI_NETWORK_IN_2_SIZE_BYTES  (464)
+#define AI_NETWORK_IN_2_CHANNEL     (104)
+#define AI_NETWORK_IN_2_SIZE        (104)
+#define AI_NETWORK_IN_2_SIZE_BYTES  (416)
 #define AI_NETWORK_IN_3_FORMAT      (AI_BUFFER_FORMAT_FLOAT)
-#define AI_NETWORK_IN_3_HEIGHT      (512)
-#define AI_NETWORK_IN_3_CHANNEL     (4)
-#define AI_NETWORK_IN_3_SIZE        (2048)
-#define AI_NETWORK_IN_3_SIZE_BYTES  (8192)
+#define AI_NETWORK_IN_3_CHANNEL     (116)
+#define AI_NETWORK_IN_3_SIZE        (116)
+#define AI_NETWORK_IN_3_SIZE_BYTES  (464)
+#define AI_NETWORK_IN_4_FORMAT      (AI_BUFFER_FORMAT_FLOAT)
+#define AI_NETWORK_IN_4_HEIGHT      (512)
+#define AI_NETWORK_IN_4_CHANNEL     (4)
+#define AI_NETWORK_IN_4_SIZE        (2048)
+#define AI_NETWORK_IN_4_SIZE_BYTES  (8192)
 
 /******************************************************************************/
 #define AI_NETWORK_OUT_NUM       (1)
@@ -80,7 +86,7 @@ AI_DEPRECATED
 #define AI_NETWORK_OUT_1_SIZE_BYTES  (28)
 
 /******************************************************************************/
-#define AI_NETWORK_N_NODES (25)
+#define AI_NETWORK_N_NODES (27)
 
 
 AI_API_DECLARE_BEGIN
