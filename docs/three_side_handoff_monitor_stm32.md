@@ -112,21 +112,23 @@
 
 训练端报告中的验证范围是 val/test/hil_holdout split，不代表真实风场长期准确率。
 
-## v69 aux4 下一集成线
+## v69 aux4 RC 接入状态
 
-v69 当前只作为下一集成线记录，AI 端已有 smoke 结果，但尚无完整 STM32 deploy package，不能替换 v68 上板主线。
+v69 当前已按 release candidate 接入监测端固件，但尚未完成板端 normal 5 分钟和七类 HIL 回放验收。它仍不能直接声明正式替代 v68/v6；若验收退化，保持 v68 回退线。
 
-当前监测端实现状态（2026-06-16）：
+当前监测端实现状态（2026-06-17）：
 
 - 已接入 AD7606 ch4-ch7 的 aux4 采集、窗口均值、0.5V..4.5V 解码和 valid mask。
 - 已新增 `ADSA_AUX4` / `ADSA_AUX4_2` 与 `ADSA_AUX4_valid_mask` / `ADSA_AUX4_2_valid_mask`，跟随 `ADSA_B` / `ADSA_B2` 双缓冲发布。
-- `EdgeWind_AI_RunOnAnalogWindow()` 已改成 `analog_v + aux4 + result` 兼容接口；当前 v68 `AI_NETWORK_IN_NUM=3` 时 aux4 只进入结果缓存和串口日志，不喂入模型。
+- `EdgeWind_AI_RunOnAnalogWindow()` 已改成 `analog_v + aux4 + result` 兼容接口；当前 v69 RC `AI_NETWORK_IN_NUM=4` 时 aux4 已进入模型。
 - ESP32 SPI summary/full payload 暂不扩展 aux4 字段；v69 板端稳定后再单独改 Web/ESP32 协议。
 
-- 模型族：`dataset_v69_wind_sensor_aux4_public_fused_single`
+- 模型族：`dataset_v69_wind_sensor_aux4_public_fused_single_publicfix`
+- 部署包：`C:\Users\pengjianzhong\Desktop\MY_Project\EdgeWind_AI_Training\stm32_deploy_packages\dataset_v69_wind_sensor_aux4_public_fused_single_publicfix_single7_20260617_001615_rc`
 - 网络形态：仍是单个 7 类 `network`
 - 新增输入：`X_aux[4]`
-- `X_aux[4]` 顺序：
+- X-CUBE-AI 生成输入顺序：`X_aux[4]`、`X_dwt[104]`、`X_feat[116]`、`X_spec[512,4]`
+- `X_aux[4]` 物理顺序：
   - `T_igbt_C`
   - `T_dc_cap_C`
   - `RH_cabinet_pct`
@@ -146,11 +148,11 @@ v69 当前只作为下一集成线记录，AI 端已有 smoke 结果，但尚无
 
 监测端接入 v69 的门禁：
 
-1. AI 端完成全量 v69 训练、TFLite 导出、X-CUBE-AI 生成、golden vectors 和正式 STM32 deploy package。
-2. v69 与 v68 对比不劣化：重点看 E00 recall、E00->E01/E04、E01-E06 mean recall，以及 aux missing/mean ablation。
-3. v68 HIL 基线先跑通 normal 5 分钟和七类回放。
-4. CubeMX/X-CUBE-AI 生成前后必须运行 `python tools\check_stm32_clock_baseline.py`。
-5. v69 normal 回放若反复误报 E01/E04，立即保持 v68，不继续扩展 Web 协议。
+1. 已接入 AI 端 v69 publicfix RC deploy package；该包仍带 release candidate 警告。
+2. Keil rebuild 必须保持 `0 Error(s), 0 Warning(s)`，且 `python tools\check_stm32_clock_baseline.py` 通过。
+3. v69 normal 回放必须连续 5 分钟不反复误报 E01/E04。
+4. 七类 HIL 回放记录 top1、confidence、ppermil 和耗时；若退化，立即保持 v68，不继续扩展 Web 协议。
+5. v69 板端验收前，ESP32/Web payload 不新增 aux4 字段。
 
 v69 采样约定：
 
@@ -177,10 +179,12 @@ STM32 工程中已替换：
 
 当前 X-CUBE-AI 摘要：
 
-- model hash：`0x268ca3fc9c57c9f78c3e8269cc0b14ea`
-- MACC：`6,216,960`
-- weights：`238,972 B`
-- activations：`295,904 B`
+- TFLite SHA256：`8ea157ca0c56ff9a0fcf9c9b47ec1b2bc90d6f5d4d932f0a4e980eed0bdd2761`
+- preprocess SHA256：`bf0f3d9324d62f79b823697c272f43ff538bde8b73ce66ef750f0f3523b838c8`
+- MACC：`6,225,536`
+- weights：`273,020 B`
+- activations：`295,920 B`
+- input order：`X_aux[4]`、`X_dwt[104]`、`X_feat[116]`、`X_spec[512,4]`
 - activation 外部 SDRAM 起始地址：`0xC0600000`
 - upload snapshot 起始地址：`0xC0680000`
 
