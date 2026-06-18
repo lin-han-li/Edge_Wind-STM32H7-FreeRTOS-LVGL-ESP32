@@ -266,6 +266,38 @@ def _downsample_list(arr, max_points):
     # 可能多一点，最终裁剪到 max_points
     return sampled[:max_points]
 
+AUX_CHANNEL_FIELDS = {
+    4: ('t_igbt_c', 'IGBT温度', '°C', [20, 125]),
+    5: ('t_dc_cap_c', '电容温度', '°C', [18, 115]),
+    6: ('rh_cabinet_pct', '柜内湿度', '%RH', [8, 98]),
+    7: ('wind_load_pct', '风机负载', '%', [8, 110]),
+}
+
+CHANNEL_DISPLAY_META = {
+    0: ('直流母线(+)', 'V', 'DC', [0, 800]),
+    1: ('直流母线(-)', 'V', 'DC', [-800, 0]),
+    2: ('负载电流', 'A', 'Current', [0, 60]),
+    3: ('漏电流', 'mA', 'Leakage', [0, 50]),
+    4: ('IGBT温度', '°C', 'AuxTemp', [20, 125]),
+    5: ('电容温度', '°C', 'AuxTemp', [18, 115]),
+    6: ('柜内湿度', '%RH', 'AuxHumidity', [8, 98]),
+    7: ('风机负载', '%', 'AuxLoad', [8, 110]),
+}
+
+
+def _channel_valid_from_payload(ch: dict, ch_id: int | None) -> bool:
+    if not isinstance(ch, dict):
+        return False
+    if ch.get('valid') is not None:
+        return bool(ch.get('valid'))
+    flags = ch.get('flags')
+    if flags is None:
+        flags = ch.get('channel_flags')
+    try:
+        return (int(flags) & 0x01) != 0
+    except Exception:
+        return True if isinstance(ch_id, int) and ch_id < 4 else False
+
 def _submit_history_data(node_id: str, processed_data: dict) -> None:
     """后台保存轻量历史值，避免设备 HTTP 请求被 SQLite commit 阻塞。"""
     if not db_executor or not app_instance:
@@ -276,6 +308,11 @@ def _submit_history_data(node_id: str, processed_data: dict) -> None:
         'voltage_neg': processed_data.get('voltage_neg', 0),
         'current': processed_data.get('current', 0),
         'leakage': processed_data.get('leakage', 0),
+        't_igbt_c': processed_data.get('t_igbt_c'),
+        't_dc_cap_c': processed_data.get('t_dc_cap_c'),
+        'rh_cabinet_pct': processed_data.get('rh_cabinet_pct'),
+        'wind_load_pct': processed_data.get('wind_load_pct'),
+        'aux_valid_mask': processed_data.get('aux_valid_mask'),
     }
 
     def _job():
@@ -327,6 +364,8 @@ def _lighten_channels(channels):
             'type': ch.get('type', ''),
             'range': ch.get('range', []),
             'color': ch.get('color', ''),
+            'valid': ch.get('valid'),
+            'flags': ch.get('flags', ch.get('channel_flags')),
             'value': ch.get('value', ch.get('current_value', 0)),
         })
     return out
@@ -1012,7 +1051,7 @@ def register_device():
                         'report_mode': _get_report_mode(device_id),
                         'downsample_step': (active_nodes.get(device_id, {}).get('data', {}) or {}).get('downsample_step'),
                         'upload_points': (active_nodes.get(device_id, {}).get('data', {}) or {}).get('upload_points'),
-                        'metrics': {'voltage': 0, 'voltage_neg': 0, 'current': 0, 'leakage': 0}
+                        'metrics': {'voltage': 0, 'voltage_neg': 0, 'current': 0, 'leakage': 0, 'aux_valid_mask': 0}
                     }, namespace='/')
             except Exception:
                 pass
@@ -1069,7 +1108,7 @@ def register_device():
                         'report_mode': _get_report_mode(device_id),
                         'downsample_step': (active_nodes.get(device_id, {}).get('data', {}) or {}).get('downsample_step'),
                         'upload_points': (active_nodes.get(device_id, {}).get('data', {}) or {}).get('upload_points'),
-                        'metrics': {'voltage': 0, 'voltage_neg': 0, 'current': 0, 'leakage': 0}
+                        'metrics': {'voltage': 0, 'voltage_neg': 0, 'current': 0, 'leakage': 0, 'aux_valid_mask': 0}
                     }, namespace='/')
             except Exception:
                 pass
@@ -1276,7 +1315,7 @@ def _process_node_report(data: dict,
                          content_length: int | None,
                          response_extra: dict | None = None,
                          perf_extra: dict | None = None):
-    """????????????? JSON heartbeat ? binary full frame?"""
+    """Process one STM32/ESP32 node report from JSON heartbeat or binary full frame."""
     if not isinstance(data, dict):
         data = {}
 
@@ -1337,6 +1376,9 @@ def _process_node_report(data: dict,
 
     processed_data = {
         'voltage': 0, 'voltage_neg': 0, 'current': 0, 'leakage': 0,
+        't_igbt_c': None, 't_dc_cap_c': None, 'rh_cabinet_pct': None, 'wind_load_pct': None,
+        'aux_valid_mask': 0,
+        'aux4': {},
         'voltage_waveform': [], 'voltage_spectrum': [],
         'voltage_neg_waveform': [], 'voltage_neg_spectrum': [],
         'current_waveform': [], 'current_spectrum': [],
@@ -1398,16 +1440,41 @@ def _process_node_report(data: dict,
         except Exception:
             val_float = 0.0
             bad_val += 1
+        valid = _channel_valid_from_payload(ch, ch_id if isinstance(ch_id, int) else None)
+        display_meta = CHANNEL_DISPLAY_META.get(ch_id) if isinstance(ch_id, int) else None
+        aux_meta = AUX_CHANNEL_FIELDS.get(ch_id) if isinstance(ch_id, int) else None
+        if display_meta:
+            label, default_unit, default_type, default_range = display_meta
+            unit = default_unit
+            channel_type = default_type
+            channel_range = default_range
+            if aux_meta:
+                wave = []
+                spec = []
+        elif aux_meta:
+            aux_field, aux_label, aux_unit, aux_range = aux_meta
+            label = aux_label
+            unit = ch.get('unit') or aux_unit
+            channel_type = ch.get('type') or 'Aux'
+            channel_range = ch.get('range') or aux_range
+            wave = []
+            spec = []
+        else:
+            unit = ch.get('unit', '')
+            channel_type = ch.get('type', '')
+            channel_range = ch.get('range', '')
 
         processed_channels.append({
             'id': ch_id,
             'channel_id': ch_id,
             'label': label,
             'name': ch.get('name', label),
-            'unit': ch.get('unit', ''),
-            'type': ch.get('type', ''),
-            'range': ch.get('range', ''),
+            'unit': unit,
+            'type': channel_type,
+            'range': channel_range,
             'color': ch.get('color', ''),
+            'valid': valid,
+            'flags': ch.get('flags', ch.get('channel_flags')),
             'value': val_float,
             'currentValue': val_float,
             'current_value': val_float,
@@ -1418,44 +1485,63 @@ def _process_node_report(data: dict,
         })
 
         mapped = False
-        if '??' in label:
-            if ('-' in label) or ('?' in label):
-                processed_data['voltage_neg'] = val_float
-                processed_data['voltage_neg_waveform'] = wave
-                processed_data['voltage_neg_spectrum'] = spec
-            else:
-                processed_data['voltage'] = val_float
-                processed_data['voltage_waveform'] = wave
-                processed_data['voltage_spectrum'] = spec
-            mapped = True
-        elif '?' in label:
-            processed_data['leakage'] = val_float
-            processed_data['leakage_waveform'] = wave
-            processed_data['leakage_spectrum'] = spec
-            mapped = True
-        elif ('??' in label or '??' in label) and '?' not in label:
-            processed_data['current'] = val_float
-            processed_data['current_waveform'] = wave
-            processed_data['current_spectrum'] = spec
-            mapped = True
-
-        if (not mapped) and isinstance(ch_id, int):
+        if isinstance(ch_id, int):
             if ch_id == 0:
                 processed_data['voltage'] = val_float
                 processed_data['voltage_waveform'] = wave
                 processed_data['voltage_spectrum'] = spec
+                mapped = True
             elif ch_id == 1:
                 processed_data['voltage_neg'] = val_float
                 processed_data['voltage_neg_waveform'] = wave
                 processed_data['voltage_neg_spectrum'] = spec
+                mapped = True
             elif ch_id == 2:
                 processed_data['current'] = val_float
                 processed_data['current_waveform'] = wave
                 processed_data['current_spectrum'] = spec
+                mapped = True
             elif ch_id == 3:
                 processed_data['leakage'] = val_float
                 processed_data['leakage_waveform'] = wave
                 processed_data['leakage_spectrum'] = spec
+                mapped = True
+            elif ch_id in AUX_CHANNEL_FIELDS:
+                aux_field, aux_label, aux_unit, aux_range = AUX_CHANNEL_FIELDS[ch_id]
+                processed_data[aux_field] = val_float
+                if valid:
+                    processed_data['aux_valid_mask'] = int(processed_data.get('aux_valid_mask') or 0) | (1 << (ch_id - 4))
+                processed_data['aux4'][aux_field] = {
+                    'id': ch_id,
+                    'label': aux_label,
+                    'unit': aux_unit,
+                    'range': aux_range,
+                    'value': val_float,
+                    'valid': valid,
+                }
+                mapped = True
+
+        if not mapped:
+            if '??' in label:
+                if ('-' in label) or ('?' in label):
+                    processed_data['voltage_neg'] = val_float
+                    processed_data['voltage_neg_waveform'] = wave
+                    processed_data['voltage_neg_spectrum'] = spec
+                else:
+                    processed_data['voltage'] = val_float
+                    processed_data['voltage_waveform'] = wave
+                    processed_data['voltage_spectrum'] = spec
+                mapped = True
+            elif '?' in label:
+                processed_data['leakage'] = val_float
+                processed_data['leakage_waveform'] = wave
+                processed_data['leakage_spectrum'] = spec
+                mapped = True
+            elif ('??' in label or '??' in label) and '?' not in label:
+                processed_data['current'] = val_float
+                processed_data['current_waveform'] = wave
+                processed_data['current_spectrum'] = spec
+                mapped = True
 
     processed_data['channels'] = processed_channels
     processed_data['waveform_points_raw_max'] = max((wave_len for _, wave_len, _ in raw_series_lens), default=0)
@@ -1611,7 +1697,7 @@ def _process_node_report(data: dict,
     db_op_submitted = False
 
     if previous_fault == 'E00' and current_fault != 'E00':
-        logger.info(f'?? ???????: {node_id} -> {current_fault}')
+        logger.info(f'[fault] detected: {node_id} -> {current_fault}')
 
         if node_id not in node_snapshot_saved or node_snapshot_saved[node_id].get('fault_code') != current_fault:
             before_data = get_latest_normal_data(node_id)
@@ -1630,7 +1716,7 @@ def _process_node_report(data: dict,
             db_op_submitted = True
 
     elif previous_fault != 'E00' and current_fault == 'E00':
-        logger.info(f'?? ???????: {node_id} {previous_fault} -> E00')
+        logger.info(f'[fault] recovered: {node_id} {previous_fault} -> E00')
 
         fault_data = get_latest_fault_data(node_id)
         if fault_data:
@@ -1664,6 +1750,11 @@ def _process_node_report(data: dict,
                 'voltage_neg': processed_data.get('voltage_neg', 0),
                 'current': processed_data.get('current', 0),
                 'leakage': processed_data.get('leakage', 0),
+                't_igbt_c': processed_data.get('t_igbt_c'),
+                't_dc_cap_c': processed_data.get('t_dc_cap_c'),
+                'rh_cabinet_pct': processed_data.get('rh_cabinet_pct'),
+                'wind_load_pct': processed_data.get('wind_load_pct'),
+                'aux_valid_mask': processed_data.get('aux_valid_mask', 0),
             }
         }
 
@@ -1682,7 +1773,7 @@ def _process_node_report(data: dict,
                 f'node_{node_id}',
             )
         except Exception as exc:
-            logger.warning(f'[SocketIO] ??????????: {exc}')
+            logger.warning(f'[SocketIO] emit failed: {exc}')
 
     t_emit = time.perf_counter()
 
@@ -1756,7 +1847,7 @@ def _process_node_report(data: dict,
 
 @api_bp.route('/node/heartbeat', methods=['POST'])
 def node_heartbeat():
-    """?????? - ?? STM32/ESP32 JSON ???"""
+    """Receive STM32/ESP32 JSON heartbeat reports."""
     try:
         t0 = time.perf_counter()
         auth_resp = _device_auth_or_401()
@@ -1774,7 +1865,7 @@ def node_heartbeat():
         )
     except Exception as exc:
         db.session.rollback()
-        logger.error(f'? Heartbeat failed: {exc}')
+        logger.error(f'Heartbeat failed: {exc}')
         import traceback
         logger.error(traceback.format_exc())
         return jsonify({'error': str(exc)}), 500
@@ -1782,7 +1873,7 @@ def node_heartbeat():
 
 @api_bp.route('/node/full_frame_bin', methods=['POST'])
 def node_full_frame_bin():
-    """????? full frame ?????"""
+    """Receive STM32/ESP32 binary full frame reports."""
     try:
         t0 = time.perf_counter()
         auth_resp = _device_auth_or_401()
@@ -1831,7 +1922,7 @@ def node_full_frame_bin():
         return jsonify({'error': str(exc)}), 400
     except Exception as exc:
         db.session.rollback()
-        logger.error(f'? Full frame binary failed: {exc}')
+        logger.error(f'Full frame binary failed: {exc}')
         import traceback
         logger.error(traceback.format_exc())
         return jsonify({'error': str(exc)}), 500

@@ -89,13 +89,20 @@ typedef struct {
     uint8_t channel_id;
     const char *label;
     const char *unit;
+    const char *type;
+    float range_min;
+    float range_max;
 } channel_meta_t;
 
 static const channel_meta_t s_channel_meta[REPORT_MAX_CHANNELS] = {
-    {0, "\xE7\x9B\xB4\xE6\xB5\x81\xE6\xAF\x8D\xE7\xBA\xBF(+)", "V"},
-    {1, "\xE7\x9B\xB4\xE6\xB5\x81\xE6\xAF\x8D\xE7\xBA\xBF(-)", "V"},
-    {2, "\xE8\xB4\x9F\xE8\xBD\xBD\xE7\x94\xB5\xE6\xB5\x81", "A"},
-    {3, "\xE6\xBC\x8F\xE7\x94\xB5\xE6\xB5\x81", "mA"},
+    {0, "\xE7\x9B\xB4\xE6\xB5\x81\xE6\xAF\x8D\xE7\xBA\xBF(+)", "V", "DC", 0.0f, 800.0f},
+    {1, "\xE7\x9B\xB4\xE6\xB5\x81\xE6\xAF\x8D\xE7\xBA\xBF(-)", "V", "DC", -800.0f, 0.0f},
+    {2, "\xE8\xB4\x9F\xE8\xBD\xBD\xE7\x94\xB5\xE6\xB5\x81", "A", "Current", 0.0f, 60.0f},
+    {3, "\xE6\xBC\x8F\xE7\x94\xB5\xE6\xB5\x81", "mA", "Leakage", 0.0f, 50.0f},
+    {4, "IGBT\xE6\xB8\xA9\xE5\xBA\xA6", "\xC2\xB0""C", "AuxTemp", 20.0f, 125.0f},
+    {5, "\xE7\x94\xB5\xE5\xAE\xB9\xE6\xB8\xA9\xE5\xBA\xA6", "\xC2\xB0""C", "AuxTemp", 18.0f, 115.0f},
+    {6, "\xE6\x9F\x9C\xE5\x86\x85\xE6\xB9\xBF\xE5\xBA\xA6", "%RH", "AuxHumidity", 8.0f, 98.0f},
+    {7, "\xE9\xA3\x8E\xE6\x9C\xBA\xE8\xB4\x9F\xE8\xBD\xBD", "%", "AuxLoad", 8.0f, 110.0f},
 };
 
 static const channel_meta_t *find_channel_meta(uint8_t channel_id)
@@ -552,6 +559,10 @@ static bool emit_heartbeat_json(json_builder_t *builder,
         builder_append(builder, ",");
         builder_append(builder, "\"unit\":");
         builder_append_json_string(builder, meta->unit);
+        builder_append(builder, ",\"type\":");
+        builder_append_json_string(builder, meta->type);
+        builder_append(builder, ",\"valid\":%s", (channel->channel_flags & REPORT_CHANNEL_FLAG_VALID) ? "true" : "false");
+        builder_append(builder, ",\"range\":[%.1f,%.1f]", (double)meta->range_min, (double)meta->range_max);
 
         if (frame->mode == REPORT_MODE_FULL) {
             builder_append(builder, ",\"waveform\":");
@@ -712,6 +723,7 @@ static void fill_full_channel_meta(ew_full_v1_channel_meta_t *meta,
 {
     memset(meta, 0, sizeof(*meta));
     meta->channel_id = channel->channel_id;
+    meta->reserved0 = channel->channel_flags;
     meta->waveform_count = (uint16_t) channel->waveform_count;
     meta->fft_count = (uint16_t) channel->fft_count;
     meta->value_scaled = channel->value_scaled;

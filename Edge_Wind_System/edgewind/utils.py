@@ -99,6 +99,8 @@ def save_fault_snapshot(db, app, device_id, fault_code, snapshot_type, data):
                 current_val = channel.get('current_value') or channel.get('value', 0)
                 if current_val is None:
                     current_val = 0
+                if not waveform:
+                    stats = calculate_statistics([current_val])
                 
                 snapshot = FaultSnapshot(
                     device_id=device_id,
@@ -220,4 +222,3 @@ def create_work_order_from_fault(db, device_id, fault_code, location, fault_time
         logger.error(traceback.format_exc())
         db.session.rollback()
         return None
-

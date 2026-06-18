@@ -23,8 +23,8 @@
  */
 (function(root) {
     const engineeringRanges = Object.freeze({
-        voltage: Object.freeze({ min: -500, max: 500 }),
-        voltage_neg: Object.freeze({ min: -500, max: 500 }),
+        voltage: Object.freeze({ min: 0, max: 800 }),
+        voltage_neg: Object.freeze({ min: -800, max: 0 }),
         current: Object.freeze({ min: -500, max: 500 }),
         leakage: Object.freeze({ min: -500, max: 500 })
     });

@@ -32,10 +32,10 @@ static report_channel_tracking_t s_tracking[REPORT_MAX_CHANNELS];
  */
 static report_frame_t s_full_frame_storage;
 static bool s_full_frame_in_use;
-static int16_t s_full_waveform_storage[REPORT_MAX_CHANNELS][REPORT_FULL_MAX_WAVEFORM_COUNT];
-static int16_t s_full_fft_storage[REPORT_MAX_CHANNELS][REPORT_FULL_MAX_FFT_COUNT];
-static uint8_t s_full_waveform_received_storage[REPORT_MAX_CHANNELS][(REPORT_FULL_MAX_WAVEFORM_COUNT + 7U) / 8U];
-static uint8_t s_full_fft_received_storage[REPORT_MAX_CHANNELS][(REPORT_FULL_MAX_FFT_COUNT + 7U) / 8U];
+static int16_t s_full_waveform_storage[REPORT_MAX_WAVE_CHANNELS][REPORT_FULL_MAX_WAVEFORM_COUNT];
+static int16_t s_full_fft_storage[REPORT_MAX_WAVE_CHANNELS][REPORT_FULL_MAX_FFT_COUNT];
+static uint8_t s_full_waveform_received_storage[REPORT_MAX_WAVE_CHANNELS][(REPORT_FULL_MAX_WAVEFORM_COUNT + 7U) / 8U];
+static uint8_t s_full_fft_received_storage[REPORT_MAX_WAVE_CHANNELS][(REPORT_FULL_MAX_FFT_COUNT + 7U) / 8U];
 
 static void copy_fixed_string(char *dst, size_t dst_size, const char *src, size_t src_size)
 {
@@ -96,11 +96,13 @@ static void free_tracking(report_channel_tracking_t *tracking)
     }
     for (size_t i = 0; i < REPORT_MAX_CHANNELS; ++i) {
         if (tracking[i].waveform_received != NULL &&
-            tracking[i].waveform_received != s_full_waveform_received_storage[i]) {
+            !(i < REPORT_MAX_WAVE_CHANNELS &&
+              tracking[i].waveform_received == s_full_waveform_received_storage[i])) {
             free(tracking[i].waveform_received);
         }
         if (tracking[i].fft_received != NULL &&
-            tracking[i].fft_received != s_full_fft_received_storage[i]) {
+            !(i < REPORT_MAX_WAVE_CHANNELS &&
+              tracking[i].fft_received == s_full_fft_received_storage[i])) {
             free(tracking[i].fft_received);
         }
         tracking[i].waveform_received = NULL;
@@ -128,6 +130,7 @@ static void report_frame_fill_from_summary(report_frame_t *frame,
         const protocol_channel_summary_t *src = &payload->channels[i];
         report_channel_data_t *dst = &frame->channels[i];
         dst->channel_id = src->channel_id;
+        dst->channel_flags = src->reserved0;
         dst->value_scaled = src->value_scaled;
         dst->current_value_scaled = src->current_value_scaled;
         dst->waveform_count = src->waveform_count;
@@ -228,6 +231,10 @@ esp_err_t report_buffer_begin_full(const protocol_report_full_begin_payload_t *p
             const report_channel_data_t *ch = &frame->channels[i];
             if (ch->waveform_count > REPORT_FULL_MAX_WAVEFORM_COUNT ||
                 ch->fft_count > REPORT_FULL_MAX_FFT_COUNT) {
+                return ESP_ERR_INVALID_SIZE;
+            }
+            if ((ch->waveform_count > 0U || ch->fft_count > 0U) &&
+                i >= REPORT_MAX_WAVE_CHANNELS) {
                 return ESP_ERR_INVALID_SIZE;
             }
             alloc_bytes += ((size_t) ch->waveform_count * sizeof(int16_t)) +

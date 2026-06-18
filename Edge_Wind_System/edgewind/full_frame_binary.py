@@ -8,7 +8,7 @@ EWFULL_MAGIC = 0x31465745
 EWFULL_VERSION_V1 = 1
 EWFULL_VERSION_V2 = 2
 EWFULL_PROTOS = {'ewfull/1', 'ewfull/2'}
-MAX_CHANNELS = 4
+MAX_CHANNELS = 8
 MAX_WAVEFORM_COUNT = 4096
 MAX_FFT_COUNT = 2048
 
@@ -16,10 +16,14 @@ _HEADER_STRUCT = struct.Struct('<IHHIQI64s8sBBBBIIIIIIII')
 _CHANNEL_META_STRUCT = struct.Struct('<BBHHHii')
 
 _CHANNEL_LABELS = {
-    0: ('直流母线(+)', 'V'),
-    1: ('直流母线(-)', 'V'),
-    2: ('负载电流', 'A'),
-    3: ('漏电流', 'mA'),
+    0: ('直流母线(+)', 'V', 'DC', [0, 800]),
+    1: ('直流母线(-)', 'V', 'DC', [-800, 0]),
+    2: ('负载电流', 'A', 'Current', [0, 60]),
+    3: ('漏电流', 'mA', 'Leakage', [0, 50]),
+    4: ('IGBT温度', '°C', 'AuxTemp', [20, 125]),
+    5: ('电容温度', '°C', 'AuxTemp', [18, 115]),
+    6: ('柜内湿度', '%RH', 'AuxHumidity', [8, 98]),
+    7: ('风机负载', '%', 'AuxLoad', [8, 110]),
 }
 
 _VALUE_SCALE_BY_VERSION = {
@@ -142,7 +146,7 @@ def decode_full_frame_binary(body: bytes,
         ch_offset = meta_offset + index * _CHANNEL_META_STRUCT.size
         (
             channel_id,
-            _meta_reserved0,
+            meta_flags,
             waveform_count,
             fft_count,
             _meta_reserved1,
@@ -189,7 +193,10 @@ def decode_full_frame_binary(body: bytes,
             fft = []
         cursor += fft_bytes
 
-        label, unit = _CHANNEL_LABELS.get(channel_id, (f'通道{channel_id}', ''))
+        label, unit, channel_type, channel_range = _CHANNEL_LABELS.get(
+            channel_id,
+            (f'通道{channel_id}', '', '', []),
+        )
         waveform_max = max(waveform_max, waveform_count)
         fft_max = max(fft_max, fft_count)
         channels.append({
@@ -198,6 +205,10 @@ def decode_full_frame_binary(body: bytes,
             'label': label,
             'name': label,
             'unit': unit,
+            'type': channel_type,
+            'range': channel_range,
+            'flags': int(meta_flags),
+            'valid': bool(int(meta_flags) & 0x01),
             'value': float(value_scaled) / value_scale,
             'current_value': float(current_value_scaled) / value_scale,
             'waveform_count_raw': int(waveform_count),

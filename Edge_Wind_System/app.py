@@ -356,6 +356,24 @@ with app.app_context():
             if ai_schema_changed:
                 db.session.commit()
                 app.logger.info("AIAnalysisTask schema has been extended for typed AI tasks")
+            history_cols = {
+                row[1]
+                for row in db.session.execute(text("PRAGMA table_info(history_data)")).fetchall()
+            }
+            history_schema_changed = False
+            for col_name, col_type in {
+                't_igbt_c': 'FLOAT',
+                't_dc_cap_c': 'FLOAT',
+                'rh_cabinet_pct': 'FLOAT',
+                'wind_load_pct': 'FLOAT',
+                'aux_valid_mask': 'INTEGER',
+            }.items():
+                if col_name not in history_cols:
+                    db.session.execute(text(f"ALTER TABLE history_data ADD COLUMN {col_name} {col_type}"))
+                    history_schema_changed = True
+            if history_schema_changed:
+                db.session.commit()
+                app.logger.info("HistoryData schema has been extended for aux4 fields")
         stale_ai_tasks = AIAnalysisTask.query.filter(AIAnalysisTask.status.in_(['queued', 'running'])).update({
             'status': 'failed',
             'error_message': 'server restarted before AI analysis finished',

@@ -118,7 +118,7 @@
         <div class="row g-3 mb-4">
             <div class="col-md-3 col-6">
                 <div class="card h-100 shadow-sm card-select card-active" id="card-voltage" 
-                     onclick="selectSource('voltage')" style="border-top: 4px solid #0d6efd; cursor:pointer;">
+                     onclick="selectSource('voltage')" style="border-top: 4px solid #1f77b4; cursor:pointer;">
                     <div class="card-body text-center p-3 d-flex flex-column justify-content-center">
                         <h6 class="text-muted small fw-bold mb-1">直流母线(+)
                             <span id="alarm-dot-voltage" class="ws-alarm-dot bg-danger ms-1 d-none" title="电压超过阈值"></span>
@@ -134,7 +134,7 @@
         
             <div class="col-md-3 col-6">
                 <div class="card h-100 shadow-sm card-select" id="card-voltage_neg" 
-                     onclick="selectSource('voltage_neg')" style="border-top: 4px solid #dc3545; cursor:pointer;">
+                     onclick="selectSource('voltage_neg')" style="border-top: 4px solid #d62728; cursor:pointer;">
                     <div class="card-body text-center p-3 d-flex flex-column justify-content-center">
                         <h6 class="text-muted small fw-bold mb-1">直流母线(-)
                             <span id="alarm-dot-voltage-neg" class="ws-alarm-dot bg-danger ms-1 d-none" title="电压超过阈值"></span>
@@ -150,12 +150,12 @@
 
             <div class="col-md-3 col-6">
                 <div class="card h-100 shadow-sm card-select" id="card-current" 
-                     onclick="selectSource('current')" style="border-top: 4px solid #0dcaf0; cursor:pointer;">
+                     onclick="selectSource('current')" style="border-top: 4px solid #2ca02c; cursor:pointer;">
                     <div class="card-body text-center p-3 d-flex flex-column justify-content-center">
                         <h6 class="text-muted small fw-bold mb-1">负载电流</h6>
-                        <h3 class="fw-bold text-info mb-0" id="val-current">--</h3>
+                        <h3 class="fw-bold mb-0" id="val-current" style="color:#2ca02c;">--</h3>
                         <small class="text-muted">A</small>
-                        <div class="select-badge text-info mt-2">
+                        <div class="select-badge mt-2" style="color:#2ca02c;">
                             <i class="bi bi-check-circle-fill me-1"></i>已选中
                     </div>
                 </div>
@@ -164,20 +164,72 @@
 
             <div class="col-md-3 col-6">
                 <div class="card h-100 shadow-sm card-select" id="card-leakage" 
-                     onclick="selectSource('leakage')" style="border-top: 4px solid #ffc107; cursor:pointer;">
+                     onclick="selectSource('leakage')" style="border-top: 4px solid #9467bd; cursor:pointer;">
                     <div class="card-body text-center p-3 d-flex flex-column justify-content-center">
                         <h6 class="text-muted small fw-bold mb-1">漏电流
                             <span id="alarm-dot-leakage" class="ws-alarm-dot bg-danger ms-1 d-none" title="漏电流超过阈值"></span>
                         </h6>
-                        <h3 class="fw-bold text-warning mb-0" id="val-leakage">--</h3>
+                        <h3 class="fw-bold mb-0" id="val-leakage" style="color:#9467bd;">--</h3>
                         <small class="text-muted">mA</small>
-                        <div class="select-badge text-warning mt-2">
+                        <div class="select-badge mt-2" style="color:#9467bd;">
                             <i class="bi bi-check-circle-fill me-1"></i>已选中
                     </div>
                 </div>
             </div>
                     </div>
                 </div>
+
+        <div class="card mb-3">
+            <div class="card-header bg-secondary text-white py-2">
+                <h6 class="mb-0 small">
+                    <i class="bi bi-thermometer-half"></i> Aux4 上下文量
+                </h6>
+            </div>
+            <div class="card-body py-3">
+                <div class="row g-3" id="aux4CardsRow">
+                    <div class="col-lg-3 col-md-6">
+                        <div class="border rounded p-3 h-100 aux-card" id="card-t_igbt_c">
+                            <div class="d-flex justify-content-between align-items-center mb-1">
+                                <span class="text-muted small fw-bold">IGBT温度</span>
+                                <span class="badge bg-secondary" id="aux-valid-t_igbt_c">--</span>
+                            </div>
+                            <div class="h4 mb-0" id="val-t_igbt_c">--</div>
+                            <small class="text-muted">°C · 20..125</small>
+                        </div>
+                    </div>
+                    <div class="col-lg-3 col-md-6">
+                        <div class="border rounded p-3 h-100 aux-card" id="card-t_dc_cap_c">
+                            <div class="d-flex justify-content-between align-items-center mb-1">
+                                <span class="text-muted small fw-bold">电容温度</span>
+                                <span class="badge bg-secondary" id="aux-valid-t_dc_cap_c">--</span>
+                            </div>
+                            <div class="h4 mb-0" id="val-t_dc_cap_c">--</div>
+                            <small class="text-muted">°C · 18..115</small>
+                        </div>
+                    </div>
+                    <div class="col-lg-3 col-md-6">
+                        <div class="border rounded p-3 h-100 aux-card" id="card-rh_cabinet_pct">
+                            <div class="d-flex justify-content-between align-items-center mb-1">
+                                <span class="text-muted small fw-bold">柜内湿度</span>
+                                <span class="badge bg-secondary" id="aux-valid-rh_cabinet_pct">--</span>
+                            </div>
+                            <div class="h4 mb-0" id="val-rh_cabinet_pct">--</div>
+                            <small class="text-muted">%RH · 8..98</small>
+                        </div>
+                    </div>
+                    <div class="col-lg-3 col-md-6">
+                        <div class="border rounded p-3 h-100 aux-card" id="card-wind_load_pct">
+                            <div class="d-flex justify-content-between align-items-center mb-1">
+                                <span class="text-muted small fw-bold">风机负载</span>
+                                <span class="badge bg-secondary" id="aux-valid-wind_load_pct">--</span>
+                            </div>
+                            <div class="h4 mb-0" id="val-wind_load_pct">--</div>
+                            <small class="text-muted">% · 8..110</small>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
 
         <!-- 底部：波形监控 (标签页界面) -->
         <div class="card mb-3">
@@ -211,6 +263,9 @@
                             </button>
                         </li>
                     </ul>
+                    <button class="btn btn-sm btn-outline-light" id="btn-fast-overlay" type="button" onclick="toggleFastOverlay()" title="叠加显示 A/B/C/D 四个高速诊断通道">
+                        <i class="bi bi-intersect"></i> 四通道同窗
+                    </button>
                     <div class="input-group input-group-sm" style="width: 280px;">
                         <span class="input-group-text">上传点数</span>
                         <input
@@ -359,6 +414,7 @@
     // Global State: Default to viewing positive voltage
     let currentSource = 'voltage';
     let currentChannelIndex = 0;
+    let fastOverlayEnabled = false;
     let nodeData = {};
     let timeDomainChart = null;
     let frequencyDomainChart = null;
@@ -375,6 +431,168 @@
     let uploadPointsDraftByNode = {};  // {nodeId: string}
     let uploadPointsAppliedNodeId = null;
     let currentReportMode = 'summary';
+    const AUX4_CHANNELS = [
+        { id: 4, key: 't_igbt_c', label: 'IGBT温度', unit: '°C', range: [20, 125] },
+        { id: 5, key: 't_dc_cap_c', label: '电容温度', unit: '°C', range: [18, 115] },
+        { id: 6, key: 'rh_cabinet_pct', label: '柜内湿度', unit: '%RH', range: [8, 98] },
+        { id: 7, key: 'wind_load_pct', label: '风机负载', unit: '%', range: [8, 110] }
+    ];
+    const AUX4_KEYS = new Set(AUX4_CHANNELS.map(ch => ch.key));
+    const AUX4_ID_TO_KEY = AUX4_CHANNELS.reduce((acc, ch) => {
+        acc[ch.id] = ch.key;
+        return acc;
+    }, {});
+    const FAST_CHANNELS = [
+        { id: 0, source: 'voltage', label: 'A 直流母线(+)', unit: 'V', type: 'DC', color: '#1f77b4' },
+        { id: 1, source: 'voltage_neg', label: 'B 直流母线(-)', unit: 'V', type: 'DC', color: '#d62728' },
+        { id: 2, source: 'current', label: 'C 负载电流', unit: 'A', type: 'Current', color: '#2ca02c' },
+        { id: 3, source: 'leakage', label: 'D 漏电流', unit: 'mA', type: 'Leakage', color: '#9467bd' }
+    ];
+    const FAST_SOURCE_META = FAST_CHANNELS.reduce((acc, ch) => {
+        acc[ch.source] = ch;
+        return acc;
+    }, {});
+    const CHANNEL_DISPLAY_META = {
+        0: { label: '直流母线(+)', unit: 'V', type: 'DC', range: [0, 800] },
+        1: { label: '直流母线(-)', unit: 'V', type: 'DC', range: [-800, 0] },
+        2: { label: '负载电流', unit: 'A', type: 'Current', range: [0, 60] },
+        3: { label: '漏电流', unit: 'mA', type: 'Leakage', range: [0, 50] },
+        4: { label: 'IGBT温度', unit: '°C', type: 'AuxTemp', range: [20, 125] },
+        5: { label: '电容温度', unit: '°C', type: 'AuxTemp', range: [18, 115] },
+        6: { label: '柜内湿度', unit: '%RH', type: 'AuxHumidity', range: [8, 98] },
+        7: { label: '风机负载', unit: '%', type: 'AuxLoad', range: [8, 110] }
+    };
+
+    function getDisplayScalarForSource(source, value) {
+        const n = Number(value);
+        if (!Number.isFinite(n)) return 0;
+        if (source === 'voltage_neg' && n > 0) return -n;
+        return n;
+    }
+
+    function getDisplayScalarForChannelId(channelId, value) {
+        return Number(channelId) === 1 ? getDisplayScalarForSource('voltage_neg', value) : (Number(value) || 0);
+    }
+
+    function getDisplayWaveformForSource(source, waveform) {
+        if (source !== 'voltage_neg' || !Array.isArray(waveform) || waveform.length === 0) {
+            return waveform;
+        }
+        let sum = 0;
+        let count = 0;
+        for (const v of waveform) {
+            const n = Number(v);
+            if (Number.isFinite(n)) {
+                sum += n;
+                count += 1;
+            }
+        }
+        if (count > 0 && sum / count > 0) {
+            return waveform.map(v => {
+                const n = Number(v);
+                return Number.isFinite(n) ? -n : 0;
+            });
+        }
+        return waveform;
+    }
+
+    function getDisplayWaveformForChannelId(channelId, waveform) {
+        return Number(channelId) === 1 ? getDisplayWaveformForSource('voltage_neg', waveform) : waveform;
+    }
+
+    function updateFastOverlayButton() {
+        const btn = document.getElementById('btn-fast-overlay');
+        if (!btn) return;
+        btn.classList.toggle('active', fastOverlayEnabled);
+        btn.classList.toggle('btn-light', fastOverlayEnabled);
+        btn.classList.toggle('btn-outline-light', !fastOverlayEnabled);
+        btn.innerHTML = fastOverlayEnabled
+            ? '<i class="bi bi-intersect"></i> 四通道同窗中'
+            : '<i class="bi bi-intersect"></i> 四通道同窗';
+    }
+
+    function toggleFastOverlay() {
+        fastOverlayEnabled = !fastOverlayEnabled;
+        updateFastOverlayButton();
+        if (fastOverlayEnabled && currentNodeId && lastCachedData && Array.isArray(lastCachedData.channels)) {
+            updateChannelCardsFromData(lastCachedData);
+        }
+        if (timeDomainChart) {
+            timeDomainChart._configInitialized = false;
+        }
+        if (frequencyDomainChart) {
+            frequencyDomainChart._configInitialized = false;
+        }
+        updateCharts();
+    }
+
+    function ensureChartMode(chart, mode) {
+        if (!chart) return;
+        if (chart.__edgewindMode !== mode) {
+            try { chart.clear(); } catch (e) {}
+            chart._configInitialized = false;
+            chart.__edgewindMode = mode;
+        }
+    }
+
+    function getFastChannelRuntimeData(channel) {
+        if (currentNodeId && lastCachedData && Array.isArray(lastCachedData.channels)) {
+            const latest = lastCachedData.channels.find(ch => Number(ch?.id ?? ch?.channel_id) === Number(channel.id));
+            if (latest && (Array.isArray(latest.waveform) || Array.isArray(latest.fft_spectrum) || Array.isArray(latest.spectrum))) {
+                const rawValue = latest.currentValue ?? latest.current_value ?? latest.value ?? 0;
+                const waveform = getDisplayWaveformForChannelId(channel.id, Array.isArray(latest.waveform) ? latest.waveform : []);
+                return {
+                    currentValue: getDisplayScalarForChannelId(channel.id, rawValue),
+                    waveform,
+                    fft_spectrum: Array.isArray(latest.fft_spectrum) ? latest.fft_spectrum : (Array.isArray(latest.spectrum) ? latest.spectrum : [])
+                };
+            }
+        }
+        const nodeStore = currentNodeId ? nodeData[currentNodeId] : null;
+        if (!nodeStore) return null;
+        return nodeStore[channel.id] || nodeStore[String(channel.id)] || null;
+    }
+
+    function makeTimeSeriesData(waveform) {
+        const len = Array.isArray(waveform) ? waveform.length : 0;
+        const dt = (len > 1) ? (EDGEWIND_WAVEFORM_LAST_MS / (len - 1)) : 0;
+        const data = new Array(len);
+        let yMin = Infinity;
+        let yMax = -Infinity;
+        for (let i = 0; i < len; i++) {
+            const y = Number(waveform[i]);
+            const safeY = Number.isFinite(y) ? y : 0;
+            data[i] = [i * dt, safeY];
+            if (safeY < yMin) yMin = safeY;
+            if (safeY > yMax) yMax = safeY;
+        }
+        return { data, yMin, yMax, xMax: len > 0 ? data[len - 1][0] : EDGEWIND_WAVEFORM_LAST_MS };
+    }
+
+    function makeFreqSeriesData(spectrum) {
+        const len = Array.isArray(spectrum) ? spectrum.length : 0;
+        const binStep = (len > 1) ? Math.max(1, Math.round((EDGEWIND_FFT_BINS - 1) / (len - 1))) : 1;
+        const data = new Array(len);
+        let yMax = 0;
+        for (let i = 0; i < len; i++) {
+            const y = Number(spectrum[i]);
+            const safeY = Number.isFinite(y) ? y : 0;
+            data[i] = [(i * binStep) * EDGEWIND_FREQ_RES_HZ, safeY];
+            if (safeY > yMax) yMax = safeY;
+        }
+        return { data, yMax, xMax: len > 0 ? data[len - 1][0] : ((EDGEWIND_FFT_BINS - 1) * EDGEWIND_FREQ_RES_HZ) };
+    }
+
+    function computePaddedRange(yMin, yMax) {
+        let min = Number.isFinite(yMin) ? yMin : 0;
+        let max = Number.isFinite(yMax) ? yMax : 0;
+        min = Math.min(min, 0);
+        max = Math.max(max, 0);
+        let span = max - min;
+        if (!(span > 0)) span = Math.max(Math.abs(min), Math.abs(max), 1);
+        const pad = Math.max(span * 0.1, 0.1);
+        return { min: min - pad, max: max + pad };
+    }
 
     // ========== 报警阈值（来自系统设置）==========
     // 说明：
@@ -1339,18 +1557,27 @@
                 const sourceChannels = incomingChannels.length > 0 ? incomingChannels : (oldNodeForChannels.channels || []);
                 const channels = sourceChannels.map((ch, index) => {
                     const numericValue = ch.value !== undefined ? ch.value : (ch.currentValue !== undefined ? ch.currentValue : 0);
+                    const channelId = ch.id !== undefined ? ch.id : (ch.channel_id !== undefined ? ch.channel_id : index);
+                    const displayMeta = CHANNEL_DISPLAY_META[Number(channelId)] || null;
+                    const auxKey = AUX4_ID_TO_KEY[Number(channelId)];
+                    const auxMeta = auxKey ? AUX4_CHANNELS.find(item => item.key === auxKey) : null;
+                    const channelTypeForColor = displayMeta ? displayMeta.type : ch.type;
                     // 根据通道类型确定颜色
                     let color = "primary";
                     
-                    if (ch.type === "DC") {
+                    if (auxMeta) {
+                        color = "secondary";
+                    } else if (Number(channelId) === 1) {
+                        color = "danger";
+                    } else if (channelTypeForColor === "DC") {
                         color = numericValue < 0 ? "danger" : "primary";
-                    } else if (ch.type === "Current") {
+                    } else if (channelTypeForColor === "Current") {
                         color = "info";
-                    } else if (ch.type === "Leakage") {
+                    } else if (channelTypeForColor === "Leakage") {
                         color = "warning";
-                    } else if (ch.type === "ISO") {
+                    } else if (channelTypeForColor === "ISO") {
                         color = "success";
-                    } else if (ch.type === "Temp") {
+                    } else if (channelTypeForColor === "Temp") {
                         color = "danger";
                     }
                     
@@ -1361,27 +1588,52 @@
                     else if (ch.unit === "mA") defaultRange = [0, 50];
                     else if (ch.unit === "MΩ") defaultRange = [0, 100];
                     else if (ch.unit === "°C") defaultRange = [0, 100];
+                    if (displayMeta) defaultRange = displayMeta.range;
+                    if (auxMeta) defaultRange = auxMeta.range;
                     
-                    const currentValue = numericValue;
+                    const currentValue = getDisplayScalarForChannelId(channelId, numericValue);
+                    const displayWaveform = auxMeta ? [] : getDisplayWaveformForChannelId(channelId, Array.isArray(ch.waveform) ? ch.waveform : []);
                     
                     return {
-                        id: ch.id !== undefined ? ch.id : index,
-                        label: ch.label || `通道${index + 1}`,
-                        unit: ch.unit || "",
-                        type: ch.type || "DC",
-                        range: ch.range || defaultRange,
+                        id: channelId,
+                        label: displayMeta ? displayMeta.label : (ch.label || (auxMeta ? auxMeta.label : `通道${index + 1}`)),
+                        unit: displayMeta ? displayMeta.unit : (ch.unit || (auxMeta ? auxMeta.unit : "")),
+                        type: displayMeta ? displayMeta.type : (ch.type || (auxMeta ? "Aux" : "DC")),
+                        range: displayMeta ? displayMeta.range : (ch.range || defaultRange),
                         color: color,
-                        currentValue: currentValue,  // 当前瞬时值（从后端接收）
-                        waveform: Array.isArray(ch.waveform) ? ch.waveform : [],  // 波形数组（从后端接收，120个采样点）
-                        fft_spectrum: Array.isArray(ch.fft_spectrum) ? ch.fft_spectrum : []  // FFT频谱数组（从后端接收，30个频率bin）
+                        valid: ch.valid,
+                        currentValue: currentValue,  // 当前显示值；负母线仅在前端显示层取负
+                        waveform: displayWaveform,
+                        fft_spectrum: auxMeta ? [] : (Array.isArray(ch.fft_spectrum) ? ch.fft_spectrum : [])
                     };
                 });
                 
+                const auxValues = {};
+                AUX4_CHANNELS.forEach(aux => {
+                    const auxChannel = channels.find(ch => Number(ch.id) === aux.id);
+                    auxValues[aux.key] = node[aux.key] !== undefined && node[aux.key] !== null
+                        ? node[aux.key]
+                        : (auxChannel ? auxChannel.currentValue : null);
+                });
+                const auxMaskFromChannels = channels.reduce((mask, ch) => {
+                    const auxKey = AUX4_ID_TO_KEY[Number(ch.id)];
+                    if (auxKey && ch.valid === true) {
+                        const auxMeta = AUX4_CHANNELS.find(item => item.key === auxKey);
+                        if (auxMeta) return mask | (1 << (auxMeta.id - 4));
+                    }
+                    return mask;
+                }, 0);
+                const auxValidMask = Number.isFinite(Number(node.aux_valid_mask))
+                    ? Number(node.aux_valid_mask)
+                    : auxMaskFromChannels;
+
                 newConfigs[nodeId] = {
                     status: node.status || "online",
                     fault_code: node.fault_code || "E00",  // 保存故障代码
                     channels: channels,
-                    report_mode: (node.report_mode || 'summary').toLowerCase()
+                    report_mode: (node.report_mode || 'summary').toLowerCase(),
+                    aux_valid_mask: auxValidMask,
+                    ...auxValues
                 };
                 reportModeByNode[nodeId] = newConfigs[nodeId].report_mode;
                 const ds = normalizeDownsampleStep(node.downsample_step);
@@ -1947,6 +2199,9 @@
         
         // 更新通道卡片
         renderChannelCards();
+        if (node) {
+            updateAux4Cards(node);
+        }
         
         // 更新卡片高亮（默认选中第一个通道/voltage）
         currentSource = 'voltage';
@@ -2209,10 +2464,47 @@
         }, delay);
     }
 
+    function findAuxChannel(data, aux) {
+        const channels = Array.isArray(data?.channels) ? data.channels : [];
+        return channels.find(ch => Number(ch?.id ?? ch?.channel_id) === aux.id) || null;
+    }
+
+    function updateAux4Cards(data) {
+        const d = data || {};
+        const validMask = Number.isFinite(Number(d.aux_valid_mask)) ? Number(d.aux_valid_mask) : null;
+        AUX4_CHANNELS.forEach(aux => {
+            const channel = findAuxChannel(d, aux);
+            const rawValue = d[aux.key] !== undefined && d[aux.key] !== null
+                ? d[aux.key]
+                : (channel ? (channel.current_value ?? channel.currentValue ?? channel.value) : null);
+            const numValue = Number(rawValue);
+            const valueEl = document.getElementById(`val-${aux.key}`);
+            if (valueEl) {
+                valueEl.innerText = Number.isFinite(numValue) ? numValue.toFixed(aux.unit === '%' ? 1 : 1) : '--';
+            }
+
+            let valid = false;
+            if (channel && channel.valid !== undefined) {
+                valid = Boolean(channel.valid);
+            } else if (validMask !== null) {
+                valid = (validMask & (1 << (aux.id - 4))) !== 0;
+            }
+            const badge = document.getElementById(`aux-valid-${aux.key}`);
+            if (badge) {
+                badge.classList.remove('bg-success', 'bg-secondary', 'bg-warning');
+                badge.classList.add(valid ? 'bg-success' : 'bg-secondary');
+                badge.textContent = valid ? '有效' : '默认/无效';
+            }
+        });
+    }
+
     function renderDashboard(d) {
         if (!d) {
             console.warn('[renderDashboard] 数据为空');
             return;
+        }
+        if (currentNodeId && Array.isArray(d.channels) && d.channels.length > 0) {
+            updateChannelCardsFromData(d);
         }
         
         // A. 更新文本数值
@@ -2221,10 +2513,11 @@
         const elC  = document.getElementById('val-current');
         const elL  = document.getElementById('val-leakage');
 
-        if(elV)  elV.innerText  = parseFloat(d.voltage || 0).toFixed(2);
-        if(elVn) elVn.innerText = parseFloat(d.voltage_neg || 0).toFixed(2);
+        if(elV)  elV.innerText  = getDisplayScalarForSource('voltage', d.voltage || 0).toFixed(2);
+        if(elVn) elVn.innerText = getDisplayScalarForSource('voltage_neg', d.voltage_neg || 0).toFixed(2);
         if(elC)  elC.innerText  = parseFloat(d.current || 0).toFixed(2);
         if(elL)  elL.innerText  = parseFloat(d.leakage || 0).toFixed(3);
+        updateAux4Cards(d);
 
         // 阈值告警：红点 + 事件提示（不影响 E01-E05 故障码）
         applyThresholdAlarms(d);
@@ -2262,6 +2555,8 @@
                 }
             }
         }
+
+        waveData = getDisplayWaveformForSource(currentSource, waveData);
         
         // C. 更新 nodeData 缓存（供 updateCharts 使用）
         if (currentNodeId) {
@@ -2646,6 +2941,7 @@
         
         // ========== 性能优化：批量更新关键指标卡片 ==========
         function updateMetricsCards(metrics) {
+            updateAux4Cards(metrics || {});
             const cards = {
                 'voltage': metrics.voltage,
                 'voltage_neg': metrics.voltage_neg,
@@ -2658,7 +2954,7 @@
                 for (const [key, value] of Object.entries(cards)) {
                     const element = document.getElementById(`current-${key}`);
                     if (element) {
-                        element.textContent = (value || 0).toFixed(2);
+                        element.textContent = getDisplayScalarForSource(key, value || 0).toFixed(2);
                     }
                 }
             });
@@ -2854,24 +3150,34 @@
         // 优先使用 channels 数组（标准数据格式）
         if (data.channels && Array.isArray(data.channels) && data.channels.length > 0) {
             data.channels.forEach(channel => {
-                if (!nodeData[currentNodeId][channel.id]) {
-                    nodeData[currentNodeId][channel.id] = {};
+                const channelId = channel.id ?? channel.channel_id;
+                if (channelId === undefined || channelId === null) return;
+                const channelKey = Number(channelId);
+                if (!Number.isFinite(channelKey)) return;
+                if (!nodeData[currentNodeId][channelKey]) {
+                    nodeData[currentNodeId][channelKey] = {};
                 }
                 // 支持多种字段名（currentValue 或 value）
                 const currentValue = channel.currentValue !== undefined ? channel.currentValue :
+                                   channel.current_value !== undefined ? channel.current_value :
                                    channel.value !== undefined ? channel.value : 0;
+                const auxKey = AUX4_ID_TO_KEY[channelKey];
+                const isAux = Boolean(auxKey);
+                const displayCurrentValue = getDisplayScalarForChannelId(channelId, currentValue);
+                const displayWaveform = isAux ? [] : getDisplayWaveformForChannelId(channelId, channel.waveform || []);
                 
-                nodeData[currentNodeId][channel.id].currentValue = parseFloat(currentValue) || 0;
-                nodeData[currentNodeId][channel.id].waveform = channel.waveform || [];
-                nodeData[currentNodeId][channel.id].fft_spectrum = channel.fft_spectrum || [];
+                nodeData[currentNodeId][channelKey].currentValue = displayCurrentValue;
+                nodeData[currentNodeId][channelKey].waveform = displayWaveform;
+                nodeData[currentNodeId][channelKey].fft_spectrum = isAux ? [] : (channel.fft_spectrum || channel.spectrum || []);
                 
                 // 同时更新 NODE_CONFIGS 中的通道数据（确保数据同步）
                 if (NODE_CONFIGS[currentNodeId] && NODE_CONFIGS[currentNodeId].channels) {
-                    const configChannel = NODE_CONFIGS[currentNodeId].channels.find(ch => ch.id === channel.id);
+                    const configChannel = NODE_CONFIGS[currentNodeId].channels.find(ch => Number(ch.id) === channelKey);
                     if (configChannel) {
-                        configChannel.currentValue = parseFloat(currentValue) || 0;
-                        configChannel.waveform = channel.waveform || [];
-                        configChannel.fft_spectrum = channel.fft_spectrum || [];
+                        configChannel.currentValue = displayCurrentValue;
+                        configChannel.waveform = displayWaveform;
+                        configChannel.fft_spectrum = isAux ? [] : (channel.fft_spectrum || channel.spectrum || []);
+                        configChannel.valid = channel.valid;
                     }
                 }
             });
@@ -2890,6 +3196,28 @@
         
         // 更新图表
         updateCharts();
+    }
+
+    function renderAuxChartPlaceholder(channel) {
+        const label = channel?.label || 'Aux4';
+        const message = `${label} 为低速上下文量，无波形/频谱数据`;
+        const containerId = activeTab === 'freq' ? 'frequency-domain-chart' : 'time-domain-chart';
+        const container = document.getElementById(containerId);
+        if (!container || typeof echarts === 'undefined') return;
+        const chart = activeTab === 'freq'
+            ? (frequencyDomainChart || (frequencyDomainChart = echarts.init(container)))
+            : (timeDomainChart || (timeDomainChart = echarts.init(container)));
+        chart.setOption({
+            title: {
+                text: message,
+                left: 'center',
+                top: 'middle',
+                textStyle: { color: '#6c757d', fontSize: 16, fontWeight: 'normal' }
+            },
+            xAxis: { show: false },
+            yAxis: { show: false },
+            series: []
+        }, true);
     }
     
     // ========== 更新边缘节点列表状态（WebSocket推送时调用）==========
@@ -2969,18 +3297,19 @@
                     
                     // 直接使用从后端接收的数据（不生成任何随机数据）
                     const currentValue = channel.currentValue !== undefined ? channel.currentValue : 0;
-                    const waveform = channel.waveform || [];  // 从后端接收的波形数组
+                    const displayCurrentValue = getDisplayScalarForChannelId(channel.id, currentValue);
+                    const waveform = getDisplayWaveformForChannelId(channel.id, channel.waveform || []);  // 显示层波形
                     const fft_spectrum = channel.fft_spectrum || [];  // 从后端接收的FFT数组
                     
                 if (!nodeData[nodeId][channel.id]) {
                     nodeData[nodeId][channel.id] = {
-                            currentValue: currentValue,
+                            currentValue: displayCurrentValue,
                             waveform: waveform,
                             fft_spectrum: fft_spectrum
                     };
                     } else {
-                        // 更新数据（直接使用后端数据，不生成）
-                        nodeData[nodeId][channel.id].currentValue = currentValue;
+                        // 更新显示层数据（不生成随机数据，不回写后端原始值）
+                        nodeData[nodeId][channel.id].currentValue = displayCurrentValue;
                         nodeData[nodeId][channel.id].waveform = waveform;
                         nodeData[nodeId][channel.id].fft_spectrum = fft_spectrum;
                 }
@@ -3084,6 +3413,15 @@
                 debugLog('[updateCharts] 边缘节点数据不完整:', currentNodeId);
                 return;
             }
+
+        if (fastOverlayEnabled) {
+            if (activeTab === 'time') {
+                updateFastOverlayTimeChart();
+            } else {
+                updateFastOverlayFrequencyChart();
+            }
+            return;
+        }
             
         // 根据 currentChannelIndex 获取对应的通道
         const channel = node.channels[currentChannelIndex];
@@ -3091,6 +3429,10 @@
                 console.warn('[updateCharts] 通道不存在:', currentChannelIndex, '边缘节点:', currentNodeId, '可用通道数:', node.channels.length);
                 return;
             }
+        if (AUX4_ID_TO_KEY[Number(channel.id)]) {
+            renderAuxChartPlaceholder(channel);
+            return;
+        }
             
         // 从缓存中获取当前选中通道的数据（关键：使用 channel.id 或 channel.index）
         // 优先尝试使用 channel.id，如果没有则使用 currentChannelIndex
@@ -3145,6 +3487,220 @@
         }
     }
 
+    function updateFastOverlayTimeChart() {
+        const tContainer = document.getElementById('time-domain-chart');
+        if (!tContainer) return;
+        if (tContainer.clientHeight < 200) {
+            tContainer.style.height = '400px';
+        }
+        if (!timeDomainChart) {
+            timeDomainChart = echarts.init(tContainer);
+        }
+        ensureChartMode(timeDomainChart, 'fast-overlay-time');
+
+        const series = [];
+        let yMin = Infinity;
+        let yMax = -Infinity;
+        let xMax = EDGEWIND_WAVEFORM_LAST_MS;
+
+        FAST_CHANNELS.forEach(channel => {
+            const data = getFastChannelRuntimeData(channel);
+            const rawWaveform = data?.waveform || [];
+            const waveform = getDisplayWaveformForChannelId(channel.id, rawWaveform);
+            if (!Array.isArray(waveform) || waveform.length === 0) return;
+            const prepared = makeTimeSeriesData(waveform);
+            yMin = Math.min(yMin, prepared.yMin);
+            yMax = Math.max(yMax, prepared.yMax);
+            xMax = Math.max(xMax, prepared.xMax);
+            series.push({
+                name: channel.label,
+                type: 'line',
+                data: prepared.data,
+                smooth: false,
+                symbol: 'none',
+                lineStyle: { width: 1.5, color: channel.color },
+                itemStyle: { color: channel.color },
+                animation: false
+            });
+        });
+
+        if (series.length === 0) {
+            debugLog('[updateFastOverlayTimeChart] 四通道波形为空，跳过本次更新');
+            return;
+        }
+
+        const range = computePaddedRange(yMin, yMax);
+        const autoMin = range.min;
+        const autoMax = range.max;
+        const fullMin = range.min;
+        const fullMax = range.max;
+        timeDomainChart.__edgewindFullExtentX = { min: 0, max: xMax };
+        timeDomainChart.__edgewindFullExtentY = { min: fullMin, max: fullMax };
+        timeDomainChart.__edgewindAutoWindowY = { min: autoMin, max: autoMax };
+
+        const isFirstInit = !timeDomainChart._configInitialized;
+        const option = {
+            title: {
+                text: '四通道时域同窗',
+                left: 'center',
+                top: 5
+            },
+            animation: false,
+            color: FAST_CHANNELS.map(ch => ch.color),
+            legend: {
+                top: 32,
+                data: series.map(s => s.name)
+            },
+            tooltip: {
+                trigger: 'axis',
+                formatter: function(params) {
+                    if (!params || params.length === 0) return '';
+                    const t = Array.isArray(params[0].value) ? params[0].value[0] : params[0].axisValue;
+                    const rows = params.map(p => {
+                        const meta = FAST_CHANNELS.find(ch => ch.label === p.seriesName);
+                        const y = Array.isArray(p.value) ? p.value[1] : p.value;
+                        return `${p.marker}${p.seriesName}: <strong>${Number(y).toFixed(3)}</strong> ${meta?.unit || ''}`;
+                    }).join('<br/>');
+                    return `时间: ${Number(t).toFixed(2)} ms<br/>${rows}`;
+                }
+            },
+            grid: {
+                left: 60,
+                right: 30,
+                top: 70,
+                bottom: 40,
+                containLabel: true
+            },
+            xAxis: {
+                type: 'value',
+                name: '时间 (ms)',
+                nameLocation: 'end',
+                axisLabel: { formatter: '{value}' }
+            },
+            yAxis: {
+                type: 'value',
+                name: '工程值 (V / A / mA)',
+                scale: false,
+                min: fullMin,
+                max: fullMax,
+                splitLine: { show: true }
+            },
+            series
+        };
+        if (isFirstInit) {
+            option.dataZoom = [
+                { type: 'inside', xAxisIndex: [0], filterMode: 'none', zoomOnMouseWheel: false, moveOnMouseMove: false },
+                { type: 'inside', yAxisIndex: [0], filterMode: 'none', zoomOnMouseWheel: false, moveOnMouseMove: false, startValue: autoMin, endValue: autoMax }
+            ];
+        }
+        timeDomainChart.setOption(option, { notMerge: false, replaceMerge: ['series'], lazyUpdate: true, silent: true });
+        timeDomainChart._configInitialized = true;
+    }
+
+    function updateFastOverlayFrequencyChart() {
+        const fContainer = document.getElementById('frequency-domain-chart');
+        if (!fContainer) return;
+        if (!frequencyDomainChart) {
+            frequencyDomainChart = echarts.init(fContainer);
+        }
+        ensureChartMode(frequencyDomainChart, 'fast-overlay-freq');
+
+        const series = [];
+        let yMax = 0;
+        let xMax = 0;
+
+        FAST_CHANNELS.forEach(channel => {
+            const data = getFastChannelRuntimeData(channel);
+            const spectrum = data?.fft_spectrum || [];
+            if (!Array.isArray(spectrum) || spectrum.length === 0) return;
+            const prepared = makeFreqSeriesData(spectrum);
+            yMax = Math.max(yMax, prepared.yMax);
+            xMax = Math.max(xMax, prepared.xMax);
+            series.push({
+                name: channel.label,
+                type: 'line',
+                data: prepared.data,
+                smooth: true,
+                symbol: 'none',
+                lineStyle: { width: 1.5, color: channel.color },
+                itemStyle: { color: channel.color },
+                animation: false
+            });
+        });
+
+        if (series.length === 0) {
+            debugLog('[updateFastOverlayFrequencyChart] 四通道频谱为空，跳过本次更新');
+            return;
+        }
+
+        const autoMax = yMax > 0 ? yMax * 1.1 : 1;
+        const fullMax = Math.max(autoMax * 10, 10);
+        frequencyDomainChart.__edgewindFullExtentX = { min: 0, max: xMax };
+        frequencyDomainChart.__edgewindFullExtentY = { min: 0, max: fullMax };
+        frequencyDomainChart.__edgewindAutoWindowY = { min: 0, max: autoMax };
+
+        const isFirstInit = !frequencyDomainChart._configInitialized;
+        const option = {
+            title: {
+                text: '四通道频域同窗',
+                left: 'center',
+                top: 5
+            },
+            animation: false,
+            color: FAST_CHANNELS.map(ch => ch.color),
+            legend: {
+                top: 32,
+                data: series.map(s => s.name)
+            },
+            tooltip: {
+                trigger: 'axis',
+                formatter: function(params) {
+                    if (!params || params.length === 0) return '';
+                    const f = Array.isArray(params[0].value) ? params[0].value[0] : params[0].axisValue;
+                    const rows = params.map(p => {
+                        const meta = FAST_CHANNELS.find(ch => ch.label === p.seriesName);
+                        const y = Array.isArray(p.value) ? p.value[1] : p.value;
+                        return `${p.marker}${p.seriesName}: <strong>${Number(y).toFixed(4)}</strong> ${meta?.unit || ''}`;
+                    }).join('<br/>');
+                    return `频率: ${Number(f).toFixed(2)} Hz<br/>${rows}`;
+                }
+            },
+            grid: {
+                top: 70,
+                left: 60,
+                right: 30,
+                bottom: 40,
+                containLabel: true
+            },
+            xAxis: {
+                type: 'value',
+                min: 0,
+                max: xMax,
+                name: '频率 (Hz)',
+                nameLocation: 'middle',
+                nameGap: 30
+            },
+            yAxis: {
+                type: 'value',
+                name: '幅值 (V / A / mA)',
+                nameLocation: 'middle',
+                nameGap: 50,
+                min: 0,
+                max: fullMax,
+                splitLine: { show: true, lineStyle: { type: 'dashed' } }
+            },
+            series
+        };
+        if (isFirstInit) {
+            option.dataZoom = [
+                { type: 'inside', xAxisIndex: [0], filterMode: 'none', zoomOnMouseWheel: false, moveOnMouseMove: false },
+                { type: 'inside', yAxisIndex: [0], filterMode: 'none', zoomOnMouseWheel: false, moveOnMouseMove: false, startValue: 0, endValue: autoMax }
+            ];
+        }
+        frequencyDomainChart.setOption(option, { notMerge: false, replaceMerge: ['series'], lazyUpdate: true, silent: true });
+        frequencyDomainChart._configInitialized = true;
+    }
+
     // ========== 更新时域图表（修复空白图表问题）==========
     function updateTimeDomainChart(waveform, channel) {
         // 1. Force Container Height (Fix Invisible Chart)
@@ -3169,6 +3725,7 @@
         if (!timeDomainChart) {
             timeDomainChart = echarts.init(tContainer);
         }
+        ensureChartMode(timeDomainChart, 'single-time');
         
         // 生成 X 轴（单位：ms）
         // 关键修复：将时域图从 category 轴改为 value 轴，并使用 [t, y] 数据对，
@@ -3446,6 +4003,7 @@
             console.warn('[renderFFTChart] 图表实例不存在');
             return;
         }
+        ensureChartMode(frequencyDomainChart, 'single-freq');
         
         try {
             // 检查图表是否处于挂起状态（WebGL/Canvas错误）
@@ -4045,12 +4603,12 @@
     function getSourceColor(source) {
         // 根据项目颜色编码标准映射
         const colorMap = {
-            'voltage': '#0d6efd',      // 蓝色 (直流母线+)
-            'voltage_neg': '#dc3545',  // 红色 (直流母线-)
-            'current': '#0dcaf0',      // 青色 (负载电流)
-            'leakage': '#ffc107'       // 黄色 (漏电流)
+            'voltage': '#1f77b4',      // 蓝色 (直流母线+)
+            'voltage_neg': '#d62728',  // 红色 (直流母线-)
+            'current': '#2ca02c',      // 绿色 (负载电流)
+            'leakage': '#9467bd'       // 紫色 (漏电流)
         };
-        return colorMap[source] || '#0d6efd';  // 默认蓝色
+        return colorMap[source] || '#1f77b4';  // 默认蓝色
     }
 
     // ========== 将十六进制颜色转换为RGBA ==========

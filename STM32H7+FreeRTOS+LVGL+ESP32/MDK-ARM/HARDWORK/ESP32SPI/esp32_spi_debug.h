@@ -38,6 +38,7 @@ typedef struct {
 
 typedef struct {
     uint8_t channel_id;
+    uint8_t channel_flags;
     uint16_t waveform_count;
     uint16_t fft_count;
     int32_t value_scaled;

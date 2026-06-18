@@ -30,6 +30,7 @@ extern void ESP_UI_Internal_OnLog(const char *line);
 #define ESP32_SPI_WIFI_POLL_INTERVAL_MS 1000U
 #define ESP32_SPI_RESULT_PENDING 0xFFFFU
 #define ESP32_SPI_LOCK_TIMEOUT_MS 5000U
+#define ESP32_SPI_REPORT_MAX_CHANNELS 8U
 
 #ifndef ESP32_SPI_ENABLE_FULL_UPLOAD
 #define ESP32_SPI_ENABLE_FULL_UPLOAD 1
@@ -208,7 +209,7 @@ typedef struct {
     uint8_t status_code;
     uint8_t channel_count;
     uint8_t reserved0;
-    esp32_report_channel_summary_payload_t channels[4];
+    esp32_report_channel_summary_payload_t channels[ESP32_SPI_REPORT_MAX_CHANNELS];
 } esp32_report_summary_payload_t;
 
 typedef esp32_report_summary_payload_t esp32_report_full_begin_payload_t;
@@ -1907,7 +1908,7 @@ bool ESP32_SPI_ReportSummary(uint32_t frame_id,
     uint32_t ref_seq;
     uint32_t start;
 
-    if (channels == NULL || channel_count == 0U || channel_count > 4U) {
+    if (channels == NULL || channel_count == 0U || channel_count > ESP32_SPI_REPORT_MAX_CHANNELS) {
         return false;
     }
     if (!ESP32_SPI_EnsureReady(ESP32_SPI_DEFAULT_TIMEOUT_MS)) {
@@ -1928,6 +1929,7 @@ bool ESP32_SPI_ReportSummary(uint32_t frame_id,
     payload.channel_count = channel_count;
     for (uint8_t i = 0; i < channel_count; i++) {
         payload.channels[i].channel_id = channels[i].channel_id;
+        payload.channels[i].reserved0 = channels[i].channel_flags;
         payload.channels[i].waveform_count = channels[i].waveform_count;
         payload.channels[i].fft_count = channels[i].fft_count;
         payload.channels[i].value_scaled = channels[i].value_scaled;
@@ -2406,7 +2408,7 @@ bool ESP32_SPI_ReportFullBegin(uint32_t frame_id,
     esp32_report_full_begin_payload_t begin;
     uint32_t per_packet_timeout = (timeout_ms == 0U) ? 1500U : timeout_ms;
 
-    if (channels == NULL || channel_count == 0U || channel_count > 4U) {
+    if (channels == NULL || channel_count == 0U || channel_count > ESP32_SPI_REPORT_MAX_CHANNELS) {
         return false;
     }
 
@@ -2427,6 +2429,7 @@ bool ESP32_SPI_ReportFullBegin(uint32_t frame_id,
 
     for (uint8_t i = 0U; i < channel_count; i++) {
         begin.channels[i].channel_id = channels[i].channel_id;
+        begin.channels[i].reserved0 = channels[i].channel_flags;
         begin.channels[i].waveform_count = channels[i].waveform_count;
         begin.channels[i].fft_count = channels[i].fft_count;
         begin.channels[i].value_scaled = channels[i].value_scaled;
@@ -2557,7 +2560,7 @@ bool ESP32_SPI_ReportFull(uint32_t frame_id,
     uint32_t per_packet_timeout = (timeout_ms == 0U) ? 1500U : timeout_ms;
 
     if (channels == NULL || waveforms == NULL || ffts == NULL ||
-        channel_count == 0U || channel_count > 4U) {
+        channel_count == 0U || channel_count > ESP32_SPI_REPORT_MAX_CHANNELS) {
         return false;
     }
     s_last_report_full_end_ref_seq = 0U;
@@ -2576,12 +2579,14 @@ bool ESP32_SPI_ReportFull(uint32_t frame_id,
     begin.channel_count = channel_count;
 
     for (uint8_t i = 0U; i < channel_count; i++) {
-        if (waveforms[i] == NULL || ffts[i] == NULL ||
+        if ((channels[i].waveform_count > 0U && waveforms[i] == NULL) ||
+            (channels[i].fft_count > 0U && ffts[i] == NULL) ||
             channels[i].waveform_count > waveform_count ||
             channels[i].fft_count > fft_count) {
             return false;
         }
         begin.channels[i].channel_id = channels[i].channel_id;
+        begin.channels[i].reserved0 = channels[i].channel_flags;
         begin.channels[i].waveform_count = channels[i].waveform_count;
         begin.channels[i].fft_count = channels[i].fft_count;
         begin.channels[i].value_scaled = channels[i].value_scaled;

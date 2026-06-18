@@ -224,9 +224,9 @@ class FaultSnapshot(db.Model):
     timestamp = db.Column(db.DateTime, default=datetime.utcnow, index=True)
     
     # 通道信息
-    channel_id = db.Column(db.Integer, nullable=False)  # 0-3
+    channel_id = db.Column(db.Integer, nullable=False)  # 0-7; 0-3 为高速诊断通道，4-7 为 aux4 上下文量
     channel_label = db.Column(db.String(50))  # 通道名称
-    channel_type = db.Column(db.String(20))  # 'DC', 'Current', 'Leakage'
+    channel_type = db.Column(db.String(20))  # 'DC', 'Current', 'Leakage', 'AuxTemp', 'AuxHumidity', 'AuxLoad'
     
     # 数据快照
     current_value = db.Column(db.Float)  # 当前瞬时值
@@ -269,18 +269,24 @@ class FaultSnapshot(db.Model):
 
 
 class HistoryData(db.Model):
-    """历史数据表 - 存储每帧上报的4通道平均值，用于历史曲线回放"""
+    """历史数据表 - 存储主4路当前值和 aux4 上下文量，用于历史曲线回放"""
     __tablename__ = 'history_data'
     
     id = db.Column(db.Integer, primary_key=True)
     device_id = db.Column(db.String(100), nullable=False, index=True)
     timestamp = db.Column(db.DateTime, default=datetime.utcnow, index=True)
     
-    # 4通道平均值
+    # 主4路高速诊断通道当前值
     voltage_pos = db.Column(db.Float)   # 直流母线(+)
     voltage_neg = db.Column(db.Float)   # 直流母线(-)
     current = db.Column(db.Float)       # 负载电流
     leakage = db.Column(db.Float)       # 漏电流
+    # 后4路低速上下文量
+    t_igbt_c = db.Column(db.Float)
+    t_dc_cap_c = db.Column(db.Float)
+    rh_cabinet_pct = db.Column(db.Float)
+    wind_load_pct = db.Column(db.Float)
+    aux_valid_mask = db.Column(db.Integer)
     
     def to_dict(self):
         """转换为字典格式（时间为北京时间）"""
@@ -292,6 +298,11 @@ class HistoryData(db.Model):
             'voltage_pos': self.voltage_pos,
             'voltage_neg': self.voltage_neg,
             'current': self.current,
-            'leakage': self.leakage
+            'leakage': self.leakage,
+            't_igbt_c': self.t_igbt_c,
+            't_dc_cap_c': self.t_dc_cap_c,
+            'rh_cabinet_pct': self.rh_cabinet_pct,
+            'wind_load_pct': self.wind_load_pct,
+            'aux_valid_mask': self.aux_valid_mask
         }
 

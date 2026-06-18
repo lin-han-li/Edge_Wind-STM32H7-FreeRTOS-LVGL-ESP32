@@ -228,7 +228,7 @@
         <div class="row g-3 mb-3">
             <div class="col-md-3 col-6">
                 <div class="card h-100 shadow-sm card-select card-active" id="card-voltage_pos" 
-                     onclick="selectChannel('voltage_pos')" style="border-top: 3px solid #0d6efd;">
+                     onclick="selectChannel('voltage_pos')" style="border-top: 3px solid #1f77b4;">
                     <div class="card-body text-center d-flex flex-column justify-content-center">
                         <h6 class="text-muted small fw-bold">直流母线(+)</h6>
                         <h3 class="fw-bold text-primary mb-0" id="val-voltage_pos">--</h3>
@@ -241,7 +241,7 @@
             </div>
             <div class="col-md-3 col-6">
                 <div class="card h-100 shadow-sm card-select" id="card-voltage_neg" 
-                     onclick="selectChannel('voltage_neg')" style="border-top: 3px solid #dc3545;">
+                     onclick="selectChannel('voltage_neg')" style="border-top: 3px solid #d62728;">
                     <div class="card-body text-center d-flex flex-column justify-content-center">
                         <h6 class="text-muted small fw-bold">直流母线(-)</h6>
                         <h3 class="fw-bold text-danger mb-0" id="val-voltage_neg">--</h3>
@@ -254,12 +254,12 @@
             </div>
             <div class="col-md-3 col-6">
                 <div class="card h-100 shadow-sm card-select" id="card-current" 
-                     onclick="selectChannel('current')" style="border-top: 3px solid #0dcaf0;">
+                     onclick="selectChannel('current')" style="border-top: 3px solid #2ca02c;">
                     <div class="card-body text-center d-flex flex-column justify-content-center">
                         <h6 class="text-muted small fw-bold">负载电流</h6>
-                        <h3 class="fw-bold text-info mb-0" id="val-current">--</h3>
+                        <h3 class="fw-bold mb-0" id="val-current" style="color:#2ca02c;">--</h3>
                         <small class="text-muted">A</small>
-                        <div class="select-badge text-info">
+                        <div class="select-badge" style="color:#2ca02c;">
                             <i class="bi bi-check-circle-fill me-1"></i>已选中
                         </div>
                     </div>
@@ -267,14 +267,57 @@
             </div>
             <div class="col-md-3 col-6">
                 <div class="card h-100 shadow-sm card-select" id="card-leakage" 
-                     onclick="selectChannel('leakage')" style="border-top: 3px solid #ffc107;">
+                     onclick="selectChannel('leakage')" style="border-top: 3px solid #9467bd;">
                     <div class="card-body text-center d-flex flex-column justify-content-center">
                         <h6 class="text-muted small fw-bold">漏电流</h6>
-                        <h3 class="fw-bold text-warning mb-0" id="val-leakage">--</h3>
+                        <h3 class="fw-bold mb-0" id="val-leakage" style="color:#9467bd;">--</h3>
                         <small class="text-muted">mA</small>
-                        <div class="select-badge text-warning">
+                        <div class="select-badge" style="color:#9467bd;">
                             <i class="bi bi-check-circle-fill me-1"></i>已选中
                         </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="row g-3 mb-3">
+            <div class="col-md-3 col-6">
+                <div class="card h-100 shadow-sm card-select" id="card-t_igbt_c"
+                     onclick="selectChannel('t_igbt_c')" style="border-top: 3px solid #6c757d;">
+                    <div class="card-body text-center d-flex flex-column justify-content-center">
+                        <h6 class="text-muted small fw-bold">IGBT温度</h6>
+                        <h3 class="fw-bold text-secondary mb-0" id="val-t_igbt_c">--</h3>
+                        <small class="text-muted">°C</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3 col-6">
+                <div class="card h-100 shadow-sm card-select" id="card-t_dc_cap_c"
+                     onclick="selectChannel('t_dc_cap_c')" style="border-top: 3px solid #6c757d;">
+                    <div class="card-body text-center d-flex flex-column justify-content-center">
+                        <h6 class="text-muted small fw-bold">电容温度</h6>
+                        <h3 class="fw-bold text-secondary mb-0" id="val-t_dc_cap_c">--</h3>
+                        <small class="text-muted">°C</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3 col-6">
+                <div class="card h-100 shadow-sm card-select" id="card-rh_cabinet_pct"
+                     onclick="selectChannel('rh_cabinet_pct')" style="border-top: 3px solid #6c757d;">
+                    <div class="card-body text-center d-flex flex-column justify-content-center">
+                        <h6 class="text-muted small fw-bold">柜内湿度</h6>
+                        <h3 class="fw-bold text-secondary mb-0" id="val-rh_cabinet_pct">--</h3>
+                        <small class="text-muted">%RH</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3 col-6">
+                <div class="card h-100 shadow-sm card-select" id="card-wind_load_pct"
+                     onclick="selectChannel('wind_load_pct')" style="border-top: 3px solid #6c757d;">
+                    <div class="card-body text-center d-flex flex-column justify-content-center">
+                        <h6 class="text-muted small fw-bold">风机负载</h6>
+                        <h3 class="fw-bold text-secondary mb-0" id="val-wind_load_pct">--</h3>
+                        <small class="text-muted">%</small>
                     </div>
                 </div>
             </div>
@@ -287,9 +330,14 @@
                     <i class="bi bi-graph-up"></i>
                     <span id="chart-title">历史曲线 - 直流母线(+)</span>
                 </div>
-                <button class="btn btn-sm btn-outline-light" id="btnResetZoom" type="button">
-                    <i class="bi bi-arrow-counterclockwise"></i> 重置缩放
-                </button>
+                <div class="d-flex gap-2">
+                    <button class="btn btn-sm btn-outline-light" id="btnHistoryFastOverlay" type="button">
+                        <i class="bi bi-intersect"></i> 四通道同窗
+                    </button>
+                    <button class="btn btn-sm btn-outline-light" id="btnResetZoom" type="button">
+                        <i class="bi bi-arrow-counterclockwise"></i> 重置缩放
+                    </button>
+                </div>
             </div>
             <div class="card-body p-2">
                 <div class="d-flex justify-content-between align-items-center mb-2">
@@ -317,17 +365,28 @@
     let historyData = [];  // 当前加载的历史数据
     let allNodes = [];     // 所有节点（用于搜索过滤）
     let chart = null;
+    let historyFastOverlayEnabled = false;
 
     // localStorage 键名
     const STORAGE_KEY = 'edgewind_history_settings';
 
     // 通道配置
     const CHANNEL_CONFIG = {
-        voltage_pos: { label: '直流母线(+)', unit: 'V', color: '#0d6efd' },
-        voltage_neg: { label: '直流母线(-)', unit: 'V', color: '#dc3545' },
-        current: { label: '负载电流', unit: 'A', color: '#0dcaf0' },
-        leakage: { label: '漏电流', unit: 'mA', color: '#ffc107' }
+        voltage_pos: { label: '直流母线(+)', unit: 'V', color: '#1f77b4' },
+        voltage_neg: { label: '直流母线(-)', unit: 'V', color: '#d62728' },
+        current: { label: '负载电流', unit: 'A', color: '#2ca02c' },
+        leakage: { label: '漏电流', unit: 'mA', color: '#9467bd' },
+        t_igbt_c: { label: 'IGBT温度', unit: '°C', color: '#6c757d' },
+        t_dc_cap_c: { label: '电容温度', unit: '°C', color: '#6c757d' },
+        rh_cabinet_pct: { label: '柜内湿度', unit: '%RH', color: '#6c757d' },
+        wind_load_pct: { label: '风机负载', unit: '%', color: '#6c757d' }
     };
+    const FAST_HISTORY_CHANNELS = [
+        { key: 'voltage_pos', label: 'A 直流母线(+)', unit: 'V', color: '#1f77b4' },
+        { key: 'voltage_neg', label: 'B 直流母线(-)', unit: 'V', color: '#d62728' },
+        { key: 'current', label: 'C 负载电流', unit: 'A', color: '#2ca02c' },
+        { key: 'leakage', label: 'D 漏电流', unit: 'mA', color: '#9467bd' }
+    ];
 
     // ========== DOM 元素 ==========
     const elNodeList = document.getElementById('nodeList');
@@ -338,6 +397,7 @@
     const elHistoryEnd = document.getElementById('historyEnd');
     const elBtnLoad = document.getElementById('btnLoad');
     const elBtnClearRange = document.getElementById('btnClearRange');
+    const elBtnHistoryFastOverlay = document.getElementById('btnHistoryFastOverlay');
     const elBtnResetZoom = document.getElementById('btnResetZoom');
     const elBtnDeleteNodeHistory = document.getElementById('btnDeleteNodeHistory');
     const elStatLoaded = document.getElementById('stat-loaded');
@@ -376,6 +436,29 @@
         } catch (e) {
             console.warn('保存历史设置失败:', e);
         }
+    }
+
+    function getHistoryDisplayValue(channel, value) {
+        const n = Number(value);
+        if (!Number.isFinite(n)) return null;
+        if (channel === 'voltage_neg' && n > 0) return -n;
+        return n;
+    }
+
+    function updateHistoryFastOverlayButton() {
+        if (!elBtnHistoryFastOverlay) return;
+        elBtnHistoryFastOverlay.classList.toggle('active', historyFastOverlayEnabled);
+        elBtnHistoryFastOverlay.classList.toggle('btn-light', historyFastOverlayEnabled);
+        elBtnHistoryFastOverlay.classList.toggle('btn-outline-light', !historyFastOverlayEnabled);
+        elBtnHistoryFastOverlay.innerHTML = historyFastOverlayEnabled
+            ? '<i class="bi bi-intersect"></i> 四通道同窗中'
+            : '<i class="bi bi-intersect"></i> 四通道同窗';
+    }
+
+    function setHistoryFastOverlay(enabled) {
+        historyFastOverlayEnabled = !!enabled;
+        updateHistoryFastOverlayButton();
+        updateChart();
     }
 
     // ========== 初始化 ==========
@@ -518,6 +601,8 @@
     // ========== 选择通道 ==========
     window.selectChannel = function(channel) {
         selectedChannel = channel;
+        historyFastOverlayEnabled = false;
+        updateHistoryFastOverlayButton();
         saveSettings();
         
         // 更新卡片高亮
@@ -598,18 +683,39 @@
 
     // ========== 更新卡片值 ==========
     function updateCardValues() {
+        const valueFields = [
+            'voltage_pos',
+            'voltage_neg',
+            'current',
+            'leakage',
+            't_igbt_c',
+            't_dc_cap_c',
+            'rh_cabinet_pct',
+            'wind_load_pct'
+        ];
+        const setText = (field, value) => {
+            const el = document.getElementById(`val-${field}`);
+            if (el) el.textContent = value;
+        };
+        const fmt = (value, digits) => {
+            const n = Number(value);
+            return Number.isFinite(n) ? n.toFixed(digits) : '--';
+        };
+
         if (historyData.length === 0) {
-            ['voltage_pos', 'voltage_neg', 'current', 'leakage'].forEach(ch => {
-                document.getElementById(`val-${ch}`).textContent = '--';
-            });
+            valueFields.forEach(ch => setText(ch, '--'));
             return;
         }
 
         const latest = historyData[historyData.length - 1];
-        document.getElementById('val-voltage_pos').textContent = (latest.voltage_pos || 0).toFixed(2);
-        document.getElementById('val-voltage_neg').textContent = (latest.voltage_neg || 0).toFixed(2);
-        document.getElementById('val-current').textContent = (latest.current || 0).toFixed(2);
-        document.getElementById('val-leakage').textContent = (latest.leakage || 0).toFixed(3);
+        setText('voltage_pos', fmt(latest.voltage_pos, 2));
+        setText('voltage_neg', fmt(getHistoryDisplayValue('voltage_neg', latest.voltage_neg), 2));
+        setText('current', fmt(latest.current, 2));
+        setText('leakage', fmt(latest.leakage, 3));
+        setText('t_igbt_c', fmt(latest.t_igbt_c, 1));
+        setText('t_dc_cap_c', fmt(latest.t_dc_cap_c, 1));
+        setText('rh_cabinet_pct', fmt(latest.rh_cabinet_pct, 1));
+        setText('wind_load_pct', fmt(latest.wind_load_pct, 1));
     }
 
     // ========== 初始化图表配置 ==========
@@ -710,13 +816,73 @@
         if (!chart) return;
 
         const config = CHANNEL_CONFIG[selectedChannel];
+        if (historyFastOverlayEnabled) {
+            const series = FAST_HISTORY_CHANNELS.map(ch => {
+                const data = historyData.map(item => {
+                    const ts = new Date(item.timestamp).getTime();
+                    const val = getHistoryDisplayValue(ch.key, item[ch.key]);
+                    if (!Number.isFinite(ts) || !Number.isFinite(val)) return null;
+                    return [ts, val];
+                }).filter(Boolean);
+                return {
+                    name: ch.label,
+                    type: 'line',
+                    smooth: false,
+                    symbol: 'none',
+                    data,
+                    itemStyle: { color: ch.color },
+                    lineStyle: { color: ch.color, width: 1.5 }
+                };
+            }).filter(s => s.data.length > 0);
+
+            const firstSeries = series.find(s => s.data.length > 0);
+            const lastSeries = [...series].reverse().find(s => s.data.length > 0);
+            if (firstSeries && lastSeries) {
+                chart.__edgewindFullExtentX = {
+                    min: firstSeries.data[0][0],
+                    max: lastSeries.data[lastSeries.data.length - 1][0]
+                };
+            }
+
+            elChartTitle.textContent = '历史曲线 - 四通道同窗';
+            chart.setOption({
+                color: FAST_HISTORY_CHANNELS.map(ch => ch.color),
+                legend: {
+                    show: true,
+                    top: 8,
+                    data: series.map(s => s.name)
+                },
+                tooltip: {
+                    trigger: 'axis',
+                    axisPointer: { type: 'cross' },
+                    formatter: function(params) {
+                        if (!params || params.length === 0) return '';
+                        const time = new Date(params[0].value[0]);
+                        const timeStr = time.toLocaleString('zh-CN', { hour12: false });
+                        const rows = params.map(p => {
+                            const meta = FAST_HISTORY_CHANNELS.find(ch => ch.label === p.seriesName);
+                            const value = Array.isArray(p.value) ? p.value[1] : p.value;
+                            return `${p.marker}${p.seriesName}: <strong>${Number(value).toFixed(3)}</strong> ${meta?.unit || ''}`;
+                        }).join('<br/>');
+                        return `<strong>${timeStr}</strong><br/>${rows}`;
+                    }
+                },
+                grid: { top: 58 },
+                yAxis: {
+                    name: '工程值'
+                },
+                series
+            }, { replaceMerge: ['series'], lazyUpdate: true });
+            return;
+        }
         
         // 准备数据
         const seriesData = historyData.map(item => {
             const ts = new Date(item.timestamp).getTime();
-            const val = item[selectedChannel] || 0;
+            const val = getHistoryDisplayValue(selectedChannel, item[selectedChannel]);
+            if (!Number.isFinite(ts) || !Number.isFinite(val)) return null;
             return [ts, val];
-        });
+        }).filter(Boolean);
 
         // 设置全量 X 范围（供缩放工具使用，确保缩小能回到全范围）
         if (seriesData.length > 0) {
@@ -727,6 +893,20 @@
         }
 
         chart.setOption({
+            legend: { show: false },
+            tooltip: {
+                trigger: 'axis',
+                axisPointer: { type: 'cross' },
+                formatter: function(params) {
+                    if (!params || params.length === 0) return '';
+                    const p = params[0];
+                    const time = new Date(p.value[0]);
+                    const timeStr = time.toLocaleString('zh-CN', { hour12: false });
+                    return `<strong>${timeStr}</strong><br/>` +
+                           `${config.label}: <strong>${p.value[1].toFixed(3)}</strong> ${config.unit}`;
+                }
+            },
+            grid: { top: 50 },
             yAxis: {
                 name: config.unit
             },
@@ -737,7 +917,7 @@
                 lineStyle: { color: config.color },
                 areaStyle: { color: config.color, opacity: 0.1 }
             }]
-        });
+        }, { replaceMerge: ['series'], lazyUpdate: true });
     }
 
     // ========== 绑定事件 ==========
@@ -763,6 +943,12 @@
 
         // 加载数据按钮
         elBtnLoad.addEventListener('click', loadHistoryData);
+
+        if (elBtnHistoryFastOverlay) {
+            elBtnHistoryFastOverlay.addEventListener('click', () => {
+                setHistoryFastOverlay(!historyFastOverlayEnabled);
+            });
+        }
 
         // 清空时段（同时保存设置）
         elBtnClearRange.addEventListener('click', () => {

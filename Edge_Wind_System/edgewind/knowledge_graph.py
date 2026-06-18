@@ -1391,7 +1391,16 @@ def _load_work_order_event_profile(work_order_id: int | None, fault_code: str) -
             "tokens": _event_signal_tokens_for_snapshot(snap),
         })
 
-    history_fields = ["voltage_pos", "voltage_neg", "current", "leakage"]
+    history_fields = [
+        "voltage_pos",
+        "voltage_neg",
+        "current",
+        "leakage",
+        "t_igbt_c",
+        "t_dc_cap_c",
+        "rh_cabinet_pct",
+        "wind_load_pct",
+    ]
     for field in history_fields:
         values = []
         for row in history:

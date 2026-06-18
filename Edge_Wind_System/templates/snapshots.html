@@ -125,6 +125,22 @@
         margin-bottom: 0;
     }
 
+    .snapshot-fast-overlay {
+        border: 1px solid #d8e2ef;
+        border-radius: 8px;
+        background: #f8fafc;
+        padding: 0.75rem;
+        margin-bottom: 1rem;
+    }
+
+    .snapshot-fast-overlay-body {
+        display: none;
+    }
+
+    .snapshot-fast-overlay-body.show {
+        display: block;
+    }
+
     @keyframes spin {
         from { transform: rotate(0deg); }
         to { transform: rotate(360deg); }
@@ -343,6 +359,13 @@
     const EDGEWIND_FFT_BINS = 2048;
     const EDGEWIND_WAVEFORM_LAST_MS = ((EDGEWIND_WAVEFORM_POINTS - 1) / EDGEWIND_SAMPLE_RATE_HZ) * 1000.0;
     const EDGEWIND_FREQ_RES_HZ = EDGEWIND_SAMPLE_RATE_HZ / (2 * EDGEWIND_FFT_BINS); // 6.25 Hz/bin
+    const FAST_SNAPSHOT_CHANNELS = [
+        { id: 0, label: 'A 直流母线(+)', unit: 'V', color: '#1f77b4' },
+        { id: 1, label: 'B 直流母线(-)', unit: 'V', color: '#d62728' },
+        { id: 2, label: 'C 负载电流', unit: 'A', color: '#2ca02c' },
+        { id: 3, label: 'D 漏电流', unit: 'mA', color: '#9467bd' }
+    ];
+    let currentSnapshotGroups = {};
 
     function escapeHtml(s) {
         return String(s ?? '')
@@ -676,6 +699,10 @@
         
         const types = ['before', 'after', 'before_recovery', 'after_recovery'];
         const availableTypes = types.filter(type => data.snapshots[type] && data.snapshots[type].length > 0);
+        currentSnapshotGroups = {};
+        availableTypes.forEach(type => {
+            currentSnapshotGroups[type] = data.snapshots[type] || [];
+        });
         
         if (availableTypes.length === 0) {
             container.innerHTML = '<p class="text-muted">暂无快照数据</p>';
@@ -935,22 +962,94 @@
         }, 1500);
     }
     
+    function isAuxSnapshot(snapshot) {
+        const channelId = Number(snapshot.channel_id);
+        const type = String(snapshot.channel_type || '');
+        return channelId >= 4 || type.startsWith('Aux');
+    }
+
+    function getSnapshotUnit(snapshot) {
+        const type = String(snapshot.channel_type || '');
+        const channelId = Number(snapshot.channel_id);
+        if (type === 'DC') return 'V';
+        if (type === 'Current') return 'A';
+        if (type === 'Leakage') return 'mA';
+        if (type === 'AuxTemp' || channelId === 4 || channelId === 5) return '°C';
+        if (type === 'AuxHumidity' || channelId === 6) return '%RH';
+        if (type === 'AuxLoad' || channelId === 7) return '%';
+        return '';
+    }
+
+    function formatSnapshotValue(value, digits = 3) {
+        const n = Number(value);
+        return Number.isFinite(n) ? n.toFixed(digits) : '--';
+    }
+
+    function getFastSnapshotMeta(snapshot) {
+        const channelId = Number(snapshot.channel_id);
+        return FAST_SNAPSHOT_CHANNELS.find(ch => ch.id === channelId) || null;
+    }
+
+    function getSnapshotDisplayWaveform(snapshot) {
+        const wave = Array.isArray(snapshot.waveform_data) ? snapshot.waveform_data : [];
+        if (Number(snapshot.channel_id) !== 1 || wave.length === 0) {
+            return wave;
+        }
+        let sum = 0;
+        let count = 0;
+        for (const v of wave) {
+            const n = Number(v);
+            if (Number.isFinite(n)) {
+                sum += n;
+                count += 1;
+            }
+        }
+        if (count > 0 && sum / count > 0) {
+            return wave.map(v => {
+                const n = Number(v);
+                return Number.isFinite(n) ? -n : 0;
+            });
+        }
+        return wave;
+    }
+
     // 渲染通道快照（使用选项卡切换通道）
     function renderChannelSnapshots(snapshots, type) {
+        const fastSnapshots = snapshots.filter(snapshot => {
+            const meta = getFastSnapshotMeta(snapshot);
+            return meta && !isAuxSnapshot(snapshot);
+        });
+        const overlayHtml = fastSnapshots.length >= 2 ? `
+            <div class="snapshot-fast-overlay">
+                <div class="d-flex justify-content-between align-items-center gap-2">
+                    <div>
+                        <strong><i class="bi bi-intersect"></i> 四通道同窗</strong>
+                        <div class="small text-muted">叠加显示 A/B/C/D 高速诊断通道，aux4 上下文量不参与波形/频谱。</div>
+                    </div>
+                    <button class="btn btn-sm btn-outline-primary" id="btn-fast-snapshot-${type}" type="button" onclick="toggleSnapshotFastOverlay('${type}')">
+                        <i class="bi bi-eye"></i> 显示四通道同窗
+                    </button>
+                </div>
+                <div class="snapshot-fast-overlay-body mt-3" id="snapshot-fast-overlay-${type}">
+                    <div class="chart-row">
+                        <div class="chart-wrapper">
+                            <h6 class="text-center mb-2">四通道时域波形</h6>
+                            <div id="chart-fast-time-${type}" class="chart-container"></div>
+                        </div>
+                        <div class="chart-wrapper">
+                            <h6 class="text-center mb-2">四通道频域谱图</h6>
+                            <div id="chart-fast-freq-${type}" class="chart-container"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        ` : '';
+
         // 通道选项卡（带数值显示）
         let channelTabsHtml = '<ul class="nav nav-pills mb-3" role="tablist">';
         snapshots.forEach((snapshot, index) => {
             const channelId = `channel-${type}-${snapshot.id}`;
-            
-            // 确定单位
-            let unit = '';
-            if (snapshot.channel_type === 'DC') {
-                unit = 'V';
-            } else if (snapshot.channel_type === 'Current') {
-                unit = 'A';
-            } else if (snapshot.channel_type === 'Leakage') {
-                unit = 'mA';
-            }
+            const unit = getSnapshotUnit(snapshot);
             
             channelTabsHtml += `
                 <li class="nav-item" role="presentation">
@@ -961,7 +1060,7 @@
                             type="button">
                         <div class="d-flex flex-column align-items-center">
                             <span class="channel-name">${snapshot.channel_label}</span>
-                            <small class="channel-value">${snapshot.current_value.toFixed(3)} ${unit}</small>
+                            <small class="channel-value">${formatSnapshotValue(snapshot.current_value)} ${unit}</small>
                         </div>
                     </button>
                 </li>
@@ -973,30 +1072,15 @@
         let channelContentHtml = '<div class="tab-content">';
         snapshots.forEach((snapshot, index) => {
             const channelId = `channel-${type}-${snapshot.id}`;
-            channelContentHtml += `
-                <div class="tab-pane fade ${index === 0 ? 'show active' : ''}" 
-                     id="${channelId}" 
-                     role="tabpanel">
-                    <div class="card">
-                        <div class="card-body">
-                            <div class="stats-grid">
-                                <div class="stat-item">
-                                    <div class="stat-label">平均值</div>
-                                    <div class="stat-value">${snapshot.statistics.mean.toFixed(3)}</div>
-                                </div>
-                                <div class="stat-item">
-                                    <div class="stat-label">标准差</div>
-                                    <div class="stat-value">${snapshot.statistics.std.toFixed(3)}</div>
-                                </div>
-                                <div class="stat-item">
-                                    <div class="stat-label">最大值</div>
-                                    <div class="stat-value">${snapshot.statistics.max.toFixed(3)}</div>
-                                </div>
-                                <div class="stat-item">
-                                    <div class="stat-label">最小值</div>
-                                    <div class="stat-value">${snapshot.statistics.min.toFixed(3)}</div>
-                                </div>
+            const unit = getSnapshotUnit(snapshot);
+            const stats = snapshot.statistics || {};
+            const auxSnapshot = isAuxSnapshot(snapshot);
+            const chartHtml = auxSnapshot ? `
+                            <div class="alert alert-secondary mb-0">
+                                <i class="bi bi-info-circle me-1"></i>
+                                ${snapshot.channel_label} 为低速上下文量，仅保存故障发生时的当前值，不生成波形和频谱。
                             </div>
+            ` : `
                             <div class="chart-row">
                                 <div class="chart-wrapper">
                                     <h6 class="text-center mb-2">时域波形</h6>
@@ -1007,6 +1091,36 @@
                                     <div id="chart-freq-${type}-${snapshot.id}" class="chart-container"></div>
                                 </div>
                             </div>
+            `;
+            channelContentHtml += `
+                <div class="tab-pane fade ${index === 0 ? 'show active' : ''}" 
+                     id="${channelId}" 
+                     role="tabpanel">
+                    <div class="card">
+                        <div class="card-body">
+                            <div class="stats-grid">
+                                <div class="stat-item">
+                                    <div class="stat-label">当前值</div>
+                                    <div class="stat-value">${formatSnapshotValue(snapshot.current_value)} ${unit}</div>
+                                </div>
+                                <div class="stat-item">
+                                    <div class="stat-label">平均值</div>
+                                    <div class="stat-value">${formatSnapshotValue(stats.mean)}</div>
+                                </div>
+                                <div class="stat-item">
+                                    <div class="stat-label">标准差</div>
+                                    <div class="stat-value">${formatSnapshotValue(stats.std)}</div>
+                                </div>
+                                <div class="stat-item">
+                                    <div class="stat-label">最大值</div>
+                                    <div class="stat-value">${formatSnapshotValue(stats.max)}</div>
+                                </div>
+                                <div class="stat-item">
+                                    <div class="stat-label">最小值</div>
+                                    <div class="stat-value">${formatSnapshotValue(stats.min)}</div>
+                                </div>
+                            </div>
+                            ${chartHtml}
                         </div>
                     </div>
                 </div>
@@ -1014,11 +1128,221 @@
         });
         channelContentHtml += '</div>';
         
-        return channelTabsHtml + channelContentHtml;
+        return overlayHtml + channelTabsHtml + channelContentHtml;
+    }
+
+    function toggleSnapshotFastOverlay(type) {
+        const body = document.getElementById(`snapshot-fast-overlay-${type}`);
+        const btn = document.getElementById(`btn-fast-snapshot-${type}`);
+        if (!body) return;
+        const shouldShow = !body.classList.contains('show');
+        body.classList.toggle('show', shouldShow);
+        if (btn) {
+            btn.classList.toggle('btn-primary', shouldShow);
+            btn.classList.toggle('btn-outline-primary', !shouldShow);
+            btn.innerHTML = shouldShow
+                ? '<i class="bi bi-eye-slash"></i> 隐藏四通道同窗'
+                : '<i class="bi bi-eye"></i> 显示四通道同窗';
+        }
+        if (shouldShow) {
+            initFastSnapshotCharts(type);
+            setTimeout(() => {
+                ['time', 'freq'].forEach(kind => {
+                    const dom = document.getElementById(`chart-fast-${kind}-${type}`);
+                    const chart = dom ? echarts.getInstanceByDom(dom) : null;
+                    if (chart) chart.resize();
+                });
+            }, 120);
+        }
+    }
+
+    function initFastSnapshotCharts(type) {
+        const snapshots = currentSnapshotGroups[type] || [];
+        initFastSnapshotTimeChart(type, snapshots);
+        initFastSnapshotFreqChart(type, snapshots);
+    }
+
+    function buildSnapshotTimeSeries(snapshot) {
+        const wave = getSnapshotDisplayWaveform(snapshot);
+        const len = wave.length;
+        const dtMs = (len > 1) ? (EDGEWIND_WAVEFORM_LAST_MS / (len - 1)) : 0;
+        const data = new Array(len);
+        let yMin = Infinity;
+        let yMax = -Infinity;
+        for (let i = 0; i < len; i++) {
+            const y = Number(wave[i]);
+            const safeY = Number.isFinite(y) ? y : 0;
+            data[i] = [i * dtMs, safeY];
+            if (safeY < yMin) yMin = safeY;
+            if (safeY > yMax) yMax = safeY;
+        }
+        return { data, yMin, yMax, xMax: len > 0 ? data[len - 1][0] : EDGEWIND_WAVEFORM_LAST_MS };
+    }
+
+    function buildSnapshotFreqSeries(snapshot) {
+        const fft = Array.isArray(snapshot.fft_data) ? snapshot.fft_data : [];
+        const len = fft.length;
+        const binStep = (len > 1) ? Math.max(1, Math.round((EDGEWIND_FFT_BINS - 1) / (len - 1))) : 1;
+        const data = new Array(len);
+        let yMax = 0;
+        for (let i = 0; i < len; i++) {
+            const y = Number(fft[i]);
+            const safeY = Number.isFinite(y) ? y : 0;
+            data[i] = [(i * binStep) * EDGEWIND_FREQ_RES_HZ, safeY];
+            if (safeY > yMax) yMax = safeY;
+        }
+        return { data, yMax, xMax: len > 0 ? data[len - 1][0] : ((EDGEWIND_FFT_BINS - 1) * EDGEWIND_FREQ_RES_HZ) };
+    }
+
+    function paddedSnapshotRange(yMin, yMax) {
+        let min = Number.isFinite(yMin) ? yMin : 0;
+        let max = Number.isFinite(yMax) ? yMax : 0;
+        min = Math.min(min, 0);
+        max = Math.max(max, 0);
+        let span = max - min;
+        if (!(span > 0)) span = Math.max(Math.abs(min), Math.abs(max), 1);
+        const pad = Math.max(span * 0.1, 0.1);
+        return { min: min - pad, max: max + pad };
+    }
+
+    function initFastSnapshotTimeChart(type, snapshots) {
+        const container = document.getElementById(`chart-fast-time-${type}`);
+        if (!container) return;
+        container.style.width = '100%';
+        container.style.height = '47vh';
+        let chart = echarts.getInstanceByDom(container);
+        if (!chart) chart = echarts.init(container);
+
+        const series = [];
+        let yMin = Infinity;
+        let yMax = -Infinity;
+        let xMax = EDGEWIND_WAVEFORM_LAST_MS;
+        snapshots.forEach(snapshot => {
+            const meta = getFastSnapshotMeta(snapshot);
+            if (!meta || isAuxSnapshot(snapshot)) return;
+            const prepared = buildSnapshotTimeSeries(snapshot);
+            if (!prepared.data.length) return;
+            yMin = Math.min(yMin, prepared.yMin);
+            yMax = Math.max(yMax, prepared.yMax);
+            xMax = Math.max(xMax, prepared.xMax);
+            series.push({
+                name: meta.label,
+                type: 'line',
+                data: prepared.data,
+                smooth: false,
+                symbol: 'none',
+                lineStyle: { width: 1.5, color: meta.color },
+                itemStyle: { color: meta.color },
+                animation: false
+            });
+        });
+
+        if (series.length === 0) return;
+        const range = paddedSnapshotRange(yMin, yMax);
+        chart.__edgewindFullExtentX = { min: 0, max: xMax };
+        chart.__edgewindFullExtentY = { min: range.min, max: range.max };
+        chart.__edgewindAutoWindowY = { min: range.min, max: range.max };
+        chart.setOption({
+            color: FAST_SNAPSHOT_CHANNELS.map(ch => ch.color),
+            legend: { top: 0, data: series.map(s => s.name) },
+            tooltip: {
+                trigger: 'axis',
+                formatter: function(params) {
+                    if (!params || params.length === 0) return '';
+                    const t = Array.isArray(params[0].value) ? params[0].value[0] : params[0].axisValue;
+                    const rows = params.map(p => {
+                        const meta = FAST_SNAPSHOT_CHANNELS.find(ch => ch.label === p.seriesName);
+                        const y = Array.isArray(p.value) ? p.value[1] : p.value;
+                        return `${p.marker}${p.seriesName}: <strong>${Number(y).toFixed(3)}</strong> ${meta?.unit || ''}`;
+                    }).join('<br/>');
+                    return `时间: ${Number(t).toFixed(2)} ms<br/>${rows}`;
+                }
+            },
+            grid: { left: '12%', right: '5%', bottom: '15%', top: 40, containLabel: true },
+            dataZoom: [
+                { type: 'inside', xAxisIndex: 0, filterMode: 'none', zoomOnMouseWheel: false, moveOnMouseMove: false },
+                { type: 'inside', yAxisIndex: 0, filterMode: 'none', zoomOnMouseWheel: false, moveOnMouseMove: false, startValue: range.min, endValue: range.max }
+            ],
+            xAxis: { type: 'value', name: '时间 (ms)', nameLocation: 'center', nameGap: 25 },
+            yAxis: { type: 'value', name: '工程值 (V / A / mA)', nameLocation: 'center', nameGap: 45, scale: false, min: range.min, max: range.max },
+            series
+        }, { replaceMerge: ['series'], lazyUpdate: true });
+        if (typeof setupChartZoom === 'function') {
+            setupChartZoom(chart, container);
+        }
+    }
+
+    function initFastSnapshotFreqChart(type, snapshots) {
+        const container = document.getElementById(`chart-fast-freq-${type}`);
+        if (!container) return;
+        container.style.width = '100%';
+        container.style.height = '47vh';
+        let chart = echarts.getInstanceByDom(container);
+        if (!chart) chart = echarts.init(container);
+
+        const series = [];
+        let yMax = 0;
+        let xMax = 0;
+        snapshots.forEach(snapshot => {
+            const meta = getFastSnapshotMeta(snapshot);
+            if (!meta || isAuxSnapshot(snapshot)) return;
+            const prepared = buildSnapshotFreqSeries(snapshot);
+            if (!prepared.data.length) return;
+            yMax = Math.max(yMax, prepared.yMax);
+            xMax = Math.max(xMax, prepared.xMax);
+            series.push({
+                name: meta.label,
+                type: 'line',
+                data: prepared.data,
+                smooth: false,
+                symbol: 'none',
+                lineStyle: { width: 1.5, color: meta.color },
+                itemStyle: { color: meta.color },
+                animation: false
+            });
+        });
+
+        if (series.length === 0) return;
+        const autoMax = yMax > 0 ? yMax * 1.1 : 1;
+        const fullMax = Math.max(autoMax * 10, 10);
+        chart.__edgewindFullExtentX = { min: 0, max: xMax };
+        chart.__edgewindFullExtentY = { min: 0, max: fullMax };
+        chart.__edgewindAutoWindowY = { min: 0, max: autoMax };
+        chart.setOption({
+            color: FAST_SNAPSHOT_CHANNELS.map(ch => ch.color),
+            legend: { top: 0, data: series.map(s => s.name) },
+            tooltip: {
+                trigger: 'axis',
+                formatter: function(params) {
+                    if (!params || params.length === 0) return '';
+                    const f = Array.isArray(params[0].value) ? params[0].value[0] : params[0].axisValue;
+                    const rows = params.map(p => {
+                        const meta = FAST_SNAPSHOT_CHANNELS.find(ch => ch.label === p.seriesName);
+                        const y = Array.isArray(p.value) ? p.value[1] : p.value;
+                        return `${p.marker}${p.seriesName}: <strong>${Number(y).toFixed(4)}</strong> ${meta?.unit || ''}`;
+                    }).join('<br/>');
+                    return `频率: ${Number(f).toFixed(2)} Hz<br/>${rows}`;
+                }
+            },
+            grid: { left: '12%', right: '5%', bottom: '15%', top: 40, containLabel: true },
+            dataZoom: [
+                { type: 'inside', xAxisIndex: 0, filterMode: 'none', zoomOnMouseWheel: false, moveOnMouseMove: false },
+                { type: 'inside', yAxisIndex: 0, filterMode: 'none', zoomOnMouseWheel: false, moveOnMouseMove: false, startValue: 0, endValue: autoMax }
+            ],
+            xAxis: { type: 'value', min: 0, max: xMax, name: '频率 (Hz)', nameLocation: 'center', nameGap: 25 },
+            yAxis: { type: 'value', min: 0, max: fullMax, name: '幅值 (V / A / mA)', nameLocation: 'center', nameGap: 45 },
+            series
+        }, { replaceMerge: ['series'], lazyUpdate: true });
+        if (typeof setupChartZoom === 'function') {
+            setupChartZoom(chart, container);
+        }
     }
     
     // 初始化图表（时域+频域）
     function initChart(snapshot, type) {
+        if (isAuxSnapshot(snapshot)) {
+            return;
+        }
         // 确定Y轴单位和名称
         let yAxisName = '值';
         let unit = '';
@@ -1027,15 +1351,15 @@
         if (snapshot.channel_type === 'DC') {
             yAxisName = '电压';
             unit = 'V';
-            lineColor = snapshot.channel_label.includes('+') ? '#0d6efd' : '#dc3545';
+            lineColor = snapshot.channel_label.includes('+') ? '#1f77b4' : '#d62728';
         } else if (snapshot.channel_type === 'Current') {
             yAxisName = '电流';
             unit = 'A';
-            lineColor = '#0dcaf0';
+            lineColor = '#2ca02c';
         } else if (snapshot.channel_type === 'Leakage') {
             yAxisName = '漏电流';
             unit = 'mA';
-            lineColor = '#ffc107';
+            lineColor = '#9467bd';
         }
         
         // 初始化时域图表
@@ -1061,7 +1385,7 @@
         
         const chart = echarts.init(container);
         
-        const wave = Array.isArray(snapshot.waveform_data) ? snapshot.waveform_data : [];
+        const wave = getSnapshotDisplayWaveform(snapshot);
         const len = wave.length;
         const dtMs = (len > 1) ? (EDGEWIND_WAVEFORM_LAST_MS / (len - 1)) : 0;
 

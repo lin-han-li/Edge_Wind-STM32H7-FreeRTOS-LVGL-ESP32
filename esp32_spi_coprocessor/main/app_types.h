@@ -13,7 +13,9 @@
 #define APP_MAX_IP_STR_LEN 16
 #define APP_MAX_ERROR_TEXT_LEN 64
 
-#define REPORT_MAX_CHANNELS 4
+#define REPORT_MAX_CHANNELS 8
+#define REPORT_MAX_WAVE_CHANNELS 4
+#define REPORT_CHANNEL_FLAG_VALID 0x01U
 
 typedef enum {
     REPORT_MODE_SUMMARY = 0,
@@ -82,6 +84,7 @@ typedef struct {
 
 typedef struct {
     uint8_t channel_id;
+    uint8_t channel_flags;
     int32_t value_scaled;
     int32_t current_value_scaled;
     size_t waveform_count;

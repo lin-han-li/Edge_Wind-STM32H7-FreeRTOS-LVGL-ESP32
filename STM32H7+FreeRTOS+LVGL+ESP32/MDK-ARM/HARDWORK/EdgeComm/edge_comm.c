@@ -64,6 +64,11 @@
 #define ESP32_SPI_RESULT_OK 0
 #endif
 
+#define ESP_UPLOAD_FAST_CHANNEL_COUNT    4U
+#define ESP_UPLOAD_AUX_CHANNEL_COUNT     EDGEWIND_AI_AUX_SIZE
+#define ESP_UPLOAD_REPORT_CHANNEL_COUNT  (ESP_UPLOAD_FAST_CHANNEL_COUNT + ESP_UPLOAD_AUX_CHANNEL_COUNT)
+#define ESP_UPLOAD_CHANNEL_FLAG_VALID    0x01U
+
 #ifdef EDGEWIND_AI_RAWLITE_SIZE
 #define ESP_AI_HAS_RAWLITE 1
 #else
@@ -342,6 +347,56 @@ static const float s_ai_default_aux4[EDGEWIND_AI_AUX_SIZE] =
     72.5f, 66.5f, 53.0f, 59.0f
 };
 
+static float g_upload_aux4[EDGEWIND_AI_AUX_SIZE] =
+{
+    72.5f, 66.5f, 53.0f, 59.0f
+};
+static uint8_t g_upload_aux4_valid_mask = 0U;
+
+static void ESP_UploadAux4Remember(const float aux4[EDGEWIND_AI_AUX_SIZE],
+                                   uint8_t aux4_valid_mask)
+{
+    const float *src = (aux4 != NULL) ? aux4 : s_ai_default_aux4;
+
+    for (uint8_t i = 0U; i < EDGEWIND_AI_AUX_SIZE; i++)
+    {
+        g_upload_aux4[i] = ESP_SafeFloat(src[i]);
+    }
+    g_upload_aux4_valid_mask = aux4_valid_mask;
+}
+
+static void ESP_FillAuxReportChannels(esp32_spi_report_channel_t *channels,
+                                      float *current_values,
+                                      const float aux4[EDGEWIND_AI_AUX_SIZE],
+                                      uint8_t aux4_valid_mask)
+{
+    const float *src = (aux4 != NULL) ? aux4 : s_ai_default_aux4;
+
+    if (channels == NULL)
+    {
+        return;
+    }
+
+    for (uint8_t i = 0U; i < EDGEWIND_AI_AUX_SIZE; i++)
+    {
+        uint8_t dst = (uint8_t)(ESP_UPLOAD_FAST_CHANNEL_COUNT + i);
+        float v = ESP_SafeFloat(src[i]);
+        int32_t scaled = ESP_FloatToI32Scaled(v);
+
+        channels[dst].channel_id = dst;
+        channels[dst].channel_flags = ((aux4_valid_mask & (uint8_t)(1U << i)) != 0U) ?
+                                      ESP_UPLOAD_CHANNEL_FLAG_VALID : 0U;
+        channels[dst].waveform_count = 0U;
+        channels[dst].fft_count = 0U;
+        channels[dst].value_scaled = scaled;
+        channels[dst].current_value_scaled = scaled;
+        if (current_values != NULL)
+        {
+            current_values[dst] = v;
+        }
+    }
+}
+
 static void ESP_AI_UpdateFaultCode(const float analog_v[4][AD_ACQ_POINTS],
                                    const float aux4[EDGEWIND_AI_AUX_SIZE],
                                    uint8_t aux4_valid_mask)
@@ -572,10 +627,10 @@ typedef struct
     uint8_t report_mode;
     uint8_t status_code;
     char fault_code[8];
-    esp32_spi_report_channel_t channels[4];
-    float current_value[4];
-    float waveform[4][WAVEFORM_POINTS];
-    float fft_data[4][FFT_POINTS];
+    esp32_spi_report_channel_t channels[ESP_UPLOAD_REPORT_CHANNEL_COUNT];
+    float current_value[ESP_UPLOAD_REPORT_CHANNEL_COUNT];
+    float waveform[ESP_UPLOAD_FAST_CHANNEL_COUNT][WAVEFORM_POINTS];
+    float fft_data[ESP_UPLOAD_FAST_CHANNEL_COUNT][FFT_POINTS];
 } ESP_UploadSnapshot_t;
 
 static ESP_UploadSnapshot_t * const g_upload_snapshots =
@@ -631,10 +686,13 @@ static void ESP_UploadSnapshot_FinishWrite(int8_t idx, ESP_UploadSnapshot_t *slo
     taskEXIT_CRITICAL();
 }
 
-static void ESP_UploadSnapshot_PublishFromNodeChannels(uint8_t ready_buffer)
+static void ESP_UploadSnapshot_PublishFromNodeChannels(uint8_t ready_buffer,
+                                                       const float aux4[EDGEWIND_AI_AUX_SIZE],
+                                                       uint8_t aux4_valid_mask)
 {
     int8_t idx = ESP_UploadSnapshot_BeginWrite();
     ESP_UploadSnapshot_t *slot;
+    const float *aux_src = (aux4 != NULL) ? aux4 : s_ai_default_aux4;
 
     if (idx < 0)
     {
@@ -642,20 +700,23 @@ static void ESP_UploadSnapshot_PublishFromNodeChannels(uint8_t ready_buffer)
         return;
     }
 
+    ESP_UploadAux4Remember(aux_src, aux4_valid_mask);
+
     slot = &g_upload_snapshots[(uint8_t)idx];
     memset(slot, 0, sizeof(*slot));
     slot->tick_ms = HAL_GetTick();
     slot->ready_buffer = ready_buffer;
-    slot->channel_count = 4U;
+    slot->channel_count = (uint8_t)ESP_UPLOAD_REPORT_CHANNEL_COUNT;
     slot->report_mode = 1U;
     slot->status_code = 1U;
     strncpy(slot->fault_code, g_fault_code, sizeof(slot->fault_code) - 1U);
     slot->fault_code[sizeof(slot->fault_code) - 1U] = '\0';
 
-    for (uint8_t ch = 0U; ch < 4U; ch++)
+    for (uint8_t ch = 0U; ch < ESP_UPLOAD_FAST_CHANNEL_COUNT; ch++)
     {
         int32_t cv_i = ESP_FloatToI32Scaled(node_channels[ch].current_value);
         slot->channels[ch].channel_id = node_channels[ch].id;
+        slot->channels[ch].channel_flags = ESP_UPLOAD_CHANNEL_FLAG_VALID;
         slot->channels[ch].waveform_count = (uint16_t)WAVEFORM_POINTS;
         slot->channels[ch].fft_count = (uint16_t)FFT_POINTS;
         slot->channels[ch].value_scaled = cv_i;
@@ -665,6 +726,7 @@ static void ESP_UploadSnapshot_PublishFromNodeChannels(uint8_t ready_buffer)
         memcpy(slot->fft_data[ch], node_channels[ch].fft_data, sizeof(slot->fft_data[ch]));
         ESP_RtosYield();
     }
+    ESP_FillAuxReportChannels(slot->channels, slot->current_value, aux_src, aux4_valid_mask);
 
     ESP_UploadSnapshot_FinishWrite(idx, slot);
 }
@@ -740,10 +802,10 @@ typedef struct
     uint32_t wave_step;
     uint32_t upload_points;
     const ESP_UploadSnapshot_t *snapshot;
-    esp32_spi_report_channel_t channels[4];
-    const float *waves[4];
-    const float *ffts[4];
-    uint16_t wave_source_counts[4];
+    esp32_spi_report_channel_t channels[ESP_UPLOAD_REPORT_CHANNEL_COUNT];
+    const float *waves[ESP_UPLOAD_REPORT_CHANNEL_COUNT];
+    const float *ffts[ESP_UPLOAD_REPORT_CHANNEL_COUNT];
+    uint16_t wave_source_counts[ESP_UPLOAD_REPORT_CHANNEL_COUNT];
     uint8_t channel_index;
     uint16_t element_offset;
 } ESP_FullTxState_t;
@@ -1050,7 +1112,7 @@ void ESP_CommParams_Apply(const ESP_CommParams_t *p)
     /* 约束：避免极端值导致系统抖动或“永不发送” */
     uint32_t hb    = clamp_u32(p->heartbeat_ms,    200u, 54999u);
     uint32_t minit = clamp_u32(p->min_interval_ms, 0u,   600000u);
-    uint32_t http  = clamp_u32(p->http_timeout_ms, 10000u, 600000u);
+    uint32_t http  = clamp_u32(p->http_timeout_ms, 1000u, 600000u);
     uint32_t hrs   = clamp_u32(p->hardreset_sec,   5u,   3600u);
     uint32_t step  = clamp_u32(p->wave_step,       1u,   64u);
     uint32_t upmax = (uint32_t)WAVEFORM_POINTS;
@@ -2129,7 +2191,7 @@ void ESP_Update_Data_And_FFT(void)
     }
 
     last_ready = ready;
-    ESP_UploadSnapshot_PublishFromNodeChannels(ready);
+    ESP_UploadSnapshot_PublishFromNodeChannels(ready, aux4, aux4_valid_mask);
     if ((HAL_GetTick() - last_dsp_log_tick) >= EDGEWIND_DSP_SNAPSHOT_LOG_MS)
     {
         last_dsp_log_tick = HAL_GetTick();
@@ -3227,7 +3289,7 @@ static bool ESP_FullTx_StartFrame(uint32_t frame_id,
         return false;
     }
     channel_count = snapshot->channel_count;
-    if (channel_count == 0U || channel_count > 4U)
+    if (channel_count == 0U || channel_count > ESP_UPLOAD_REPORT_CHANNEL_COUNT)
     {
         return false;
     }
@@ -3265,11 +3327,18 @@ static bool ESP_FullTx_StartFrame(uint32_t frame_id,
             memset(&g_full_tx_sm, 0, sizeof(g_full_tx_sm));
             return false;
         }
+        if (i >= ESP_UPLOAD_FAST_CHANNEL_COUNT &&
+            (snapshot->channels[i].waveform_count != 0U || snapshot->channels[i].fft_count != 0U))
+        {
+            memset(&g_full_tx_sm, 0, sizeof(g_full_tx_sm));
+            return false;
+        }
         source_wave_count = snapshot->channels[i].waveform_count;
-        tx_wave_count = ESP_FullTx_EffectiveWaveCount(wave_step,
+        tx_wave_count = (source_wave_count > 0U) ?
+                        ESP_FullTx_EffectiveWaveCount(wave_step,
                                                       upload_points,
-                                                      source_wave_count);
-        if (tx_wave_count == 0U)
+                                                      source_wave_count) : 0U;
+        if (source_wave_count > 0U && tx_wave_count == 0U)
         {
             memset(&g_full_tx_sm, 0, sizeof(g_full_tx_sm));
             return false;
@@ -3277,8 +3346,10 @@ static bool ESP_FullTx_StartFrame(uint32_t frame_id,
         g_full_tx_sm.channels[i] = snapshot->channels[i];
         g_full_tx_sm.channels[i].waveform_count = tx_wave_count;
         g_full_tx_sm.wave_source_counts[i] = source_wave_count;
-        g_full_tx_sm.waves[i] = snapshot->waveform[i];
-        g_full_tx_sm.ffts[i] = snapshot->fft_data[i];
+        g_full_tx_sm.waves[i] = (i < ESP_UPLOAD_FAST_CHANNEL_COUNT && source_wave_count > 0U) ?
+                                snapshot->waveform[i] : NULL;
+        g_full_tx_sm.ffts[i] = (i < ESP_UPLOAD_FAST_CHANNEL_COUNT && snapshot->channels[i].fft_count > 0U) ?
+                               snapshot->fft_data[i] : NULL;
     }
     return true;
 }
@@ -3465,15 +3536,18 @@ void ESP_Post_Summary(void)
     }
     last_spi_send_time = now_tick;
 
-    esp32_spi_report_channel_t ch[4];
-    for (uint8_t i = 0; i < 4U; i++) {
+    esp32_spi_report_channel_t ch[ESP_UPLOAD_REPORT_CHANNEL_COUNT];
+    memset(ch, 0, sizeof(ch));
+    for (uint8_t i = 0; i < ESP_UPLOAD_FAST_CHANNEL_COUNT; i++) {
         int32_t cv_i = ESP_FloatToI32Scaled(node_channels[i].current_value);
         ch[i].channel_id = node_channels[i].id;
+        ch[i].channel_flags = ESP_UPLOAD_CHANNEL_FLAG_VALID;
         ch[i].waveform_count = (uint16_t)WAVEFORM_POINTS;
         ch[i].fft_count = (uint16_t)FFT_POINTS;
         ch[i].value_scaled = cv_i;
         ch[i].current_value_scaled = cv_i;
     }
+    ESP_FillAuxReportChannels(ch, NULL, g_upload_aux4, g_upload_aux4_valid_mask);
 
     tx_try++;
     if (ESP32_SPI_ReportSummary(++s_spi_seq,
@@ -3484,7 +3558,7 @@ void ESP_Post_Summary(void)
                                 ESP_ServerReportFull() ? 1U : 0U,
                                 1U,
                                 ch,
-                                4U,
+                                (uint8_t)ESP_UPLOAD_REPORT_CHANNEL_COUNT,
                                 1200U)) {
         tx_ok++;
         invalid_state_nack_count = 0U;

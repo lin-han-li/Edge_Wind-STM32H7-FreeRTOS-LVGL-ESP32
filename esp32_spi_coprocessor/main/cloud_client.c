@@ -51,10 +51,10 @@ static const char *TAG = "cloud_client";
 #define CLOUD_FULL_RAW_RESPONSE_HEADER_MAX_LEN 768U
 #define CLOUD_FULL_RAW_IO_TIMEOUT_MS 1200U
 #ifndef CLOUD_FULL_RAW_MAX_REUSE
-#define CLOUD_FULL_RAW_MAX_REUSE 2048U
+#define CLOUD_FULL_RAW_MAX_REUSE 96U
 #endif
 #define CLOUD_FULL_RAW_WRITE_BLOCK_ABORT_MS 1200U
-#define CLOUD_FULL_RAW_WRITE_RETRY_MAX 2U
+#define CLOUD_FULL_RAW_WRITE_RETRY_MAX 0U
 #define CLOUD_FULL_RAW_WRITE_RETRY_DELAY_MS 20U
 
 typedef enum {
@@ -413,18 +413,21 @@ static esp_err_t full_raw_write_all(void *ctx,
     while (offset < data_len) {
         size_t write_len = data_len - offset;
         ssize_t written;
+#if CLOUD_FULL_RAW_WRITE_RETRY_MAX > 0
         int64_t write_start_us;
+#endif
         if (write_len > write_chunk_limit) {
             write_len = write_chunk_limit;
         }
         if (raw_deadline_expired(deadline_us)) {
             return ESP_ERR_TIMEOUT;
         }
+#if CLOUD_FULL_RAW_WRITE_RETRY_MAX > 0
         write_start_us = esp_timer_get_time();
+#endif
         written = send(sock, bytes + offset, write_len, 0);
         if (written <= 0) {
             int saved_errno = errno;
-            int64_t write_ms = (esp_timer_get_time() - write_start_us) / 1000LL;
 #if CLOUD_FULL_RAW_WRITE_RETRY_MAX == 0
             ESP_LOGW(TAG,
                      "full raw body send failed ret=%d errno=%d offset=%u len=%u",
@@ -434,6 +437,7 @@ static esp_err_t full_raw_write_all(void *ctx,
                      (unsigned int) data_len);
             return ESP_FAIL;
 #else
+            int64_t write_ms = (esp_timer_get_time() - write_start_us) / 1000LL;
             if (write_ms >= (int64_t) CLOUD_FULL_RAW_WRITE_BLOCK_ABORT_MS) {
                 ESP_LOGW(TAG,
                          "full raw body send stalled ret=%d errno=%d offset=%u len=%u write_ms=%lld limit_ms=%u",

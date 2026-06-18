@@ -13,7 +13,16 @@ from edgewind.knowledge_graph import FAULT_KNOWLEDGE_GRAPH, get_fault_knowledge_
 from edgewind.models import Device, FaultSnapshot, HistoryData, WorkOrder
 
 
-HISTORY_FIELDS = ("voltage_pos", "voltage_neg", "current", "leakage")
+HISTORY_FIELDS = (
+    "voltage_pos",
+    "voltage_neg",
+    "current",
+    "leakage",
+    "t_igbt_c",
+    "t_dc_cap_c",
+    "rh_cabinet_pct",
+    "wind_load_pct",
+)
 SNAPSHOT_TYPES = ("before", "after", "before_recovery", "after_recovery")
 
 
