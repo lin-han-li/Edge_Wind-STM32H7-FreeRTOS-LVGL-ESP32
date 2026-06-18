@@ -1,14 +1,18 @@
 # EdgeWind 三端交接 - 监测端 STM32/ESP32
 
-更新日期：2026-06-16
+更新日期：2026-06-18
 
-本文是监测端自己的交接文档，用于和 AI 训练端、DAC8568 HIL 播放端、Web/云端对齐。当前有效基线是 v68 三输入单模型固件；v69 aux4 只是下一集成线，尚未替代 v68。当前不再按 v6.3 双模型 guard/router 方案推进。
+本文是监测端自己的交接文档，用于和 AI 训练端、DAC8568 HIL 播放端、Web/云端对齐。当前正式回退基线仍是 v68 三输入单模型固件；当前监测端已接入并烧录 v69 publicfix RC 四输入单模型，用于板端验收，不得直接宣布替代 v68。当前不再按 v6.3 双模型 guard/router 方案推进。
 
-当前回退点：
+当前回退点与本端状态：
 
-- Git 提交：`dbe0a75`
-- 标签：`snapshot-before-next-update-20260616-212612`
-- 规则：v68 HIL 端到端未验收通过前，不把 v69 smoke 模型接入监测端主链路。
+- v68 稳定回退提交：`dbe0a75`
+- v68 稳定回退标签：`snapshot-before-next-update-20260616-212612`
+- v69 RC 接入前回退提交：`2c9c7d0`
+- v69 RC 接入前回退标签：`snapshot-before-v69-rc-network-20260617-133815`
+- 当前本端提交：`f7142b3`
+- 当前分支：`codex/v69-aux4-integration`，本地比远端多 3 个提交，尚未推送。
+- 规则：v69 publicfix RC 已可上板验证，但只有 normal 5 分钟和七类 HIL 回放验收通过后，才允许把它作为 v68 的正式替代线。
 
 ## 三端目录索引
 
@@ -53,7 +57,7 @@
 ## 本端文档维护规则
 
 - 本文件只维护监测端视角的三端交接事实，不写宣传性描述。
-- AI 模型契约以 AI 训练端 handoff 为准；当前稳定部署是 v68 单模型，v69 aux4 是 pending next line。
+- AI 模型契约以 AI 训练端 handoff 和本端 `network_generate_report.txt` 为准；当前稳定回退线是 v68 单模型，当前上板验收线是 v69 publicfix RC 单模型。
 - Web/云端能力以本地 `Edge_Wind_System` 与云端部署文档为准；DeepSeek 只写 Web 异步辅助诊断。
 - 若模型输入、类别、单位、ESP32 payload、Web 上报 JSON 任一项变化，必须同步更新本文件。
 - 若 CubeMX、Keil 下载配置、时钟源、Flash algorithm 变化，必须同步更新本文件。
@@ -61,17 +65,55 @@
 ## 已读取的其他端文档
 
 - AI 训练端：`C:\Users\pengjianzhong\Desktop\MY_Project\EdgeWind_AI_Training\docs\v68_wind_sensor_public_fused_single_stm32_handoff.md`
-- AI 训练端 v69 pending：`C:\Users\pengjianzhong\Desktop\MY_Project\EdgeWind_AI_Training\docs\v69_wind_sensor_aux4_public_fused_single_handoff.md`
+- AI 训练端 v69 RC：`C:\Users\pengjianzhong\Desktop\MY_Project\EdgeWind_AI_Training\docs\v69_wind_sensor_aux4_public_fused_single_handoff.md`
+- AI 训练端 v69 A4B/监测回放交接：`C:\Users\pengjianzhong\Desktop\MY_Project\EdgeWind_AI_Training\docs\v69_a4b_monitor_playback_handoff.md`
+- AI 训练端当前状态：`C:\Users\pengjianzhong\Desktop\MY_Project\EdgeWind_AI_Training\CURRENT_STATUS.md`
 - AI 训练端三项目对齐：`C:\Users\pengjianzhong\Desktop\MY_Project\EdgeWind_AI_Training\docs\three_project_alignment_current.md`
 - AI 训练端数据格式：`C:\Users\pengjianzhong\Desktop\MY_Project\EdgeWind_AI_Training\docs\data_format.md`
 - AI 训练端历史移植说明：`C:\Users\pengjianzhong\Desktop\MY_Project\EdgeWind_AI_Training\docs\stm32_porting.md`
 - DAC8568 HIL 播放端：`C:\Users\pengjianzhong\Desktop\MY_Project\STM32H750XBH6_DAC8568_FreeRTOS_LVGL9.4.0\NEXT_AI_PROJECT_HANDOFF.md`
 - DAC8568 三项目上下文：`C:\Users\pengjianzhong\Desktop\MY_Project\STM32H750XBH6_DAC8568_FreeRTOS_LVGL9.4.0\EDGEWIND_THREE_PROJECTS_CONTEXT.md`
+- DAC8568 v69 aux4 播放交接：`C:\Users\pengjianzhong\Desktop\MY_Project\STM32H750XBH6_DAC8568_FreeRTOS_LVGL9.4.0\V69_AUX4_PLAYBACK_HANDOFF.md`
 - Web 上位机：`C:\Users\pengjianzhong\Desktop\MY_Project\EdgeWind_STM32_ESP32\Edge_Wind_System\README.md`
 - 云端部署：`C:\Users\pengjianzhong\Desktop\MY_Project\EdgeWind_STM32_ESP32\Edge_Wind_System\docs\阿里云部署实现详解.md`
 - 阿里云 SSH 接入：`C:\Users\pengjianzhong\Desktop\MY_Project\EdgeWind_STM32_ESP32\ALiYunFuWuQi\README.md`
 - ESP32 协处理器：`C:\Users\pengjianzhong\Desktop\MY_Project\EdgeWind_STM32_ESP32\esp32_spi_coprocessor\README.md`
 - STM32 固件说明：`C:\Users\pengjianzhong\Desktop\MY_Project\EdgeWind_STM32_ESP32\STM32H7+FreeRTOS+LVGL+ESP32\PROJECT_OVERVIEW.md`
+
+## 2026-06-18 三端快照
+
+### AI 训练端
+
+- 路径：`C:\Users\pengjianzhong\Desktop\MY_Project\EdgeWind_AI_Training`
+- Git 状态：分支 `codex/v69-aux4-integration`，存在未提交改动和 v69 新产物；监测端只读取交接事实，不直接修改 AI 仓库。
+- v68 仍是正式稳定回退线：`dataset_v68_wind_sensor_public_fused_single_v6`。
+- v69 publicfix RC 已完成 AI 侧全量训练、TFLite 导出、X-CUBE-AI 生成、golden vectors 和回放包准备。
+- v69 RC 部署包：`C:\Users\pengjianzhong\Desktop\MY_Project\EdgeWind_AI_Training\stm32_deploy_packages\dataset_v69_wind_sensor_aux4_public_fused_single_publicfix_single7_20260617_001615_rc`
+- v69 RC 回放包：`C:\Users\pengjianzhong\Desktop\MY_Project\EdgeWind_AI_Training\data_v69_wind_sensor_aux4_public_fused_single_publicfix\playback_hil\dataset_v69_publicfix_rc_test_sd_g000000\wave`
+- v69 RC golden vectors：`C:\Users\pengjianzhong\Desktop\MY_Project\EdgeWind_AI_Training\stm32_test_vectors\dataset_v69_wind_sensor_aux4_public_fused_single_publicfix_20260617_001615_rc`
+- AI 端记录的 v69 RC 风险：PC 评估仍存在少量 `E00->E01`，所以板端 normal 5 分钟验收是强制门禁。
+- AI 端记录的 X-CUBE-AI STM32 输入顺序：`X_aux[1,4]`、`X_dwt[1,104]`、`X_feat[1,116]`、`X_spec[1,512,4]`。
+
+### DAC8568 HIL 播放端
+
+- 路径：`C:\Users\pengjianzhong\Desktop\MY_Project\STM32H750XBH6_DAC8568_FreeRTOS_LVGL9.4.0`
+- Git 状态：分支 `codex/v69-aux4-integration`，存在未提交的 aux4 播放链路改动。
+- 正式 v69 播放契约以 `V69_AUX4_PLAYBACK_HANDOFF.md` 为准。
+- A/B/C/D 继续读取七个严格 4 通道 D8CW `.bin`，不扩展为 8 通道。
+- E/F/G/H 使用低速 sidecar：`0:/wave/aux4_schedule.a4b`。
+- `aux4_schedule.json` 只作为人工检查镜像，不是播放端稳定运行输入。
+- 一个 aux4 item 对应 `16384` 个 DAC 采样点，也对应监测端 `4096 @ 25.6 kHz` 的一个 160 ms AI 窗口。
+- 已知小风险：回放端注入 E/F/G/H 帧会占用极少量 A/B/C/D sample slot；按回放端评估，该风险不阻塞 v69 aux4 bring-up，但若 HIL 异常再回到播放端优化更新方式。
+
+### 监测端
+
+- 路径：`C:\Users\pengjianzhong\Desktop\MY_Project\EdgeWind_STM32_ESP32`
+- Git 状态：分支 `codex/v69-aux4-integration`，工作区干净，本地领先远端 3 个提交。
+- 当前固件：v69 publicfix RC 已编译并烧录成功，仍按 RC 验收线管理。
+- Keil rebuild：`0 Error(s), 0 Warning(s)`。
+- 下载结果：`Erase Done`、`Programming Done`、`Verify OK`、`Application running ...`。
+- 运行日志已看到：`model=dataset_v69_wind_sensor_aux4_public_fused_single_publicfix`、`E00/normal conf=0.936`、`infer=267ms`、`total=307ms`。
+- 当前 quick check 中 `aux4=[72.5,66.5,53.0,59.0] valid=0x00`，说明后四路未看到有效 0.5V..4.5V 输入，暂时使用默认均值；正式 v69 验收必须接上 E/F/G/H 或明确默认 aux 策略。
 
 ## 当前监测端状态
 
@@ -81,11 +123,11 @@
 - 本地任务链路：
   - `DSP_Algorithm_Task` 高优先级消费采样窗口，执行 FFT、特征提取和 AI 推理。
   - `Upload_Task` 低优先级上传最新处理快照；ESP32/云端忙时允许丢弃旧上传快照，DSP 不被阻塞。
-- 当前已烧录固件：v68 AI 模型版本；2026-06-16 已完成 Keil 编译下载验证。清理项目目录后不保留临时 build/flash log，后续需要时重新生成。
+- 当前已烧录固件：v69 publicfix RC AI 模型版本；2026-06-17 已完成 Keil 编译、下载、串口 quick check。它是上板验收线，不是正式替代 v68 的结论。
 
 ## AI 模型契约
 
-当前以 AI 训练端 v68 handoff 为准：
+正式稳定回退线仍以 AI 训练端 v68 handoff 为准：
 
 - 模型族：`dataset_v68_wind_sensor_public_fused_single_v6`
 - 部署包：`dataset_v68_wind_sensor_public_fused_single_v6_single7_20260616_031448`
@@ -111,6 +153,8 @@
   - 硬规则 masking
 
 训练端报告中的验证范围是 val/test/hil_holdout split，不代表真实风场长期准确率。
+
+当前上板验收线以 AI 训练端 v69 publicfix RC 部署包和本端 `network_generate_report.txt` 为准。注意：Keras/TFLite 逻辑输入列表和 X-CUBE-AI 生成后的 STM32 输入顺序可能不同；本端实际绑定必须服从 `network_generate_report.txt`，当前为 `X_aux`、`X_dwt`、`X_feat`、`X_spec`。
 
 ## v69 aux4 RC 接入状态
 
@@ -176,6 +220,7 @@ STM32 工程中已替换：
 - `STM32H7+FreeRTOS+LVGL+ESP32\X-CUBE-AI\App\network_data_params.h`
 - `STM32H7+FreeRTOS+LVGL+ESP32\X-CUBE-AI\App\network_generate_report.txt`
 - `STM32H7+FreeRTOS+LVGL+ESP32\Core\Src\edgewind_ai_preprocess_params.c`
+- `STM32H7+FreeRTOS+LVGL+ESP32\Core\Inc\edgewind_ai_preprocess_params.h`
 
 当前 X-CUBE-AI 摘要：
 
@@ -289,6 +334,12 @@ Application running ...
 
 不要再使用普通 `Normal + SYSRESETREQ + 10MHz` 作为默认下载方式。
 
+串口观察约定：
+
+- STM32 日志：COM7，`921600`。
+- ESP32 日志：COM8，`115200`。
+- 若实际 USB 端口变化，先按设备描述和日志内容确认，不要只凭端口号判断。
+
 ## 时钟和 CubeMX 防改基线
 
 模型更新或 CubeMX 生成前后必须运行：
@@ -313,17 +364,20 @@ python tools\check_stm32_clock_baseline.py
 
 ## 当前需要其他端注意
 
-- AI 训练端：后续新模型如果仍沿用 v68 三输入契约，可只交付 `network_output` 与 `preprocess_c`；如果输入数量、类别、单位或后处理变化，必须先更新 handoff 文档。
-- AI 训练端：`docs\stm32_porting.md` 中 v6.3 双模型 guard/router 内容是历史计划，当前监测端以 v68 单模型为准。
+- AI 训练端：当前 v69 publicfix RC 已交付并接入监测端；后续若重新导出模型，必须继续交付 `network_output`、`preprocess_c`、`network_generate_report.txt`、golden vectors 和匹配回放包。
+- AI 训练端：`docs\stm32_porting.md` 中 v6.3 双模型 guard/router 内容是历史计划，当前监测端只接受 v68/v69 单 `network` 路线。
+- AI 训练端：任何输入数量、输入顺序、类别、单位或后处理变化，必须先更新 handoff；监测端代码绑定以本端 `network_generate_report.txt` 为最终依据。
 - ESP32 端：summary payload 已带 `fault_code`，full frame 用于波形/频谱；后续若要上传 `probabilities[7]` 或 AI 耗时，需要扩展 SPI 协议和 Web 接口。
-- DAC8568 播放端：v68/v69 的 D8CW `.bin` 仍严格 4 通道 A/B/C/D；v69 可选 `aux4_schedule.json` 只能作为 DAC8568 E/F/G/H 低速 sidecar，不改变 `.bin` header 的 `channels=4`。
+- DAC8568 播放端：v68/v69 的 D8CW `.bin` 仍严格 4 通道 A/B/C/D；v69 正式低速 sidecar 是 `aux4_schedule.a4b`，用于 DAC8568 E/F/G/H，不改变 `.bin` header 的 `channels=4`。
+- DAC8568 播放端：`aux4_schedule.json` 只能作为人工调试镜像，不作为稳定播放输入。
+- DAC8568 播放端：如果播放端文档出现模型输入绑定顺序描述，应视为监测端/AI 端契约信息；实际 STM32 绑定顺序以监测端 `network_generate_report.txt` 为准。
 - Web/云端：DeepSeek 分析只基于工单、快照、历史和知识图谱做辅助解释，不是实时控制闭环。
 - Web/云端：单 worker/eventlet 和 `EVENTLET_NO_GREENDNS=yes` 是当前稳定运行约束。
 
 ## 下一步对齐项
 
-1. 先完成 v68 HIL 基线验收：normal 连续 5 分钟、七类回放、记录 top1/confidence/ppermil/耗时和 Web full frame 状态。
-2. AI 端只在 v68 基线通过后推进 v69 全量训练与正式部署包；smoke 模型不得上板替换 v68。
-3. 监测端已完成 aux4 采集和串口 bring-up 日志的 v68 兼容接入；下一步等 AI 端正式 v69 STM32 deploy package 后再替换 `network` 和预处理参数。
-4. v69 板端稳定后，再把 `probabilities[7]`、AI 耗时、aux4 作为可选 JSON 字段加入上传和 Web 展示。
+1. 先完成 v69 RC 板端验收：用匹配回放包跑 `normal.bin` 连续 5 分钟，确认不反复误报 E01/E04，并记录 `aux4`、`aux_valid`、`ppermil[7]`、`confidence`、`feature_ms/infer_ms/total_ms`。
+2. 再跑七类 HIL 回放，逐类记录 top1、confidence、ppermil、耗时和 Web full frame 状态；若退化，回退到 `snapshot-before-v69-rc-network-20260617-133815` 或 v68 稳定标签。
+3. 如果 aux4 一直 `valid=0x00`，先检查 DAC8568 E/F/G/H 到 AD7606 ch4-ch7 接线和 A4B 侧输出，不要直接归因于模型。
+4. v69 板端稳定后，再单独计划把 `probabilities[7]`、AI 耗时、aux4 作为可选 JSON 字段加入 ESP32 上传和 Web 展示。
 5. 若后续重新启用 guard/router，必须重新定义三端契约，不能直接覆盖 v68/v69 单模型接口。
