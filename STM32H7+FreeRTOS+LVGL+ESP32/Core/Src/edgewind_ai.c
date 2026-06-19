@@ -46,6 +46,7 @@
 
 #define EDGEWIND_AI_MODEL_VERSION_V68     "dataset_v68_wind_sensor_public_fused_single_v6"
 #define EDGEWIND_AI_MODEL_VERSION_V69     "dataset_v69_wind_sensor_aux4_public_fused_single_publicfix"
+#define EDGEWIND_AI_MODEL_VERSION_V70     "dataset_v70_r2_wind_realfield_e01sep_single7_20260619_023056_rc"
 
 #if (AI_NETWORK_IN_NUM == 4)
 #define EDGEWIND_AI_HAS_AUX_INPUT         (1U)
@@ -54,7 +55,7 @@
 #endif
 
 #if (AI_NETWORK_IN_NUM != 3) && (AI_NETWORK_IN_NUM != 4)
-#error "EdgeWind AI expects a 3-input v68 or 4-input v69 network"
+#error "EdgeWind AI expects a 3-input v68 or 4-input aux4 network"
 #endif
 
 #if (EDGEWIND_AI_HAS_AUX_INPUT != 0U)
@@ -62,7 +63,7 @@
     (AI_NETWORK_IN_2_SIZE != EDGEWIND_AI_DWT_SIZE) || \
     (AI_NETWORK_IN_3_SIZE != EDGEWIND_AI_FEAT_SIZE) || \
     (AI_NETWORK_IN_4_SIZE != EDGEWIND_AI_SPEC_SIZE)
-#error "EdgeWind v69 network input order must be X_aux, X_dwt, X_feat, X_spec"
+#error "EdgeWind aux4 network input order must be X_aux, X_dwt, X_feat, X_spec"
 #endif
 #else
 #if (AI_NETWORK_IN_1_SIZE != EDGEWIND_AI_DWT_SIZE) || \
@@ -73,7 +74,7 @@
 #endif
 
 #if (EDGEWIND_AI_HAS_RAWLITE != 0U) && (EDGEWIND_AI_HAS_AUX_INPUT != 0U)
-#error "EdgeWind v69 aux4 path does not support raw-lite input"
+#error "EdgeWind aux4 path does not support raw-lite input"
 #endif
 
 #ifndef AXI_SRAM_SECTION
@@ -193,7 +194,7 @@ const char *EdgeWind_AI_ClassName(uint8_t class_id)
 const char *EdgeWind_AI_ModelVersion(void)
 {
 #if (EDGEWIND_AI_HAS_AUX_INPUT != 0U)
-    return EDGEWIND_AI_MODEL_VERSION_V69;
+    return EDGEWIND_AI_MODEL_VERSION_V70;
 #else
     return EDGEWIND_AI_MODEL_VERSION_V68;
 #endif
@@ -327,7 +328,7 @@ int EdgeWind_AI_Init(void)
            (unsigned long)EDGEWIND_AI_ACTIVATION_ADDR,
            (unsigned long)AI_NETWORK_DATA_ACTIVATIONS_SIZE);
 #elif (EDGEWIND_AI_HAS_AUX_INPUT != 0U)
-    printf("[AI] runtime ready model=%s act=0x%08lX size=%lu input=dwt/feat/spec/aux unit=train_mV\r\n",
+    printf("[AI] runtime ready model=%s act=0x%08lX size=%lu input=aux/dwt/feat/spec unit=train_mV\r\n",
            EdgeWind_AI_ModelVersion(),
            (unsigned long)EDGEWIND_AI_ACTIVATION_ADDR,
            (unsigned long)AI_NETWORK_DATA_ACTIVATIONS_SIZE);
