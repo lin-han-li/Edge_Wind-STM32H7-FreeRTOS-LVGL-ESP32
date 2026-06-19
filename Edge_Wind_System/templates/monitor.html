@@ -591,7 +591,45 @@
         let span = max - min;
         if (!(span > 0)) span = Math.max(Math.abs(min), Math.abs(max), 1);
         const pad = Math.max(span * 0.1, 0.1);
-        return { min: min - pad, max: max + pad };
+        return normalizeChartRange(min - pad, max + pad, 1);
+    }
+
+    function formatChartAxisTick(value, digits = 1) {
+        const n = Number(value);
+        if (!Number.isFinite(n)) return '';
+        const fixed = n.toFixed(digits);
+        const trimmed = fixed
+            .replace(/^-0(?:\.0+)?$/, '0')
+            .replace(/\.0+$/, '')
+            .replace(/(\.\d*?)0+$/, '$1');
+        return trimmed === '-0' ? '0' : trimmed;
+    }
+
+    function roundChartBound(value, digits = 1) {
+        const n = Number(value);
+        if (!Number.isFinite(n)) return 0;
+        const factor = Math.pow(10, digits);
+        const rounded = Math.round(n * factor) / factor;
+        return Object.is(rounded, -0) ? 0 : rounded;
+    }
+
+    function normalizeChartRange(min, max, digits = 1) {
+        let safeMin = roundChartBound(min, digits);
+        let safeMax = roundChartBound(max, digits);
+        if (!(safeMax > safeMin)) {
+            safeMax = roundChartBound(safeMin + 1, digits);
+        }
+        return { min: safeMin, max: safeMax };
+    }
+
+    function stableChartGrid(top = 40) {
+        return {
+            left: 92,
+            right: 36,
+            top,
+            bottom: 46,
+            containLabel: false
+        };
     }
 
     // ========== 报警阈值（来自系统设置）==========
@@ -3564,18 +3602,16 @@
                     return `时间: ${Number(t).toFixed(2)} ms<br/>${rows}`;
                 }
             },
-            grid: {
-                left: 60,
-                right: 30,
-                top: 70,
-                bottom: 40,
-                containLabel: true
-            },
+            grid: stableChartGrid(70),
             xAxis: {
                 type: 'value',
                 name: '时间 (ms)',
                 nameLocation: 'end',
-                axisLabel: { formatter: '{value}' }
+                axisLabel: {
+                    formatter: function(value) {
+                        return formatChartAxisTick(value, 1);
+                    }
+                }
             },
             yAxis: {
                 type: 'value',
@@ -3583,6 +3619,11 @@
                 scale: false,
                 min: fullMin,
                 max: fullMax,
+                axisLabel: {
+                    formatter: function(value) {
+                        return formatChartAxisTick(value, 1);
+                    }
+                },
                 splitLine: { show: true }
             },
             series
@@ -3665,20 +3706,19 @@
                     return `频率: ${Number(f).toFixed(2)} Hz<br/>${rows}`;
                 }
             },
-            grid: {
-                top: 70,
-                left: 60,
-                right: 30,
-                bottom: 40,
-                containLabel: true
-            },
+            grid: stableChartGrid(70),
             xAxis: {
                 type: 'value',
                 min: 0,
                 max: xMax,
                 name: '频率 (Hz)',
                 nameLocation: 'middle',
-                nameGap: 30
+                nameGap: 30,
+                axisLabel: {
+                    formatter: function(value) {
+                        return formatChartAxisTick(value, 0);
+                    }
+                }
             },
             yAxis: {
                 type: 'value',
@@ -3687,6 +3727,11 @@
                 nameGap: 50,
                 min: 0,
                 max: fullMax,
+                axisLabel: {
+                    formatter: function(value) {
+                        return formatChartAxisTick(value, 1);
+                    }
+                },
                 splitLine: { show: true, lineStyle: { type: 'dashed' } }
             },
             series
@@ -3810,6 +3855,13 @@
             }
         }
 
+        const normalizedAutoY = normalizeChartRange(autoMin, autoMax, 1);
+        autoMin = normalizedAutoY.min;
+        autoMax = normalizedAutoY.max;
+        const normalizedFullY = normalizeChartRange(fullMin, fullMax, 1);
+        fullMin = normalizedFullY.min;
+        fullMax = normalizedFullY.max;
+
         // 把“全量X范围”显式写入图表实例，供缩放工具使用（保证滚轮缩小一定能回到全范围）
         // 注意：这里 max 用最后一个采样点的时间（例如约 199.8ms），与图上显示的最大值一致。
         if (timeDomainChart) {
@@ -3856,13 +3908,7 @@
                         return `时间: ${Number(t).toFixed(1)} ms<br/>${channel.label}: ${Number(y).toFixed(2)} ${channel.unit}`;
                     }
                 },
-                grid: { 
-                    left: 50, 
-                    right: 30, 
-                    top: 40, 
-                    bottom: 40, 
-                    containLabel: true 
-                },
+                grid: stableChartGrid(40),
                 // 只在首次初始化时配置 dataZoom
                 dataZoom: [
                     { 
@@ -3889,7 +3935,11 @@
                     type: 'value',
                     name: '时间 (ms)',
                     nameLocation: 'end',
-                    axisLabel: { formatter: '{value}' }
+                    axisLabel: {
+                        formatter: function(value) {
+                            return formatChartAxisTick(value, 1);
+                        }
+                    }
                 },
                 yAxis: { 
                     type: 'value',
@@ -3899,6 +3949,11 @@
                     // 允许滚轮缩放到更大范围：y 轴全量范围由 fullMin/fullMax 控制
                     min: fullMin,
                     max: fullMax,
+                    axisLabel: {
+                        formatter: function(value) {
+                            return formatChartAxisTick(value, 1);
+                        }
+                    },
                     splitLine: { show: true } 
                 },
                 series: [{
@@ -3925,7 +3980,12 @@
                 yAxis: { 
                     name: `${channel.label} (${channel.unit})`,
                     min: fullMin,
-                    max: fullMax
+                    max: fullMax,
+                    axisLabel: {
+                        formatter: function(value) {
+                            return formatChartAxisTick(value, 1);
+                        }
+                    }
                 },
                 series: [{
                     data: timeSeriesData,
@@ -4043,8 +4103,8 @@
                 if (y > maxVal) maxVal = y;
             }
             const yAxisMax = maxVal > 0 ? maxVal * 1.1 : 50;
-            const autoMax = yAxisMax;
-            const fullMax = Math.max(autoMax * 10, 10);
+            const autoMax = roundChartBound(yAxisMax, 1);
+            const fullMax = roundChartBound(Math.max(autoMax * 10, 10), 1);
 
             // 显式提供“全量范围”，保证滚轮缩小一定能回到全范围（与时域一致）
             if (frequencyDomainChart) {
@@ -4097,13 +4157,7 @@
                         return `频率: ${freq.toFixed(1)} Hz<br/>幅度: ${amp.toFixed(3)} ${unit}`;
                 }
             },
-            grid: {
-                top: 40,
-                left: 50,
-                right: 20,
-                bottom: 40,
-                containLabel: true
-            },
+            grid: stableChartGrid(40),
             xAxis: {
                 type: 'value',
                 min: 0,
@@ -4134,6 +4188,11 @@
                 nameTextStyle: { color: '#64748b' },
                 min: 0,
                 max: fullMax,
+                axisLabel: {
+                    formatter: function(value) {
+                        return formatChartAxisTick(value, 1);
+                    }
+                },
                 splitLine: {
                     show: true,
                     lineStyle: { type: 'dashed' }
