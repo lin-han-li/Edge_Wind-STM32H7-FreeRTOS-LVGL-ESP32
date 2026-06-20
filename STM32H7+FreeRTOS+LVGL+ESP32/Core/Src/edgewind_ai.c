@@ -47,6 +47,7 @@
 #define EDGEWIND_AI_MODEL_VERSION_V68     "dataset_v68_wind_sensor_public_fused_single_v6"
 #define EDGEWIND_AI_MODEL_VERSION_V69     "dataset_v69_wind_sensor_aux4_public_fused_single_publicfix"
 #define EDGEWIND_AI_MODEL_VERSION_V70     "dataset_v70_r2_wind_realfield_e01sep_single7_20260619_023056_rc"
+#define EDGEWIND_AI_MODEL_VERSION_V72     "dataset_v72_wind_e00e01_separated_single7_final"
 
 #if (AI_NETWORK_IN_NUM == 4)
 #define EDGEWIND_AI_HAS_AUX_INPUT         (1U)
@@ -194,7 +195,7 @@ const char *EdgeWind_AI_ClassName(uint8_t class_id)
 const char *EdgeWind_AI_ModelVersion(void)
 {
 #if (EDGEWIND_AI_HAS_AUX_INPUT != 0U)
-    return EDGEWIND_AI_MODEL_VERSION_V70;
+    return EDGEWIND_AI_MODEL_VERSION_V72;
 #else
     return EDGEWIND_AI_MODEL_VERSION_V68;
 #endif

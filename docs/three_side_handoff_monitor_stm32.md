@@ -1,8 +1,8 @@
 # EdgeWind 三端交接 - 监测端 STM32/ESP32
 
-更新日期：2026-06-19
+更新日期：2026-06-20
 
-本文是监测端自己的交接文档，用于和 AI 训练端、DAC8568 HIL 播放端、Web/云端对齐。当前正式回退基线仍是 v68 三输入单模型固件；当前集成线是 v70_r2 aux4 四输入单模型 release candidate，用于板端验收，不得直接宣布替代 v68。当前不再按 v6.3 双模型 guard/router 方案推进。
+本文是监测端自己的交接文档，用于和 AI 训练端、DAC8568 HIL 播放端、Web/云端对齐。当前正式回退基线仍是 v68 三输入单模型固件；当前正在部署和上板验收的是 v72 aux4 四输入单模型 release candidate，不得直接宣布替代 v68。当前不再按 v6.3 双模型 guard/router 方案推进。
 
 ## 当前回退点与本端状态
 
@@ -12,8 +12,10 @@
 - v69 RC 接入前回退标签：`snapshot-before-v69-rc-network-20260617-133815`
 - v69 约 1s 上传稳定标签：`stable-1s-upload-v69-20260619-025934`
 - v70_r2 RC 接入前回退标签：`snapshot-before-v70-r2-network-20260619-171630`
+- v70_r2 RC 已部署标签：`v70-r2-rc-monitor-deployed-20260619-174208`
+- v72 接入前回退标签：`snapshot-before-v72-network-20260620-180615`
 - 当前分支：`codex/v69-aux4-integration`
-- 规则：v70_r2 RC 只能作为上板验收线。只有 golden vector、normal 5 分钟和七类 HIL 回放验收通过后，才允许把它作为 v68 的正式替代线。
+- 规则：v72 只能作为上板验收线。只有 golden vector、normal 5 分钟和七类 HIL 回放验收通过后，才允许把它作为 v68 的正式替代线。
 
 ## 三端目录索引
 
@@ -34,9 +36,10 @@
 - 三项目对齐文档：`C:\Users\pengjianzhong\Desktop\MY_Project\EdgeWind_AI_Training\docs\three_project_alignment_current.md`
 - 当前状态文档：`C:\Users\pengjianzhong\Desktop\MY_Project\EdgeWind_AI_Training\CURRENT_STATUS.md`
 - v68 回退交接文档：`C:\Users\pengjianzhong\Desktop\MY_Project\EdgeWind_AI_Training\docs\v68_wind_sensor_public_fused_single_stm32_handoff.md`
-- v70_r2 RC 部署包：`C:\Users\pengjianzhong\Desktop\MY_Project\EdgeWind_AI_Training\stm32_deploy_packages\dataset_v70_r2_wind_realfield_e01sep_single7_20260619_023056_rc`
-- v70_r2 RC golden vectors：`C:\Users\pengjianzhong\Desktop\MY_Project\EdgeWind_AI_Training\stm32_deploy_packages\dataset_v70_r2_wind_realfield_e01sep_single7_20260619_023056_rc\golden_vectors`
-- v70_r2 RC 回放包：`C:\Users\pengjianzhong\Desktop\MY_Project\EdgeWind_AI_Training\data_v70_wind_realistic_aux_public_single_r2\playback_hil\dataset_v70_r2_wind_realfield_e01sep_test_sd_g000000\wave`
+- v72 最新部署包：`C:\Users\pengjianzhong\Desktop\MY_Project\EdgeWind_AI_Training\stm32_deploy_packages\dataset_v72_wind_e00e01_separated_single7_final`
+- v72 golden vectors：`C:\Users\pengjianzhong\Desktop\MY_Project\EdgeWind_AI_Training\stm32_test_vectors\dataset_v72_wind_e00e01_separated_single7_final`
+- v72 回放波形包：`C:\Users\pengjianzhong\Desktop\MY_Project\EdgeWind_AI_Training\data_v72_wind_e00e01_separated_public_single\playback_hil\dataset_v72_e00e01sep_test_sd_g000000\wave`
+- v70_r2 回退部署包：`C:\Users\pengjianzhong\Desktop\MY_Project\EdgeWind_AI_Training\stm32_deploy_packages\dataset_v70_r2_wind_realfield_e01sep_single7_20260619_023056_rc`
 
 ### 另一端：DAC8568 HIL 播放端
 
@@ -59,8 +62,10 @@
 ## 已读取的其他端文档
 
 - AI 训练端三项目对齐：`C:\Users\pengjianzhong\Desktop\MY_Project\EdgeWind_AI_Training\docs\three_project_alignment_current.md`
-- AI 训练端 v70_r2 部署摘要：`C:\Users\pengjianzhong\Desktop\MY_Project\EdgeWind_AI_Training\stm32_deploy_packages\dataset_v70_r2_wind_realfield_e01sep_single7_20260619_023056_rc\DEPLOYMENT_SUMMARY_V70_R2.md`
-- AI 训练端 v70_r2 监测端部署说明：`C:\Users\pengjianzhong\Desktop\MY_Project\EdgeWind_AI_Training\stm32_deploy_packages\dataset_v70_r2_wind_realfield_e01sep_single7_20260619_023056_rc\docs\MONITOR_STM32_V70_R2_DEPLOYMENT.md`
+- AI 训练端 v72 README：`C:\Users\pengjianzhong\Desktop\MY_Project\EdgeWind_AI_Training\stm32_deploy_packages\dataset_v72_wind_e00e01_separated_single7_final\README.md`
+- AI 训练端 v72 manifest：`C:\Users\pengjianzhong\Desktop\MY_Project\EdgeWind_AI_Training\stm32_deploy_packages\dataset_v72_wind_e00e01_separated_single7_final\manifest.json`
+- AI 训练端 v72 监测端部署说明：`C:\Users\pengjianzhong\Desktop\MY_Project\EdgeWind_AI_Training\stm32_deploy_packages\dataset_v72_wind_e00e01_separated_single7_final\docs\MONITOR_STM32_V72_DEPLOYMENT.md`
+- AI 训练端 v72 播放端说明：`C:\Users\pengjianzhong\Desktop\MY_Project\EdgeWind_AI_Training\stm32_deploy_packages\dataset_v72_wind_e00e01_separated_single7_final\docs\PLAYBACK_STM32_V72_A4B_NOTE.md`
 - DAC8568 HIL 播放端：`C:\Users\pengjianzhong\Desktop\MY_Project\STM32H750XBH6_DAC8568_FreeRTOS_LVGL9.4.0\NEXT_AI_PROJECT_HANDOFF.md`
 - DAC8568 三项目上下文：`C:\Users\pengjianzhong\Desktop\MY_Project\STM32H750XBH6_DAC8568_FreeRTOS_LVGL9.4.0\EDGEWIND_THREE_PROJECTS_CONTEXT.md`
 - DAC8568 aux4 播放交接：`C:\Users\pengjianzhong\Desktop\MY_Project\STM32H750XBH6_DAC8568_FreeRTOS_LVGL9.4.0\V69_AUX4_PLAYBACK_HANDOFF.md`
@@ -69,45 +74,46 @@
 - ESP32 协处理器：`C:\Users\pengjianzhong\Desktop\MY_Project\EdgeWind_STM32_ESP32\esp32_spi_coprocessor\README.md`
 - STM32 固件说明：`C:\Users\pengjianzhong\Desktop\MY_Project\EdgeWind_STM32_ESP32\STM32H7+FreeRTOS+LVGL+ESP32\PROJECT_OVERVIEW.md`
 
-## 2026-06-19 三端快照
+## 2026-06-20 三端快照
 
 ### AI 训练端
 
 - v68 仍是正式稳定回退线：`dataset_v68_wind_sensor_public_fused_single_v6`。
-- 最新 release candidate：`dataset_v70_wind_realistic_aux_public_single_r2`。
-- v70_r2 已通过 PC 侧 normal-priority deployment gate，并已生成 X-CUBE-AI `network` 包。
-- v70_r2 不能直接替代 v68，必须完成板端 golden vector、normal 5 分钟和七类 HIL 回放验收。
-- X-CUBE-AI STM32 输入顺序：`X_aux[1,4]`、`X_dwt[1,104]`、`X_feat[1,116]`、`X_spec[1,512,4]`。监测端必须按生成报告绑定，不按 Python/TFLite 逻辑顺序猜测。
+- 最新部署候选：`dataset_v72_wind_e00e01_separated_single7_final`。
+- v72 状态：PC gate passed，board acceptance required。
+- v72 不能直接替代 v68，必须完成板端 golden vector、normal 5 分钟和七类 HIL 回放验收。
+- X-CUBE-AI STM32 输入顺序：`X_aux[1,4]`、`X_dwt[1,104]`、`X_feat[1,116]`、`X_spec[1,512,4]`。监测端必须按生成报告绑定，不按 Python/TFLite 显示顺序猜测。
 
-v70_r2 PC gate 指标：
+v72 PC gate 指标：
 
-| split | accuracy | E00 precision | E00 recall | E00->E01 | E00->E04 | fault avg recall |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| test | 0.999314 | 0.997602 | 0.998400 | 0 | 0 | 0.999467 |
-| hil_holdout | 0.999257 | 0.998798 | 0.996800 | 0 | 1 | 0.999667 |
-| normal_only_playback_holdout | 0.998571 | 1.000000 | 0.998571 | 0 | 1 |  |
-
-Normal-only sequence check：`3500` samples，`E01=0`，`E04=1`，max consecutive E01/E04 = `1`。
+| split | accuracy | E00 row | E00->E01 | E00->E04 |
+| --- | ---: | --- | ---: | ---: |
+| test | 0.999371 | `[2496, 0, 4, 0, 0, 0, 0]` | 0 | 0 |
+| hil_holdout | 0.999257 | `[2493, 0, 6, 1, 0, 0, 0]` | 0 | 0 |
+| normal_only_playback_holdout | 1.000000 | `[5000, 0, 0, 0, 0, 0, 0]` | 0 | 0 |
 
 ### DAC8568 HIL 播放端
 
-- A/B/C/D 继续读取七个严格 4 通道 D8CW `.bin`，不扩展为 8 通道。
+- A/B/C/D 继续读取严格 4 通道 D8CW `.bin`，不扩展为 8 通道。
 - E/F/G/H 使用低速 sidecar：`0:/wave/aux4_schedule.a4b`。
 - `aux4_schedule.json` 只作为人工检查镜像，不是播放端稳定运行输入。
 - 一个 aux4 item 对应 `16384` 个 DAC 采样点，也对应监测端 `4096 @ 25.6 kHz` 的一个 160 ms AI 窗口。
-- 已知小风险：播放端注入 E/F/G/H 帧会占用极少量 A/B/C/D sample slot；按播放端评估，该风险不阻塞 v70_r2 aux4 bring-up，若 HIL 异常再回到播放端优化更新方式。
+- 已知小风险：播放端注入 E/F/G/H 帧会占用极少量 A/B/C/D sample slot；按播放端评估，该风险不阻塞 v72 aux4 bring-up，若 HIL 异常再回到播放端优化更新方式。
 
 ### 监测端
 
-- 当前固件线：v70_r2 RC 已完成 Keil rebuild 和下载，仍按 RC 验收线管理。
+- 当前固件线：v72 RC 正在接入，仍按 RC 验收线管理。
+- v72 接入方式：不使用 CubeMX 重新生成，不改 `.ioc`，直接替换 AI 端交付的 `network*` 和 `preprocess_c` 文件，避免时钟源被 CubeMX 改坏。
 - 已保留 v69 约 1s 上传稳定标签，通信节奏回退点为 `stable-1s-upload-v69-20260619-025934`。
-- v70_r2 接入方式：不使用 CubeMX 重新生成，不改 `.ioc`，直接替换 AI 端交付的 `network*` 和 `preprocess_c` 文件，避免时钟源被 CubeMX 改坏。
 - Web/ESP32 8 通道展示已经按“前四路波形/频谱 + 后四路 aux 状态趋势”处理；ch4-ch7 不上传 4096 点波形，不生成频谱。
-- 本轮日志：
-  - rebuild：`STM32H7+FreeRTOS+LVGL+ESP32\MDK-ARM\rebuild_v70_r2_20260619_173732.log`，`0 Error(s), 0 Warning(s)`
-  - flash：`STM32H7+FreeRTOS+LVGL+ESP32\MDK-ARM\flash_v70_r2_20260619_174018.log`，`Erase Done`、`Programming Done`、`Verify OK`、`Application running ...`
+- 本轮 v72 记录：
+  - pre-deploy clock check：`Clock baseline check OK`
+  - pre-deploy tag：`snapshot-before-v72-network-20260620-180615`
+  - rebuild：`STM32H7+FreeRTOS+LVGL+ESP32\MDK-ARM\STM32H750XBH6\STM32H750XBH6.build_log.htm`，`0 Error(s), 0 Warning(s)`，`Program Size: Code=652812 RO-data=524128 RW-data=328496 ZI-data=142544`
+  - flash：`STM32H7+FreeRTOS+LVGL+ESP32\MDK-ARM\flash_v72_20260620_181442.log`，`Erase Done`、`Programming Done`、`Verify OK`、`Application running ...`
   - post-flash clock check：`Clock baseline check OK`
-  - COM7 quick read：可见 STM32/ESP32 SPI 状态查询响应，ESP32 `wifi=1 cloud=1`
+  - COM7 quick read：可见 `model=dataset_v72_wind_e00e01_separated_single7_final`、`aux_valid=0x0F`、`ppermil[7]`、`feat=40ms infer=267ms total=307ms`
+  - SPI full upload quick read：`wave=4096`、`fft=2048`、HTTP `200`，多帧 `full http done` 约 `0.63..0.83s`，单帧观察到 `1.744s`
 
 ## AI 模型契约
 
@@ -122,11 +128,11 @@ Normal-only sequence check：`3500` samples，`E01=0`，`E04=1`，max consecutiv
 
 训练端报告中的验证范围是 val/test/hil_holdout split，不代表真实风场长期准确率。
 
-当前上板验收线以 AI 训练端 v70_r2 RC 部署包和本端 `network_generate_report.txt` 为准。
+当前上板验收线以 AI 训练端 v72 部署包和本端 `network_generate_report.txt` 为准。
 
-## v70_r2 aux4 RC 接入状态
+## v72 aux4 RC 接入状态
 
-v70_r2 当前按 release candidate 接入监测端固件。它尚未完成板端 golden vector、normal 5 分钟和七类 HIL 回放验收，因此不能直接声明正式替代 v68/v6；若验收退化，保持 v68 回退线。
+v72 当前按 release candidate 接入监测端固件。它尚未完成板端 golden vector、normal 5 分钟和七类 HIL 回放验收，因此不能直接声明正式替代 v68/v6；若验收退化，保持 v68 回退线或回到 v70_r2 已部署标签。
 
 当前监测端实现状态：
 
@@ -134,22 +140,22 @@ v70_r2 当前按 release candidate 接入监测端固件。它尚未完成板端
 - 已新增 `ADSA_AUX4` / `ADSA_AUX4_2` 与 `ADSA_AUX4_valid_mask` / `ADSA_AUX4_2_valid_mask`，跟随 `ADSA_B` / `ADSA_B2` 双缓冲发布。
 - `EdgeWind_AI_RunOnAnalogWindow()` 已改成 `analog_v + aux4 + result` 兼容接口。
 - `AI_NETWORK_IN_NUM == 3` 时走 v68 三输入路径；`AI_NETWORK_IN_NUM == 4` 时走 aux4 四输入路径。
-- v70_r2 四输入绑定顺序固定为 `input[0]=X_aux`、`input[1]=X_dwt`、`input[2]=X_feat`、`input[3]=X_spec`。
+- v72 四输入绑定顺序固定为 `input[0]=X_aux`、`input[1]=X_dwt`、`input[2]=X_feat`、`input[3]=X_spec`。
 - ESP32 SPI summary/full payload 暂不强制扩展 aux4 模型字段；Web 已支持 4/8 通道展示兼容。
 
-v70_r2 模型信息：
+v72 模型信息：
 
-- 模型族：`dataset_v70_r2_wind_realfield_e01sep_single7_20260619_023056_rc`
-- 部署包：`C:\Users\pengjianzhong\Desktop\MY_Project\EdgeWind_AI_Training\stm32_deploy_packages\dataset_v70_r2_wind_realfield_e01sep_single7_20260619_023056_rc`
+- 模型族：`dataset_v72_wind_e00e01_separated_single7_final`
+- 部署包：`C:\Users\pengjianzhong\Desktop\MY_Project\EdgeWind_AI_Training\stm32_deploy_packages\dataset_v72_wind_e00e01_separated_single7_final`
 - 网络形态：单个 7 类 `network`
-- TFLite SHA256：`c8af24e89ab68300a150d53bd1a7ea7eaa7b87f0a27f694d767cd88ccb668a1b`
+- TFLite SHA256：`4f24089664b26488518bc3fa8554a51491c1a75118e0288131abd8e195f19356`
 - 输出：`probabilities[7]`
 - X-CUBE-AI 输入顺序：`X_aux[4]`、`X_dwt[104]`、`X_feat[116]`、`X_spec[512,4]`
 - X-CUBE-AI 输出：`nl_24`，`f32[1,7]`
 - MACC：`6,225,536`
 - weights：`273,020 B`
 - activations：`295,920 B`
-- compression：`lossless`
+- compression：`none`
 
 `X_aux[4]` 物理顺序：
 
@@ -166,17 +172,17 @@ v70_r2 模型信息：
 - 第二模型
 - 硬规则 masking
 
-监测端接入 v70_r2 的门禁：
+监测端接入 v72 的门禁：
 
 1. Keil rebuild 必须保持 `0 Error(s), 0 Warning(s)`，且 `python tools\check_stm32_clock_baseline.py` 通过。
-2. v70_r2 golden vectors 必须全部 top1 与 PC 一致。
-3. v70_r2 `normal.bin` 必须连续 5 分钟不反复误报 E01/E04。
+2. v72 golden vectors 必须全部 top1 与 PC 一致。
+3. v72 `normal.bin` 必须连续 5 分钟不反复误报 E01/E04。
 4. 七类 HIL 回放记录 top1、confidence、ppermil 和耗时；若退化，立即保持 v68，不继续扩展协议。
-5. v70_r2 验收通过前，不把它写成正式替代 v68 的结论。
+5. v72 验收通过前，不把它写成正式替代 v68 的结论。
 
 ## 已接入的模型文件
 
-STM32 工程中由 v70_r2 部署包替换：
+STM32 工程中由 v72 部署包替换：
 
 - `STM32H7+FreeRTOS+LVGL+ESP32\X-CUBE-AI\App\network.c`
 - `STM32H7+FreeRTOS+LVGL+ESP32\X-CUBE-AI\App\network.h`
@@ -303,8 +309,8 @@ python tools\check_stm32_clock_baseline.py
 
 ## 下一步对齐项
 
-1. 已完成本轮 v70_r2 Keil rebuild 和下载验证。
-2. 运行 v70_r2 golden vectors；记录 top1 是否与 PC 一致。
-3. 使用 v70_r2 RC 回放包运行 `normal.bin` 连续 5 分钟，观察 Web/串口是否反复误报 E01/E04。
+1. 完成本轮 v72 Keil rebuild、下载和 post-flash 串口确认。
+2. 运行 v72 golden vectors；记录 top1 是否与 PC 一致。
+3. 使用 v72 回放包运行 `normal.bin` 连续 5 分钟，观察 Web/串口是否反复误报 E01/E04。
 4. 跑七类 HIL 回放，逐类记录 top1、confidence、ppermil、feature/infer/total ms 和 Web full frame 状态。
-5. 若 v70_r2 normal 或七类回放退化，回退到 `stable-1s-upload-v69-20260619-025934` 或 v68 稳定标签，不继续扩大协议改动。
+5. 若 v72 normal 或七类回放退化，回退到 `v70-r2-rc-monitor-deployed-20260619-174208`、`stable-1s-upload-v69-20260619-025934` 或 v68 稳定标签，不继续扩大协议改动。
