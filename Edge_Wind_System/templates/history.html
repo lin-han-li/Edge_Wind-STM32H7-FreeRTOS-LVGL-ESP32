@@ -312,12 +312,12 @@
                 </div>
             </div>
             <div class="col-md-3 col-6">
-                <div class="card h-100 shadow-sm card-select" id="card-wind_load_pct"
-                     onclick="selectChannel('wind_load_pct')" style="border-top: 3px solid #6c757d;">
+                <div class="card h-100 shadow-sm card-select" id="card-r_iso_kohm"
+                     onclick="selectChannel('r_iso_kohm')" style="border-top: 3px solid #6c757d;">
                     <div class="card-body text-center d-flex flex-column justify-content-center">
-                        <h6 class="text-muted small fw-bold">风机负载</h6>
-                        <h3 class="fw-bold text-secondary mb-0" id="val-wind_load_pct">--</h3>
-                        <small class="text-muted">%</small>
+                        <h6 class="text-muted small fw-bold">绝缘电阻</h6>
+                        <h3 class="fw-bold text-secondary mb-0" id="val-r_iso_kohm">--</h3>
+                        <small class="text-muted">kΩ</small>
                     </div>
                 </div>
             </div>
@@ -379,7 +379,7 @@
         t_igbt_c: { label: 'IGBT温度', unit: '°C', color: '#6c757d' },
         t_dc_cap_c: { label: '电容温度', unit: '°C', color: '#6c757d' },
         rh_cabinet_pct: { label: '柜内湿度', unit: '%RH', color: '#6c757d' },
-        wind_load_pct: { label: '风机负载', unit: '%', color: '#6c757d' }
+        r_iso_kohm: { label: '绝缘电阻', unit: 'kΩ', color: '#6c757d' }
     };
     const FAST_HISTORY_CHANNELS = [
         { key: 'voltage_pos', label: 'A 直流母线(+)', unit: 'V', color: '#1f77b4' },
@@ -691,7 +691,7 @@
             't_igbt_c',
             't_dc_cap_c',
             'rh_cabinet_pct',
-            'wind_load_pct'
+            'r_iso_kohm'
         ];
         const setText = (field, value) => {
             const el = document.getElementById(`val-${field}`);
@@ -715,7 +715,7 @@
         setText('t_igbt_c', fmt(latest.t_igbt_c, 1));
         setText('t_dc_cap_c', fmt(latest.t_dc_cap_c, 1));
         setText('rh_cabinet_pct', fmt(latest.rh_cabinet_pct, 1));
-        setText('wind_load_pct', fmt(latest.wind_load_pct, 1));
+        setText('r_iso_kohm', fmt(latest.r_iso_kohm, 1));
     }
 
     // ========== 初始化图表配置 ==========

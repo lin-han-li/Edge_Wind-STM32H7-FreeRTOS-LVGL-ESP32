@@ -21,6 +21,7 @@ void events_init(lv_ui *ui);
 void events_init_Main_1(lv_ui *ui);
 void events_init_Main_2(lv_ui *ui);
 void events_init_Main_3(lv_ui *ui);
+void edgewind_ui_attach_buzzer_tree(lv_obj_t *root);
 
 #ifdef __cplusplus
 }

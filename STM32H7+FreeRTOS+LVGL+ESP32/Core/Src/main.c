@@ -109,9 +109,9 @@ void MX_FREERTOS_Init(void);
 /* USER CODE BEGIN 0 */
 
 #if USE_AD7606
-static const float s_aux4_range_lo[AD_AUX4_COUNT] = {20.0f, 18.0f, 8.0f, 8.0f};
-static const float s_aux4_range_hi[AD_AUX4_COUNT] = {125.0f, 115.0f, 98.0f, 110.0f};
-static const float s_aux4_defaults[AD_AUX4_COUNT] = {72.5f, 66.5f, 53.0f, 59.0f};
+static const float s_aux4_range_lo[AD_AUX4_COUNT] = {20.0f, 18.0f, 8.0f, 20.0f};
+static const float s_aux4_range_hi[AD_AUX4_COUNT] = {125.0f, 115.0f, 98.0f, 8000.0f};
+static const float s_aux4_defaults[AD_AUX4_COUNT] = {67.8480f, 55.7832f, 49.2850f, 3016.0754f};
 
 static float AD7606_Aux4Clamp(float value, float lo, float hi)
 {

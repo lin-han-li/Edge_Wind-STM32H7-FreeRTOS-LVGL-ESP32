@@ -1399,7 +1399,7 @@ def _load_work_order_event_profile(work_order_id: int | None, fault_code: str) -
         "t_igbt_c",
         "t_dc_cap_c",
         "rh_cabinet_pct",
-        "wind_load_pct",
+        "r_iso_kohm",
     ]
     for field in history_fields:
         values = []

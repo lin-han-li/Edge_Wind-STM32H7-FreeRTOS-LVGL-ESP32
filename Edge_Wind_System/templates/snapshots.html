@@ -366,6 +366,7 @@
         { id: 3, label: 'D 漏电流', unit: 'mA', color: '#9467bd' }
     ];
     let currentSnapshotGroups = {};
+    let currentSnapshotFastOverlayEnabled = false;
 
     function escapeHtml(s) {
         return String(s ?? '')
@@ -691,6 +692,7 @@
     // 渲染快照详情
     function renderSnapshotDetail(data) {
         const container = document.getElementById('snapshotDetailContent');
+        currentSnapshotFastOverlayEnabled = false;
         currentSnapshotEvent = {
             device_id: data.device_id,
             fault_code: data.fault_code,
@@ -777,6 +779,7 @@
                 button.addEventListener('shown.bs.tab', function(event) {
                     const targetPaneId = event.target.getAttribute('data-bs-target');
                     const targetPane = document.querySelector(targetPaneId);
+                    const targetType = (targetPaneId || '').replace(/^#/, '').replace(/-pane$/, '');
                     
                     if (targetPane) {
                         // 获取该标签页中的所有图表容器
@@ -789,6 +792,9 @@
                                 }, 100);
                             }
                         });
+                    }
+                    if (targetType) {
+                        setSnapshotFastOverlay(targetType, currentSnapshotFastOverlayEnabled);
                     }
                 });
             });
@@ -976,7 +982,7 @@
         if (type === 'Leakage') return 'mA';
         if (type === 'AuxTemp' || channelId === 4 || channelId === 5) return '°C';
         if (type === 'AuxHumidity' || channelId === 6) return '%RH';
-        if (type === 'AuxLoad' || channelId === 7) return '%';
+        if (type === 'AuxRiso' || channelId === 7) return 'kΩ';
         return '';
     }
 
@@ -1131,11 +1137,10 @@
         return overlayHtml + channelTabsHtml + channelContentHtml;
     }
 
-    function toggleSnapshotFastOverlay(type) {
+    function setSnapshotFastOverlay(type, shouldShow) {
         const body = document.getElementById(`snapshot-fast-overlay-${type}`);
         const btn = document.getElementById(`btn-fast-snapshot-${type}`);
         if (!body) return;
-        const shouldShow = !body.classList.contains('show');
         body.classList.toggle('show', shouldShow);
         if (btn) {
             btn.classList.toggle('btn-primary', shouldShow);
@@ -1154,6 +1159,13 @@
                 });
             }, 120);
         }
+    }
+
+    function toggleSnapshotFastOverlay(type) {
+        const body = document.getElementById(`snapshot-fast-overlay-${type}`);
+        if (!body) return;
+        currentSnapshotFastOverlayEnabled = !body.classList.contains('show');
+        setSnapshotFastOverlay(type, currentSnapshotFastOverlayEnabled);
     }
 
     function initFastSnapshotCharts(type) {
@@ -1272,6 +1284,33 @@
         }
     }
 
+    function renderSnapshotNoSpectrumPlaceholder(chart, subtext) {
+        if (!chart) return;
+        try {
+            chart.__edgewindFullExtentX = { min: 0, max: 1 };
+            chart.__edgewindFullExtentY = { min: 0, max: 1 };
+            chart.__edgewindAutoWindowY = { min: 0, max: 1 };
+        } catch (e) {}
+        chart.setOption({
+            title: {
+                text: '无频谱数据',
+                subtext: subtext || '频谱上传关闭或该快照未包含 FFT 数据',
+                left: 'center',
+                top: 'middle',
+                textStyle: { color: '#6c757d', fontSize: 16, fontWeight: 'normal' },
+                subtextStyle: { color: '#94a3b8', fontSize: 13 }
+            },
+            tooltip: { show: false },
+            legend: { show: false },
+            grid: { left: '8%', right: '8%', bottom: '12%', top: '12%' },
+            xAxis: { show: false },
+            yAxis: { show: false },
+            dataZoom: [],
+            series: []
+        }, true);
+        setTimeout(() => chart.resize(), 200);
+    }
+
     function initFastSnapshotFreqChart(type, snapshots) {
         const container = document.getElementById(`chart-fast-freq-${type}`);
         if (!container) return;
@@ -1302,7 +1341,10 @@
             });
         });
 
-        if (series.length === 0) return;
+        if (series.length === 0) {
+            renderSnapshotNoSpectrumPlaceholder(chart, '该组快照仅包含波形/上下文数据');
+            return;
+        }
         const autoMax = yMax > 0 ? yMax * 1.1 : 1;
         const fullMax = Math.max(autoMax * 10, 10);
         chart.__edgewindFullExtentX = { min: 0, max: xMax };
@@ -1547,6 +1589,10 @@
         
         const fft = Array.isArray(snapshot.fft_data) ? snapshot.fft_data : [];
         const len = fft.length;
+        if (len === 0) {
+            renderSnapshotNoSpectrumPlaceholder(chart, '该快照仅包含波形/上下文数据');
+            return;
+        }
         const inferredBinStep = (len > 1)
             ? Math.max(1, Math.round((EDGEWIND_FFT_BINS - 1) / (len - 1)))
             : 1;

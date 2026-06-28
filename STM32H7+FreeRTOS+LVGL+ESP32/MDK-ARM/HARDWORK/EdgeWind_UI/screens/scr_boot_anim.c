@@ -14,6 +14,7 @@
 #include "scr_boot_anim.h"
 #include "../edgewind_theme.h"
 #include "../edgewind_ui.h"
+#include "edgewind_buzzer.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -908,6 +909,8 @@ static void zoomout_start_cb(lv_anim_t *a)
 /* 按钮点击事件回调 */
 static void enter_btn_click_cb(lv_event_t *e)
 {
+    EdgeWind_Buzzer_Play(EDGEWIND_BUZZER_EVT_UI_CLICK);
+
     /* 防止重复触发：立即禁用按钮 */
     lv_obj_t *btn = lv_event_get_target(e);
     lv_obj_add_state(btn, LV_STATE_DISABLED);
@@ -947,4 +950,3 @@ static void start_zoomout_phase(void)
     /* 绑定按钮点击事件 */
     lv_obj_add_event_cb(ew_boot_anim.enter_btn, enter_btn_click_cb, LV_EVENT_CLICKED, NULL);
 }
-

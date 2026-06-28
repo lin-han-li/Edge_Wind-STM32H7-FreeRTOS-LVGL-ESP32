@@ -365,6 +365,7 @@ with app.app_context():
                 't_igbt_c': 'FLOAT',
                 't_dc_cap_c': 'FLOAT',
                 'rh_cabinet_pct': 'FLOAT',
+                'r_iso_kohm': 'FLOAT',
                 'wind_load_pct': 'FLOAT',
                 'aux_valid_mask': 'INTEGER',
             }.items():

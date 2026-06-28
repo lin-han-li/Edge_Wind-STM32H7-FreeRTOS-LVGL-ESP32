@@ -22,6 +22,7 @@
 #include "gpio.h"
 
 /* USER CODE BEGIN 0 */
+#include "edgewind_buzzer.h"
 
 /* USER CODE END 0 */
 
@@ -116,6 +117,9 @@ void MX_GPIO_Init(void)
   GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
   GPIO_InitStruct.Pull = GPIO_PULLDOWN;
   HAL_GPIO_Init(ESP32_READY_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : PH7 active-low buzzer */
+  EdgeWind_Buzzer_GpioInit();
 
   /* EXTI interrupt init*/
   HAL_NVIC_SetPriority(EXTI15_10_IRQn, 5, 0);

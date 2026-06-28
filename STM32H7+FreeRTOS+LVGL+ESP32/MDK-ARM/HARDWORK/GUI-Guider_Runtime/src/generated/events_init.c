@@ -18,6 +18,7 @@
 #include "cmsis_os.h"
 #include "main.h"
 #include "../../../EdgeComm/edge_comm.h"
+#include "edgewind_buzzer.h"
 #include "fatfs.h"
 #include "diskio.h"
 #include "bsp_driver_sd.h"
@@ -26,6 +27,37 @@
 #include "freemaster_client.h"
 #endif
 
+static void ui_buzzer_click_event_cb(lv_event_t *e)
+{
+    (void)e;
+    EdgeWind_Buzzer_Play(EDGEWIND_BUZZER_EVT_UI_CLICK);
+}
+
+static void ui_buzzer_attach_click(lv_obj_t *obj)
+{
+    if (obj != NULL) {
+        (void)lv_obj_remove_event_cb(obj, ui_buzzer_click_event_cb);
+        lv_obj_add_event_cb(obj, ui_buzzer_click_event_cb,
+                            (lv_event_code_t)(LV_EVENT_CLICKED | LV_EVENT_PREPROCESS),
+                            NULL);
+    }
+}
+
+void edgewind_ui_attach_buzzer_tree(lv_obj_t *root)
+{
+    if ((root == NULL) || !lv_obj_is_valid(root)) {
+        return;
+    }
+
+    if (lv_obj_has_flag(root, LV_OBJ_FLAG_CLICKABLE)) {
+        ui_buzzer_attach_click(root);
+    }
+
+    uint32_t child_count = lv_obj_get_child_count(root);
+    for (uint32_t i = 0U; i < child_count; i++) {
+        edgewind_ui_attach_buzzer_tree(lv_obj_get_child(root, (int32_t)i));
+    }
+}
 
 static void Main_1_event_handler (lv_event_t *e)
 {
@@ -99,9 +131,13 @@ static void Main_1_tile_1_event_handler(lv_event_t *e)
 void events_init_Main_1 (lv_ui *ui)
 {
     lv_obj_add_event_cb(ui->Main_1, Main_1_event_handler, LV_EVENT_ALL, ui);
+    ui_buzzer_attach_click(ui->Main_1_tile_1);
+    ui_buzzer_attach_click(ui->Main_1_dot_2);
+    ui_buzzer_attach_click(ui->Main_1_dot_3);
     lv_obj_add_event_cb(ui->Main_1_tile_1, Main_1_tile_1_event_handler, LV_EVENT_CLICKED, ui);
     lv_obj_add_event_cb(ui->Main_1_dot_2, Main_1_dot_2_event_handler, LV_EVENT_CLICKED, ui);
     lv_obj_add_event_cb(ui->Main_1_dot_3, Main_1_dot_3_event_handler, LV_EVENT_CLICKED, ui);
+    edgewind_ui_attach_buzzer_tree(ui->Main_1);
 }
 
 static void RealtimeMonitor_back_event_handler(lv_event_t *e)
@@ -240,12 +276,19 @@ static void Main_2_dot_3_event_handler(lv_event_t *e)
 void events_init_Main_2 (lv_ui *ui)
 {
     lv_obj_add_event_cb(ui->Main_2, Main_2_event_handler, LV_EVENT_ALL, ui);
+    ui_buzzer_attach_click(ui->Main_2_tile_1);
+    ui_buzzer_attach_click(ui->Main_2_tile_2);
+    ui_buzzer_attach_click(ui->Main_2_tile_3);
+    ui_buzzer_attach_click(ui->Main_2_tile_5);
+    ui_buzzer_attach_click(ui->Main_2_dot_1);
+    ui_buzzer_attach_click(ui->Main_2_dot_3);
     lv_obj_add_event_cb(ui->Main_2_tile_1, Main_2_tile_1_event_handler, LV_EVENT_CLICKED, ui);
     lv_obj_add_event_cb(ui->Main_2_tile_2, Main_2_tile_2_event_handler, LV_EVENT_CLICKED, ui);
     lv_obj_add_event_cb(ui->Main_2_tile_3, Main_2_tile_3_event_handler, LV_EVENT_CLICKED, ui);
     lv_obj_add_event_cb(ui->Main_2_tile_5, Main_2_tile_5_event_handler, LV_EVENT_CLICKED, ui);
     lv_obj_add_event_cb(ui->Main_2_dot_1, Main_2_dot_1_event_handler, LV_EVENT_CLICKED, ui);
     lv_obj_add_event_cb(ui->Main_2_dot_3, Main_2_dot_3_event_handler, LV_EVENT_CLICKED, ui);
+    edgewind_ui_attach_buzzer_tree(ui->Main_2);
 }
 
 static void Main_3_event_handler (lv_event_t *e)
@@ -1681,6 +1724,7 @@ static void ui_param_cfg_do_load_sync(lv_ui *ui)
     }
     ui_sd_result_to_status(ui, res, ui_param_cfg_set_status, "加载完成");
     (void)ui_param_cfg_validate_and_warn(ui, false);
+    edgewind_ui_attach_buzzer_tree(ui->ParamConfig);
 }
 
 static void ui_param_cfg_do_save_sync(lv_ui *ui)
@@ -1908,13 +1952,18 @@ static void ParamConfig_save_event_handler(lv_event_t *e)
 void events_init_Main_3 (lv_ui *ui)
 {
     lv_obj_add_event_cb(ui->Main_3, Main_3_event_handler, LV_EVENT_ALL, ui);
+    ui_buzzer_attach_click(ui->Main_3_dot_1);
+    ui_buzzer_attach_click(ui->Main_3_dot_2);
     lv_obj_add_event_cb(ui->Main_3_dot_1, Main_3_dot_1_event_handler, LV_EVENT_CLICKED, ui);
     lv_obj_add_event_cb(ui->Main_3_dot_2, Main_3_dot_2_event_handler, LV_EVENT_CLICKED, ui);
+    edgewind_ui_attach_buzzer_tree(ui->Main_3);
 }
 
 void events_init_RealtimeMonitor(lv_ui *ui)
 {
+    ui_buzzer_attach_click(ui->RealtimeMonitor_btn_back);
     lv_obj_add_event_cb(ui->RealtimeMonitor_btn_back, RealtimeMonitor_back_event_handler, LV_EVENT_CLICKED, ui);
+    edgewind_ui_attach_buzzer_tree(ui->RealtimeMonitor);
 }
 
 void events_init_WifiConfig(lv_ui *ui)
@@ -1923,12 +1972,16 @@ void events_init_WifiConfig(lv_ui *ui)
     lv_obj_add_event_cb(ui->WifiConfig_ta_pwd, WifiConfig_ta_event_handler, LV_EVENT_ALL, ui);
     lv_obj_add_event_cb(ui->WifiConfig_kb, WifiConfig_kb_event_handler, LV_EVENT_READY, ui);
     lv_obj_add_event_cb(ui->WifiConfig_kb, WifiConfig_kb_event_handler, LV_EVENT_CANCEL, ui);
+    ui_buzzer_attach_click(ui->WifiConfig_btn_back);
+    ui_buzzer_attach_click(ui->WifiConfig_btn_save);
+    ui_buzzer_attach_click(ui->WifiConfig_btn_scan);
     lv_obj_add_event_cb(ui->WifiConfig_btn_back, WifiConfig_back_event_handler, LV_EVENT_CLICKED, ui);
     lv_obj_add_event_cb(ui->WifiConfig_btn_save, WifiConfig_save_event_handler, LV_EVENT_CLICKED, ui);
     lv_obj_add_event_cb(ui->WifiConfig_btn_scan, WifiConfig_scan_event_handler, LV_EVENT_CLICKED, ui);
 
     /* 每次切换进入屏幕都自动加载 */
     lv_obj_add_event_cb(ui->WifiConfig, WifiConfig_screen_event_handler, LV_EVENT_SCREEN_LOADED, ui);
+    edgewind_ui_attach_buzzer_tree(ui->WifiConfig);
 }
 
 void events_init_ServerConfig(lv_ui *ui)
@@ -1939,12 +1992,16 @@ void events_init_ServerConfig(lv_ui *ui)
     lv_obj_add_event_cb(ui->ServerConfig_ta_loc, ServerConfig_ta_event_handler, LV_EVENT_ALL, ui);
     lv_obj_add_event_cb(ui->ServerConfig_kb, ServerConfig_kb_event_handler, LV_EVENT_READY, ui);
     lv_obj_add_event_cb(ui->ServerConfig_kb, ServerConfig_kb_event_handler, LV_EVENT_CANCEL, ui);
+    ui_buzzer_attach_click(ui->ServerConfig_btn_back);
+    ui_buzzer_attach_click(ui->ServerConfig_btn_save);
+    ui_buzzer_attach_click(ui->ServerConfig_btn_load);
     lv_obj_add_event_cb(ui->ServerConfig_btn_back, ServerConfig_back_event_handler, LV_EVENT_CLICKED, ui);
     lv_obj_add_event_cb(ui->ServerConfig_btn_save, ServerConfig_save_event_handler, LV_EVENT_CLICKED, ui);
     lv_obj_add_event_cb(ui->ServerConfig_btn_load, ServerConfig_load_event_handler, LV_EVENT_CLICKED, ui);
 
     /* 每次切换进入屏幕都自动加载 */
     lv_obj_add_event_cb(ui->ServerConfig, ServerConfig_screen_event_handler, LV_EVENT_SCREEN_LOADED, ui);
+    edgewind_ui_attach_buzzer_tree(ui->ServerConfig);
 }
 
 void events_init_ParamConfig(lv_ui *ui)
@@ -1967,16 +2024,22 @@ void events_init_ParamConfig(lv_ui *ui)
     }
     lv_obj_add_event_cb(ui->ParamConfig_kb, ParamConfig_kb_event_handler, LV_EVENT_READY, ui);
     lv_obj_add_event_cb(ui->ParamConfig_kb, ParamConfig_kb_event_handler, LV_EVENT_CANCEL, ui);
+    ui_buzzer_attach_click(ui->ParamConfig_btn_back);
+    ui_buzzer_attach_click(ui->ParamConfig_btn_load);
+    ui_buzzer_attach_click(ui->ParamConfig_btn_save);
     lv_obj_add_event_cb(ui->ParamConfig_btn_back, ParamConfig_back_event_handler, LV_EVENT_CLICKED, ui);
     lv_obj_add_event_cb(ui->ParamConfig_btn_load, ParamConfig_load_event_handler, LV_EVENT_CLICKED, ui);
     lv_obj_add_event_cb(ui->ParamConfig_btn_save, ParamConfig_save_event_handler, LV_EVENT_CLICKED, ui);
     if (ui->ParamConfig_btn_nochunk) {
+        ui_buzzer_attach_click(ui->ParamConfig_btn_nochunk);
         lv_obj_add_event_cb(ui->ParamConfig_btn_nochunk, ParamConfig_nochunk_event_handler, LV_EVENT_CLICKED, ui);
     }
     if (ui->ParamConfig_btn_lan) {
+        ui_buzzer_attach_click(ui->ParamConfig_btn_lan);
         lv_obj_add_event_cb(ui->ParamConfig_btn_lan, ParamConfig_preset_lan_event_handler, LV_EVENT_CLICKED, ui);
     }
     if (ui->ParamConfig_btn_wan) {
+        ui_buzzer_attach_click(ui->ParamConfig_btn_wan);
         lv_obj_add_event_cb(ui->ParamConfig_btn_wan, ParamConfig_preset_wan_event_handler, LV_EVENT_CLICKED, ui);
     }
 
@@ -1985,6 +2048,7 @@ void events_init_ParamConfig(lv_ui *ui)
 
     /* 初始提示一次 */
     (void)ui_param_cfg_validate_and_warn(ui, false);
+    edgewind_ui_attach_buzzer_tree(ui->ParamConfig);
 }
 
 static void DeviceConnect_back_event_handler(lv_event_t *e)
@@ -2762,6 +2826,8 @@ static void dc_set_done(lv_ui *ui, esp_ui_cmd_t step, bool ok)
     uint32_t c_ok = 0x3dfb00;
     uint32_t c_err = 0xff4444;
 
+    EdgeWind_Buzzer_Play(ok ? EDGEWIND_BUZZER_EVT_SUCCESS : EDGEWIND_BUZZER_EVT_ERROR);
+
     switch (step)
     {
     case ESP_UI_CMD_WIFI:
@@ -3082,13 +3148,20 @@ static void DeviceConnect_report_event_handler(lv_event_t *e)
 
 void events_init_DeviceConnect(lv_ui *ui)
 {
+    ui_buzzer_attach_click(ui->DeviceConnect_btn_back);
+    ui_buzzer_attach_click(ui->DeviceConnect_btn_auto);
     lv_obj_add_event_cb(ui->DeviceConnect_btn_back, DeviceConnect_back_event_handler, LV_EVENT_CLICKED, ui);
     lv_obj_add_event_cb(ui->DeviceConnect_btn_auto, DeviceConnect_auto_event_handler, LV_EVENT_CLICKED, ui);
 
     if (ui->DeviceConnect_btn_autorec) {
+        ui_buzzer_attach_click(ui->DeviceConnect_btn_autorec);
         lv_obj_add_event_cb(ui->DeviceConnect_btn_autorec, DeviceConnect_autorec_event_handler, LV_EVENT_CLICKED, ui);
     }
 
+    ui_buzzer_attach_click(ui->DeviceConnect_btn_wifi);
+    ui_buzzer_attach_click(ui->DeviceConnect_btn_tcp);
+    ui_buzzer_attach_click(ui->DeviceConnect_btn_reg);
+    ui_buzzer_attach_click(ui->DeviceConnect_btn_report);
     lv_obj_add_event_cb(ui->DeviceConnect_btn_wifi, DeviceConnect_wifi_event_handler, LV_EVENT_CLICKED, ui);
     lv_obj_add_event_cb(ui->DeviceConnect_btn_tcp, DeviceConnect_tcp_event_handler, LV_EVENT_CLICKED, ui);
     lv_obj_add_event_cb(ui->DeviceConnect_btn_reg, DeviceConnect_reg_event_handler, LV_EVENT_CLICKED, ui);
@@ -3129,6 +3202,8 @@ void events_init_DeviceConnect(lv_ui *ui)
         lv_obj_add_flag(g_dc_lbl_reg_countdown, LV_OBJ_FLAG_HIDDEN);
         dc_reg_countdown_update(ui);
     }
+
+    edgewind_ui_attach_buzzer_tree(ui->DeviceConnect);
 }
 
 

@@ -92,7 +92,9 @@ bool ESP32_SPI_ConsumeServerCommand(uint8_t *out_reset,
                                     uint8_t *out_has_chunk_kb,
                                     uint32_t *out_chunk_kb,
                                     uint8_t *out_has_chunk_delay_ms,
-                                    uint32_t *out_chunk_delay_ms);
+                                    uint32_t *out_chunk_delay_ms,
+                                    uint8_t *out_has_fft_enabled,
+                                    uint8_t *out_fft_enabled);
 bool ESP32_SPI_GetTxResult(uint32_t ref_seq,
                            int32_t *out_http_status,
                            int32_t *out_result_code,

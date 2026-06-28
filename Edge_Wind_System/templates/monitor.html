@@ -218,13 +218,13 @@
                         </div>
                     </div>
                     <div class="col-lg-3 col-md-6">
-                        <div class="border rounded p-3 h-100 aux-card" id="card-wind_load_pct">
+                        <div class="border rounded p-3 h-100 aux-card" id="card-r_iso_kohm">
                             <div class="d-flex justify-content-between align-items-center mb-1">
-                                <span class="text-muted small fw-bold">风机负载</span>
-                                <span class="badge bg-secondary" id="aux-valid-wind_load_pct">--</span>
+                                <span class="text-muted small fw-bold">绝缘电阻</span>
+                                <span class="badge bg-secondary" id="aux-valid-r_iso_kohm">--</span>
                             </div>
-                            <div class="h4 mb-0" id="val-wind_load_pct">--</div>
-                            <small class="text-muted">% · 8..110</small>
+                            <div class="h4 mb-0" id="val-r_iso_kohm">--</div>
+                            <small class="text-muted">kΩ · 20..8000</small>
                         </div>
                     </div>
                 </div>
@@ -265,6 +265,9 @@
                     </ul>
                     <button class="btn btn-sm btn-outline-light" id="btn-fast-overlay" type="button" onclick="toggleFastOverlay()" title="叠加显示 A/B/C/D 四个高速诊断通道">
                         <i class="bi bi-intersect"></i> 四通道同窗
+                    </button>
+                    <button class="btn btn-sm btn-outline-light" id="btn-fft-upload-toggle" type="button" title="Device-side FFT upload on/off">
+                        <i class="bi bi-bar-chart"></i> 上传频谱
                     </button>
                     <div class="input-group input-group-sm" style="width: 280px;">
                         <span class="input-group-text">上传点数</span>
@@ -430,12 +433,14 @@
     let uploadPointsByNode = {};  // {nodeId: 256..4096 step=256}
     let uploadPointsDraftByNode = {};  // {nodeId: string}
     let uploadPointsAppliedNodeId = null;
+    let fftEnabledByNode = {};  // {nodeId: 0|1}
     let currentReportMode = 'summary';
+    let currentFftEnabled = 1;
     const AUX4_CHANNELS = [
         { id: 4, key: 't_igbt_c', label: 'IGBT温度', unit: '°C', range: [20, 125] },
         { id: 5, key: 't_dc_cap_c', label: '电容温度', unit: '°C', range: [18, 115] },
         { id: 6, key: 'rh_cabinet_pct', label: '柜内湿度', unit: '%RH', range: [8, 98] },
-        { id: 7, key: 'wind_load_pct', label: '风机负载', unit: '%', range: [8, 110] }
+        { id: 7, key: 'r_iso_kohm', label: '绝缘电阻', unit: 'kΩ', range: [20, 8000] }
     ];
     const AUX4_KEYS = new Set(AUX4_CHANNELS.map(ch => ch.key));
     const AUX4_ID_TO_KEY = AUX4_CHANNELS.reduce((acc, ch) => {
@@ -460,7 +465,7 @@
         4: { label: 'IGBT温度', unit: '°C', type: 'AuxTemp', range: [20, 125] },
         5: { label: '电容温度', unit: '°C', type: 'AuxTemp', range: [18, 115] },
         6: { label: '柜内湿度', unit: '%RH', type: 'AuxHumidity', range: [8, 98] },
-        7: { label: '风机负载', unit: '%', type: 'AuxLoad', range: [8, 110] }
+        7: { label: '绝缘电阻', unit: 'kΩ', type: 'AuxRiso', range: [20, 8000] }
     };
 
     function getDisplayScalarForSource(source, value) {
@@ -743,6 +748,35 @@
         }
     }
 
+    function normalizeFftEnabled(value) {
+        if (value === true) return 1;
+        if (value === false) return 0;
+        if (value === 1 || value === 0) return value;
+        const raw = String(value ?? '').trim().toLowerCase();
+        if (['1', 'true', 'yes', 'on', 'enabled'].includes(raw)) return 1;
+        if (['0', 'false', 'no', 'off', 'disabled'].includes(raw)) return 0;
+        return null;
+    }
+
+    function setFftUploadButtonState(enabled) {
+        const btn = document.getElementById('btn-fft-upload-toggle');
+        if (!btn) return;
+        const on = normalizeFftEnabled(enabled) !== 0;
+        currentFftEnabled = on ? 1 : 0;
+        btn.classList.toggle('btn-light', on);
+        btn.classList.toggle('text-dark', on);
+        btn.classList.toggle('btn-outline-light', !on);
+        btn.innerHTML = on
+            ? '<i class="bi bi-bar-chart"></i> 上传频谱'
+            : '<i class="bi bi-bar-chart"></i> 仅波形';
+        btn.title = on ? '当前上传波形和频谱，点击关闭频谱上传' : '当前仅上传波形，点击恢复频谱上传';
+    }
+
+    function applyFftUploadForNode(nodeId) {
+        const value = normalizeFftEnabled(nodeId ? fftEnabledByNode[nodeId] : null);
+        setFftUploadButtonState(value === null ? 1 : value);
+    }
+
     function applyDownsampleForNode(nodeId, options = {}) {
         const { force = false, fallbackToDefault = false } = options;
         const input = document.getElementById('downsample-step-input');
@@ -795,6 +829,7 @@
             applyUploadPointsForNode(nodeId, { force: true, fallbackToDefault: true });
             applyDownsampleForNode(nodeId, { force: true, fallbackToDefault: true });
             applyCommParamsForNode(nodeId);
+            applyFftUploadForNode(nodeId);
             downsampleAppliedNodeId = null;
             uploadPointsAppliedNodeId = null;
             return;
@@ -809,6 +844,7 @@
         applyUploadPointsForNode(nodeId, { force: switchedUpload, fallbackToDefault: switchedUpload });
         applyDownsampleForNode(nodeId, { force: switchedNode, fallbackToDefault: switchedNode });
         applyCommParamsForNode(nodeId);
+        applyFftUploadForNode(nodeId);
         downsampleAppliedNodeId = nodeId;
         uploadPointsAppliedNodeId = nodeId;
     }
@@ -1009,6 +1045,53 @@
     // key 优先用工单 id；没有 id 时使用 `${timeStr}|${nodeId}|${faultCode}`
     // 重要：同一工单状态变化（pending->processing->resolved）必须“更新同一条记录”，不能被去重挡住。
 
+
+    async function requestFftUploadToggle() {
+        if (!currentNodeId) {
+            if (typeof window.showToast === 'function') window.showToast('Please select a node first', 'warning');
+            return;
+        }
+        const nextEnabled = currentFftEnabled ? 0 : 1;
+        try {
+            const csrfToken = getCsrfToken();
+            const resp = await fetch('/api/nodes/fft_enabled', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(csrfToken ? { 'X-CSRFToken': csrfToken, 'X-CSRF-Token': csrfToken } : {})
+                },
+                body: JSON.stringify({ node_id: currentNodeId, fft_enabled: nextEnabled })
+            });
+            if (!resp.ok) {
+                if (resp.status === 401) {
+                    const next = encodeURIComponent(window.location.pathname + window.location.search);
+                    window.location.href = `/login?next=${next}`;
+                    return;
+                }
+                const apiError = await readApiError(resp);
+                throw new Error(apiError.message);
+            }
+            const data = await resp.json();
+            if (!data.success) {
+                throw new Error(data.error || 'request failed');
+            }
+            const applied = normalizeFftEnabled(data.fft_enabled);
+            fftEnabledByNode[currentNodeId] = applied === null ? nextEnabled : applied;
+            applyFftUploadForNode(currentNodeId);
+            if (!fftEnabledByNode[currentNodeId] && frequencyDomainChart) {
+                frequencyDomainChart._configInitialized = false;
+                renderNoSpectrumPlaceholder('频谱上传已关闭，仅显示波形数据', '点击“上传频谱”可恢复 FFT 数据上传');
+            }
+            if (typeof window.showToast === 'function') {
+                window.showToast(fftEnabledByNode[currentNodeId] ? '已请求恢复频谱上传' : '已请求关闭频谱上传，仅上传波形', 'success');
+            }
+        } catch (e) {
+            console.error('[requestFftUploadToggle] failed:', e);
+            if (typeof window.showToast === 'function') {
+                window.showToast(String(e?.message || 'FFT upload request failed'), 'error');
+            }
+        }
+    }
 
     async function requestCommParams() {
         if (!currentNodeId) {
@@ -1296,6 +1379,7 @@
         const btnSendUploadPoints = document.getElementById('btn-send-upload-points');
         const btnSendDownsample = document.getElementById('btn-send-downsample');
         const btnSendCommParams = document.getElementById('btn-send-comm-params');
+        const btnFftUpload = document.getElementById('btn-fft-upload-toggle');
         if (btnFull) {
             btnFull.addEventListener('click', () => requestReportMode('full'));
         }
@@ -1310,6 +1394,9 @@
         }
         if (btnSendCommParams) {
             btnSendCommParams.addEventListener('click', requestCommParams);
+        }
+        if (btnFftUpload) {
+            btnFftUpload.addEventListener('click', requestFftUploadToggle);
         }
         const uploadPointsInput = document.getElementById('upload-points-input');
         if (uploadPointsInput) {
@@ -1343,6 +1430,7 @@
         setReportModeButtonsEnabled(false);
         setUploadPointsControlsEnabled(false);
         setDownsampleControlsEnabled(false);
+        setFftUploadButtonState(1);
 
         // 处理URL参数（全局搜索跳转）
         handleURLParams();
@@ -1683,6 +1771,11 @@
                 if (up !== null) {
                     newConfigs[nodeId].upload_points = up;
                     uploadPointsByNode[nodeId] = up;
+                }
+                const fftEnabled = normalizeFftEnabled(node.fft_enabled);
+                if (fftEnabled !== null) {
+                    newConfigs[nodeId].fft_enabled = fftEnabled;
+                    fftEnabledByNode[nodeId] = fftEnabled;
                 }
                 for (const [key, lo, hi] of [['heartbeat_ms',200,54999], ['min_interval_ms',0,600000], ['http_timeout_ms',1000,600000], ['chunk_kb',0,16], ['chunk_delay_ms',0,20]]) {
                     const cv = normalizeCommInt(node[key], lo, hi);
@@ -2813,6 +2906,11 @@
                             NODE_CONFIGS[node.node_id].upload_points = up;
                             uploadPointsByNode[node.node_id] = up;
                         }
+                        const fftEnabled = normalizeFftEnabled(node.fft_enabled);
+                        if (fftEnabled !== null) {
+                            NODE_CONFIGS[node.node_id].fft_enabled = fftEnabled;
+                            fftEnabledByNode[node.node_id] = fftEnabled;
+                        }
                         for (const [key, lo, hi] of [['heartbeat_ms',200,54999], ['min_interval_ms',0,600000], ['http_timeout_ms',1000,600000], ['chunk_kb',0,16], ['chunk_delay_ms',0,20]]) {
                             const cv = normalizeCommInt(node[key], lo, hi);
                             if (cv !== null) NODE_CONFIGS[node.node_id][key] = cv;
@@ -2845,8 +2943,10 @@
                     status: msg.status || 'online',
                     fault_code: msg.fault_code || 'E00',
                     channels: [],
-                    report_mode: (msg.report_mode || 'summary').toLowerCase()
+                    report_mode: (msg.report_mode || 'summary').toLowerCase(),
+                    fft_enabled: normalizeFftEnabled(msg.fft_enabled) ?? 1
                 };
+                fftEnabledByNode[nodeId] = NODE_CONFIGS[nodeId].fft_enabled;
                 const createdStep = normalizeDownsampleStep(msg.downsample_step);
                 if (createdStep !== null) {
                     NODE_CONFIGS[nodeId].downsample_step = createdStep;
@@ -2878,6 +2978,11 @@
                     NODE_CONFIGS[nodeId].upload_points = updatePoints;
                     uploadPointsByNode[nodeId] = updatePoints;
                 }
+                const updateFftEnabled = normalizeFftEnabled(msg.fft_enabled);
+                if (updateFftEnabled !== null) {
+                    NODE_CONFIGS[nodeId].fft_enabled = updateFftEnabled;
+                    fftEnabledByNode[nodeId] = updateFftEnabled;
+                }
                 for (const [key, lo, hi] of [['heartbeat_ms',200,54999], ['min_interval_ms',0,600000], ['http_timeout_ms',1000,600000], ['chunk_kb',0,16], ['chunk_delay_ms',0,20]]) {
                     const cv = normalizeCommInt(msg[key], lo, hi);
                     if (cv !== null) NODE_CONFIGS[nodeId][key] = cv;
@@ -2895,6 +3000,9 @@
             }
             if (currentNodeId === nodeId && normalizeUploadPoints(msg.upload_points) !== null) {
                 applyUploadPointsForNode(nodeId);
+            }
+            if (currentNodeId === nodeId && normalizeFftEnabled(msg.fft_enabled) !== null) {
+                applyFftUploadForNode(nodeId);
             }
             if (currentNodeId === nodeId) {
                 applyCommParamsForNode(nodeId);
@@ -3095,6 +3203,14 @@
                         if (Number.isFinite(rawSpec) && rawSpec >= 0) {
                             window.__edgewindPerfExtra.lastSpecRawLen = rawSpec;
                         }
+                        const fftEnabled = normalizeFftEnabled(d?.fft_enabled);
+                        if (fftEnabled !== null) {
+                            fftEnabledByNode[msg.node_id] = fftEnabled;
+                            if (NODE_CONFIGS[msg.node_id]) {
+                                NODE_CONFIGS[msg.node_id].fft_enabled = fftEnabled;
+                            }
+                            applyFftUploadForNode(msg.node_id);
+                        }
                     } catch (e) {}
                     
                     // 缓存最新数据包
@@ -3234,6 +3350,30 @@
         
         // 更新图表
         updateCharts();
+    }
+
+    function renderNoSpectrumPlaceholder(titleText, subText) {
+        const container = document.getElementById('frequency-domain-chart');
+        if (!container || typeof echarts === 'undefined') return;
+        if (!frequencyDomainChart) {
+            frequencyDomainChart = echarts.init(container);
+        }
+        const title = titleText || (currentFftEnabled ? '暂无频谱数据' : '频谱上传已关闭，仅显示波形数据');
+        const subTitle = subText || (currentFftEnabled ? '等待下一帧包含 FFT 的全量数据' : '点击“上传频谱”可恢复 FFT 数据上传');
+        ensureChartMode(frequencyDomainChart, 'no-spectrum');
+        frequencyDomainChart.setOption({
+            title: {
+                text: title,
+                subtext: subTitle,
+                left: 'center',
+                top: 'middle',
+                textStyle: { color: '#6c757d', fontSize: 16, fontWeight: 'normal' },
+                subtextStyle: { color: '#94a3b8', fontSize: 13 }
+            },
+            xAxis: { show: false },
+            yAxis: { show: false },
+            series: []
+        }, true);
     }
 
     function renderAuxChartPlaceholder(channel) {
@@ -3513,6 +3653,8 @@
                 // console.log(`[updateCharts] 准备更新频域图表，频谱数据长度: ${spectrum.length}`);
                 if (spectrum.length > 0) {
                     updateFrequencyDomainChart(spectrum, channel);
+                } else {
+                    renderNoSpectrumPlaceholder();
                 }
                 // 优化：减少警告日志
                 // else {
@@ -3671,6 +3813,7 @@
 
         if (series.length === 0) {
             debugLog('[updateFastOverlayFrequencyChart] 四通道频谱为空，跳过本次更新');
+            renderNoSpectrumPlaceholder();
             return;
         }
 

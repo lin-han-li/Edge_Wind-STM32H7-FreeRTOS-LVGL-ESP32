@@ -23,7 +23,7 @@ _CHANNEL_LABELS = {
     4: ('IGBT温度', '°C', 'AuxTemp', [20, 125]),
     5: ('电容温度', '°C', 'AuxTemp', [18, 115]),
     6: ('柜内湿度', '%RH', 'AuxHumidity', [8, 98]),
-    7: ('风机负载', '%', 'AuxLoad', [8, 110]),
+    7: ('绝缘电阻', 'kΩ', 'AuxRiso', [20, 8000]),
 }
 
 _VALUE_SCALE_BY_VERSION = {
@@ -238,6 +238,7 @@ def decode_full_frame_binary(body: bytes,
         'http_timeout_ms': int(http_timeout_ms),
         'chunk_kb': int(chunk_kb),
         'chunk_delay_ms': int(chunk_delay_ms),
+        'fft_enabled': 1 if fft_max > 0 else 0,
         'channels': channels,
     }
 

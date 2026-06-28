@@ -17,6 +17,7 @@
 #include "edgewind_ai.h"
 #include "edgewind_ai_preprocess_params.h"
 #include "edgewind_units.h"
+#include "edgewind_buzzer.h"
 #include "ESP32SPI/esp32_spi_debug.h"
 #include "usart.h"
 #include "arm_math.h"
@@ -93,11 +94,11 @@
 #endif
 
 #ifndef ESP32_SPI_FULL_CONTINUOUS_DEFAULT
-#define ESP32_SPI_FULL_CONTINUOUS_DEFAULT 0
+#define ESP32_SPI_FULL_CONTINUOUS_DEFAULT 1
 #endif
 
 #ifndef ESP_FORCE_FULL_REPORT_MODE
-#define ESP_FORCE_FULL_REPORT_MODE 1
+#define ESP_FORCE_FULL_REPORT_MODE 0
 #endif
 
 #ifndef ESP32_SPI_FULL_NOT_ARMED_LOG_MS
@@ -344,12 +345,12 @@ static int ESP_AI_ProbPermille(float p)
 
 static const float s_ai_default_aux4[EDGEWIND_AI_AUX_SIZE] =
 {
-    72.5f, 66.5f, 53.0f, 59.0f
+    67.8480f, 55.7832f, 49.2850f, 3016.0754f
 };
 
 static float g_upload_aux4[EDGEWIND_AI_AUX_SIZE] =
 {
-    72.5f, 66.5f, 53.0f, 59.0f
+    67.8480f, 55.7832f, 49.2850f, 3016.0754f
 };
 static uint8_t g_upload_aux4_valid_mask = 0U;
 
@@ -436,6 +437,7 @@ static void ESP_AI_UpdateFaultCode(const float analog_v[4][AD_ACQ_POINTS],
                     g_fault_code,
                     (unsigned int)aux4_valid_mask);
         }
+        EdgeWind_Buzzer_OnFaultCode(g_fault_code);
         return;
     }
 
@@ -448,6 +450,7 @@ static void ESP_AI_UpdateFaultCode(const float analog_v[4][AD_ACQ_POINTS],
         ESP_Log("[AI] fault_code updated: %s\r\n", g_fault_code);
         g_ai_fault_code_initialized = 1U;
     }
+    EdgeWind_Buzzer_OnFaultCode(reported_code);
 
     if ((uint32_t)(now_tick - last_ai_log_tick) >= EDGEWIND_AI_STATS_LOG_MS)
     {
@@ -831,7 +834,7 @@ static volatile uint8_t g_console_line_len = 0;
 // ---------- 服务器下发命令解析 ----------
 static volatile uint8_t g_server_reset_pending = 0;
 // 服务器请求的上报模式：0=summary, 1=full
-static volatile uint8_t g_server_report_full = ((ESP_FORCE_FULL_REPORT_MODE != 0) || (ESP32_SPI_STRESS_FULL_UPLOAD != 0)) ? 1U : 0U;
+static volatile uint8_t g_server_report_full = ((ESP_FORCE_FULL_REPORT_MODE != 0) || (ESP32_SPI_STRESS_FULL_UPLOAD != 0) || (ESP32_SPI_FULL_CONTINUOUS_DEFAULT != 0)) ? 1U : 0U;
 static volatile uint8_t g_server_report_full_dirty = 0;
 #if (ESP32_SPI_ENABLE_FULL_UPLOAD)
 static volatile uint16_t g_spi_full_manual_frames = 0;
@@ -890,6 +893,7 @@ static volatile uint32_t g_comm_wave_step       = (uint32_t)WAVEFORM_SEND_STEP;
 static volatile uint32_t g_comm_upload_points  = (uint32_t)WAVEFORM_POINTS;
 static volatile uint32_t g_comm_chunk_kb        = (uint32_t)ESP_CHUNK_KB_DEFAULT;
 static volatile uint32_t g_comm_chunk_delay_ms  = (uint32_t)ESP_CHUNK_DELAY_MS_DEFAULT;
+static volatile uint32_t g_comm_fft_enabled     = 1U;
 
 
 
@@ -903,6 +907,7 @@ uint32_t ESP_CommParams_WaveStep(void)      { return (uint32_t)g_comm_wave_step;
 uint32_t ESP_CommParams_UploadPoints(void)  { return (uint32_t)g_comm_upload_points; }
 uint32_t ESP_CommParams_ChunkKb(void)       { return (uint32_t)g_comm_chunk_kb; }
 uint32_t ESP_CommParams_ChunkDelayMs(void)  { return (uint32_t)g_comm_chunk_delay_ms; }
+uint32_t ESP_CommParams_FftEnabled(void)    { return (uint32_t)g_comm_fft_enabled; }
 
 void ESP_CommParams_Get(ESP_CommParams_t *out)
 {
@@ -915,6 +920,7 @@ void ESP_CommParams_Get(ESP_CommParams_t *out)
     out->upload_points   = (uint32_t)g_comm_upload_points;
     out->chunk_kb        = (uint32_t)g_comm_chunk_kb;
     out->chunk_delay_ms  = (uint32_t)g_comm_chunk_delay_ms;
+    out->fft_enabled     = (uint32_t)g_comm_fft_enabled;
 }
 
 static bool ESP_CommParams_Equals(const ESP_CommParams_t *a, const ESP_CommParams_t *b)
@@ -927,7 +933,8 @@ static bool ESP_CommParams_Equals(const ESP_CommParams_t *a, const ESP_CommParam
             a->wave_step == b->wave_step &&
             a->upload_points == b->upload_points &&
             a->chunk_kb == b->chunk_kb &&
-            a->chunk_delay_ms == b->chunk_delay_ms);
+            a->chunk_delay_ms == b->chunk_delay_ms &&
+            a->fft_enabled == b->fft_enabled);
 }
 
 static void ESP_ServerCmdAppendText(char *buf, size_t buf_size, const char *text)
@@ -974,7 +981,9 @@ static void ESP_BuildServerCommandSummary(char *buf,
                                           uint8_t has_chunk,
                                           uint32_t chunk_kb,
                                           uint8_t has_chunk_delay,
-                                          uint32_t chunk_delay_ms)
+                                          uint32_t chunk_delay_ms,
+                                          uint8_t has_fft_enabled,
+                                          uint8_t fft_enabled)
 {
     if (!buf || buf_size == 0U) {
         return;
@@ -1006,6 +1015,9 @@ static void ESP_BuildServerCommandSummary(char *buf,
     }
     if (has_chunk_delay) {
         ESP_ServerCmdAppendU32(buf, buf_size, "chunk_delay_ms", chunk_delay_ms);
+    }
+    if (has_fft_enabled) {
+        ESP_ServerCmdAppendU32(buf, buf_size, "fft_enabled", fft_enabled ? 1U : 0U);
     }
     if (buf[0] == '\0') {
         ESP_ServerCmdAppendText(buf, buf_size, "command");
@@ -1132,6 +1144,7 @@ void ESP_CommParams_Apply(const ESP_CommParams_t *p)
     uint32_t ckb   = p->chunk_kb;
     if (ckb > 16u) ckb = 16u; /* 允许 0 表示“关闭分段” */
     uint32_t cdly  = clamp_u32(p->chunk_delay_ms,  0u,   (uint32_t)ESP_CHUNK_DELAY_MS_MAX);
+    uint32_t fft_en = (p->fft_enabled != 0U) ? 1U : 0U;
 
     g_comm_heartbeat_ms    = hb;
     g_comm_min_interval_ms = minit;
@@ -1141,11 +1154,13 @@ void ESP_CommParams_Apply(const ESP_CommParams_t *p)
     g_comm_upload_points  = up;
     g_comm_chunk_kb        = ckb;
     g_comm_chunk_delay_ms  = cdly;
+    g_comm_fft_enabled     = fft_en;
 
 #if (ESP_DEBUG)
-    ESP_Log("[PARAM] apply hb=%lums min=%lums http=%lums hrs=%lus step=%lu up=%lu chunk=%luKB delay=%lums\r\n",
+    ESP_Log("[PARAM] apply hb=%lums min=%lums http=%lums hrs=%lus step=%lu up=%lu chunk=%luKB delay=%lums fft=%lu\r\n",
             (unsigned long)hb, (unsigned long)minit, (unsigned long)http, (unsigned long)hrs,
-            (unsigned long)step, (unsigned long)up, (unsigned long)ckb, (unsigned long)cdly);
+            (unsigned long)step, (unsigned long)up, (unsigned long)ckb, (unsigned long)cdly,
+            (unsigned long)fft_en);
 #endif
 }
 
@@ -1237,6 +1252,9 @@ bool ESP_CommParams_LoadFromSD(void)
         } else if (strncmp(line, "CHUNK_DELAY_MS=", 15) == 0) {
             uint32_t v;
             if (cfg_parse_u32_relaxed(line + 15, &v)) p.chunk_delay_ms = v;
+        } else if (strncmp(line, "FFT_ENABLED=", 12) == 0) {
+            uint32_t v;
+            if (cfg_parse_u32_relaxed(line + 12, &v)) p.fft_enabled = (v != 0U) ? 1U : 0U;
         }
     }
     (void)f_close(&fil);
@@ -1633,7 +1651,8 @@ static bool ESP_CommParams_SaveToSD(void)
                      "DOWNSAMPLE_STEP=%lu\n"
                      "UPLOAD_POINTS=%lu\n"
                      "CHUNK_KB=%lu\n"
-                     "CHUNK_DELAY_MS=%lu\n",
+                     "CHUNK_DELAY_MS=%lu\n"
+                     "FFT_ENABLED=%lu\n",
                      (unsigned long)p.heartbeat_ms,
                      (unsigned long)p.min_interval_ms,
                      (unsigned long)p.http_timeout_ms,
@@ -1641,7 +1660,8 @@ static bool ESP_CommParams_SaveToSD(void)
                      (unsigned long)p.wave_step,
                      (unsigned long)p.upload_points,
                      (unsigned long)p.chunk_kb,
-                     (unsigned long)p.chunk_delay_ms);
+                     (unsigned long)p.chunk_delay_ms,
+                     (unsigned long)((p.fft_enabled != 0U) ? 1U : 0U));
     if (n <= 0 || n >= (int)sizeof(buf)) {
         (void)f_close(&fil);
         (void)f_unlink(UI_PARAM_TMP_FILE);
@@ -2940,6 +2960,7 @@ void ESP_Console_Poll(void)
         uint8_t reset = 0U, has_mode = 0U, full = 0U;
         uint8_t has_downsample = 0U, has_upload = 0U;
         uint8_t has_hb = 0U, has_min = 0U, has_http = 0U, has_chunk = 0U, has_chunk_delay = 0U;
+        uint8_t has_fft_enabled = 0U, fft_enabled = 1U;
         uint32_t downsample = 0U, upload_points = 0U;
         uint32_t hb_ms = 0U, min_ms = 0U, http_ms = 0U, chunk_kb = 0U, chunk_delay_ms = 0U;
 
@@ -2977,10 +2998,12 @@ void ESP_Console_Poll(void)
                                            &min_ms,
                                            &has_http,
                                            &http_ms,
-                                            &has_chunk,
+                                           &has_chunk,
                                             &chunk_kb,
                                            &has_chunk_delay,
-                                           &chunk_delay_ms)) {
+                                           &chunk_delay_ms,
+                                           &has_fft_enabled,
+                                           &fft_enabled)) {
             ESP_BuildServerCommandSummary(server_cmd_summary,
                                           sizeof(server_cmd_summary),
                                           reset,
@@ -2999,7 +3022,9 @@ void ESP_Console_Poll(void)
                                           has_chunk,
                                           chunk_kb,
                                           has_chunk_delay,
-                                          chunk_delay_ms);
+                                          chunk_delay_ms,
+                                          has_fft_enabled,
+                                          fft_enabled);
             if (!ESP_ServerCommandRecentlyApplied(server_cmd_summary, now)) {
                 server_cmd_seen = 1U;
                 ESP_ServerCommandLogStore(server_cmd_summary, server_cmd_seen, 0U, 0U, 0U);
@@ -3015,7 +3040,7 @@ void ESP_Console_Poll(void)
                 if (has_upload) {
                     ESP_SetServerUploadPoints(upload_points);
                 }
-                if (has_hb || has_min || has_http || has_chunk || has_chunk_delay) {
+                if (has_hb || has_min || has_http || has_chunk || has_chunk_delay || has_fft_enabled) {
                     ESP_CommParams_t old_p;
                     ESP_CommParams_t p;
                     ESP_CommParams_Get(&old_p);
@@ -3034,6 +3059,9 @@ void ESP_Console_Poll(void)
                     }
                     if (has_chunk_delay) {
                         p.chunk_delay_ms = chunk_delay_ms;
+                    }
+                    if (has_fft_enabled) {
+                        p.fft_enabled = (fft_enabled != 0U) ? 1U : 0U;
                     }
                     bool params_changed = !ESP_CommParams_Equals(&old_p, &p);
                     if (params_changed) {
@@ -3283,6 +3311,7 @@ static bool ESP_FullTx_StartFrame(uint32_t frame_id,
     uint8_t channel_count;
     uint32_t wave_step;
     uint32_t upload_points;
+    uint8_t fft_upload_enabled;
 
     if (snapshot == NULL || snapshot->magic != ESP_UPLOAD_SNAPSHOT_MAGIC)
     {
@@ -3304,6 +3333,7 @@ static bool ESP_FullTx_StartFrame(uint32_t frame_id,
     {
         upload_points = (uint32_t)WAVEFORM_POINTS;
     }
+    fft_upload_enabled = (ESP_CommParams_FftEnabled() != 0U) ? 1U : 0U;
 
     memset(&g_full_tx_sm, 0, sizeof(g_full_tx_sm));
     g_full_tx_sm.active = 1U;
@@ -3345,10 +3375,14 @@ static bool ESP_FullTx_StartFrame(uint32_t frame_id,
         }
         g_full_tx_sm.channels[i] = snapshot->channels[i];
         g_full_tx_sm.channels[i].waveform_count = tx_wave_count;
+        if (fft_upload_enabled == 0U)
+        {
+            g_full_tx_sm.channels[i].fft_count = 0U;
+        }
         g_full_tx_sm.wave_source_counts[i] = source_wave_count;
         g_full_tx_sm.waves[i] = (i < ESP_UPLOAD_FAST_CHANNEL_COUNT && source_wave_count > 0U) ?
                                 snapshot->waveform[i] : NULL;
-        g_full_tx_sm.ffts[i] = (i < ESP_UPLOAD_FAST_CHANNEL_COUNT && snapshot->channels[i].fft_count > 0U) ?
+        g_full_tx_sm.ffts[i] = (i < ESP_UPLOAD_FAST_CHANNEL_COUNT && g_full_tx_sm.channels[i].fft_count > 0U) ?
                                snapshot->fft_data[i] : NULL;
     }
     return true;
@@ -3828,6 +3862,8 @@ void ESP_Post_Data(void)
         uint32_t done_upload_points = g_full_tx_sm.upload_points;
         uint16_t done_wave_points = (g_full_tx_sm.channel_count > 0U) ?
                                     g_full_tx_sm.channels[0].waveform_count : 0U;
+        uint16_t done_fft_points = (g_full_tx_sm.channel_count > 0U) ?
+                                   g_full_tx_sm.channels[0].fft_count : 0U;
         uint32_t elapsed_ms = HAL_GetTick() - g_full_tx_sm.start_tick;
         uint32_t done_ref_seq = ESP32_SPI_GetLastFullEndRefSeq();
         uint32_t last_nack_ref = ESP32_SPI_GetLastNackRefSeq();
@@ -3875,7 +3911,7 @@ void ESP_Post_Data(void)
                     (unsigned long)done_wave_step,
                     (unsigned long)done_upload_points,
                     (unsigned int)done_wave_points,
-                    (unsigned int)FFT_POINTS,
+                    (unsigned int)done_fft_points,
                     (unsigned long)g_upload_snapshot_drop_count);
         }
     } else if ((HAL_GetTick() - last_full_progress_log) >= ESP32_SPI_FULL_PROGRESS_LOG_MS) {

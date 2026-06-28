@@ -9,8 +9,8 @@ from edgewind.models import db, Device, DataPoint, WorkOrder, SystemConfig, Faul
 from edgewind.full_frame_binary import FullFrameBinaryError, decode_full_frame_binary
 from edgewind.knowledge_graph import FAULT_KNOWLEDGE_GRAPH, FAULT_CODE_MAP, generate_ai_report, get_fault_knowledge_graph, build_reasoning_graph
 from edgewind.utils import (
-    save_to_buffer, get_latest_normal_data, get_latest_fault_data,
-    node_fault_states, node_snapshot_saved, save_fault_snapshot, create_work_order_from_fault
+    save_to_buffer, node_fault_states, node_snapshot_saved,
+    save_fault_snapshot, create_work_order_from_fault
 )
 import time
 import json
@@ -60,6 +60,7 @@ CONFIG_COMMAND_KEYS = {
     'http_timeout_ms',
     'chunk_kb',
     'chunk_delay_ms',
+    'fft_enabled',
 }
 
 # 节点超时时间（秒）
@@ -132,6 +133,215 @@ ACTIVE_DB_REHYDRATE_INTERVAL_SEC = max(0.5, _env_float("EDGEWIND_ACTIVE_DB_REHYD
 # 心跳性能诊断：仅在“慢请求”时打印耗时分解（避免刷屏）
 HB_SLOW_MS = max(1.0, _env_float("EDGEWIND_HEARTBEAT_SLOW_MS", 80))
 HB_PERF_LOG_SEC = max(1.0, _env_float("EDGEWIND_HEARTBEAT_PERF_LOG_SEC", 5))
+FULL_FRAME_SERIES_LOG_SEC = max(2.0, _env_float("EDGEWIND_FULL_FRAME_SERIES_LOG_SEC", 30))
+
+# Fault snapshots must be evidence frames, not whatever packet happened to carry
+# the status transition.  Keep this state independent from node_fault_states so
+# summary/heartbeat packets cannot consume the fault/recovery edge before a full
+# waveform arrives.
+SNAPSHOT_CONFIRM_FRAMES = max(1, _env_int("EDGEWIND_SNAPSHOT_CONFIRM_FRAMES", 2))
+SNAPSHOT_REQUIRED_CHANNELS = (0, 1, 2, 3)
+_snapshot_states = {}
+_last_snapshot_skip_log_ts = {}
+
+
+def _clone_snapshot_data(data: dict, processed_channels: list[dict]) -> dict:
+    snapshot_data = dict(data or {})
+    cloned_channels = []
+    for ch in processed_channels or []:
+        if not isinstance(ch, dict):
+            continue
+        item = dict(ch)
+        item['waveform'] = list(ch.get('waveform') or [])
+        item['fft_spectrum'] = list(ch.get('fft_spectrum') or [])
+        cloned_channels.append(item)
+    snapshot_data['channels'] = cloned_channels
+    return snapshot_data
+
+
+def _snapshot_log_skip(node_id: str, reason: str, *, fault_code: str, request_tag: str, report_mode: str, raw_lens) -> None:
+    key = f'{node_id}:{reason}'
+    now = time.time()
+    last = _last_snapshot_skip_log_ts.get(key, 0)
+    if now - last < 5:
+        return
+    _last_snapshot_skip_log_ts[key] = now
+    logger.info('[snapshot][skipped-%s] node_id=%s fault=%s endpoint=%s mode=%s raw_lens=%s',
+                reason, node_id, fault_code, request_tag, report_mode, raw_lens)
+
+
+def _build_snapshot_candidate(*,
+                              node_id: str,
+                              fault_code: str,
+                              data: dict,
+                              processed_channels: list[dict],
+                              raw_series_lens: list[tuple],
+                              request_tag: str,
+                              report_mode: str,
+                              current_timestamp: float,
+                              is_bad_frame: bool,
+                              is_empty_keepalive: bool) -> dict | None:
+    if request_tag != '/api/node/full_frame_bin':
+        return None
+    mode = str(report_mode or data.get('report_mode') or '').strip().lower()
+    if mode != 'full':
+        _snapshot_log_skip(node_id, 'not-full', fault_code=fault_code, request_tag=request_tag, report_mode=mode, raw_lens=raw_series_lens)
+        return None
+    if is_bad_frame or is_empty_keepalive:
+        _snapshot_log_skip(node_id, 'bad-frame', fault_code=fault_code, request_tag=request_tag, report_mode=mode, raw_lens=raw_series_lens)
+        return None
+
+    channels_by_id = {
+        ch.get('id'): ch
+        for ch in (processed_channels or [])
+        if isinstance(ch, dict) and isinstance(ch.get('id'), int)
+    }
+    raw_wave_by_id = {}
+    for ch_id, wave_len, _fft_len in raw_series_lens or []:
+        if isinstance(ch_id, int):
+            try:
+                raw_wave_by_id[ch_id] = int(wave_len)
+            except Exception:
+                raw_wave_by_id[ch_id] = 0
+
+    missing = []
+    wave_lens = {}
+    for ch_id in SNAPSHOT_REQUIRED_CHANNELS:
+        ch = channels_by_id.get(ch_id)
+        wave = ch.get('waveform') if isinstance(ch, dict) else None
+        wave_len = len(wave) if isinstance(wave, list) else 0
+        raw_wave_len = raw_wave_by_id.get(ch_id, 0)
+        wave_lens[ch_id] = {'raw': raw_wave_len, 'emit': wave_len}
+        if raw_wave_len <= 0 or wave_len <= 0:
+            missing.append(ch_id)
+
+    if missing:
+        _snapshot_log_skip(node_id, 'no-waveform', fault_code=fault_code, request_tag=request_tag, report_mode=mode, raw_lens=wave_lens)
+        return None
+
+    candidate = {
+        'fault_code': fault_code,
+        'timestamp': datetime.utcnow(),
+        'timestamp_s': current_timestamp,
+        'seq': data.get('seq'),
+        'report_mode': mode,
+        'wave_lens': wave_lens,
+        'data': _clone_snapshot_data(data, processed_channels),
+    }
+    logger.debug('[snapshot][candidate] node_id=%s fault=%s seq=%s mode=%s wave_lens=%s',
+                 node_id, fault_code, candidate.get('seq'), mode, wave_lens)
+    return candidate
+
+
+def _submit_snapshot_save(node_id: str, fault_code: str, snapshot_type: str, frame: dict | None, event_timestamp: datetime) -> bool:
+    if not frame or not isinstance(frame.get('data'), dict):
+        logger.info('[snapshot][skipped-missing-frame] node_id=%s fault=%s type=%s', node_id, fault_code, snapshot_type)
+        return False
+    if not db_executor:
+        logger.warning('[snapshot][skipped-no-executor] node_id=%s fault=%s type=%s', node_id, fault_code, snapshot_type)
+        return False
+    db_executor.submit(
+        save_fault_snapshot,
+        db,
+        app_instance,
+        node_id,
+        fault_code,
+        snapshot_type,
+        frame['data'],
+        event_timestamp=event_timestamp,
+    )
+    logger.info('[snapshot][saved] node_id=%s fault=%s type=%s event_ts=%s seq=%s',
+                node_id, fault_code, snapshot_type, event_timestamp.isoformat(), frame.get('seq'))
+    return True
+
+
+def _process_snapshot_candidate(node_id: str, fault_code: str, candidate: dict | None) -> None:
+    if candidate is None:
+        return
+
+    state = _snapshot_states.setdefault(node_id, {
+        'stable_fault': 'E00',
+        'pending_fault': None,
+        'pending_count': 0,
+        'pending_before': None,
+        'last_normal': None,
+        'last_fault': None,
+    })
+
+    stable_fault = state.get('stable_fault') or 'E00'
+    current_fault = fault_code or 'E00'
+
+    if current_fault == stable_fault:
+        state['pending_fault'] = None
+        state['pending_count'] = 0
+        state['pending_before'] = None
+        if current_fault == 'E00':
+            state['last_normal'] = candidate
+        else:
+            state['last_fault'] = candidate
+        return
+
+    if state.get('pending_fault') != current_fault:
+        state['pending_fault'] = current_fault
+        state['pending_count'] = 1
+        state['pending_before'] = state.get('last_normal') if stable_fault == 'E00' else state.get('last_fault')
+        logger.info('[snapshot][pending] node_id=%s stable=%s -> pending=%s count=1/%d seq=%s',
+                    node_id, stable_fault, current_fault, SNAPSHOT_CONFIRM_FRAMES, candidate.get('seq'))
+    else:
+        state['pending_count'] = int(state.get('pending_count') or 0) + 1
+        logger.info('[snapshot][pending] node_id=%s stable=%s -> pending=%s count=%d/%d seq=%s',
+                    node_id, stable_fault, current_fault, state['pending_count'], SNAPSHOT_CONFIRM_FRAMES, candidate.get('seq'))
+
+    if state['pending_count'] < SNAPSHOT_CONFIRM_FRAMES:
+        if current_fault == 'E00':
+            state['last_normal'] = candidate
+        else:
+            state['last_fault'] = candidate
+        return
+
+    event_ts = candidate.get('timestamp') if isinstance(candidate.get('timestamp'), datetime) else datetime.utcnow()
+    before_frame = state.get('pending_before')
+
+    if stable_fault == 'E00' and current_fault != 'E00':
+        logger.info('[snapshot][confirmed] node_id=%s fault=%s transition=E00->%s before_seq=%s after_seq=%s',
+                    node_id, current_fault, current_fault,
+                    before_frame.get('seq') if isinstance(before_frame, dict) else None,
+                    candidate.get('seq'))
+        saved_types = []
+        if _submit_snapshot_save(node_id, current_fault, 'before', before_frame, event_ts):
+            saved_types.append('before')
+        if _submit_snapshot_save(node_id, current_fault, 'after', candidate, event_ts):
+            saved_types.append('after')
+        node_snapshot_saved[node_id] = {
+            'fault_code': current_fault,
+            'saved_types': saved_types,
+            'event_timestamp': event_ts.isoformat(),
+        }
+    elif stable_fault != 'E00' and current_fault == 'E00':
+        logger.info('[snapshot][confirmed] node_id=%s fault=%s transition=%s->E00 before_seq=%s after_seq=%s',
+                    node_id, stable_fault, stable_fault,
+                    before_frame.get('seq') if isinstance(before_frame, dict) else None,
+                    candidate.get('seq'))
+        _submit_snapshot_save(node_id, stable_fault, 'before_recovery', before_frame, event_ts)
+        _submit_snapshot_save(node_id, stable_fault, 'after_recovery', candidate, event_ts)
+        node_snapshot_saved.pop(node_id, None)
+    else:
+        logger.info('[snapshot][confirmed] node_id=%s transition=%s->%s no paired snapshot policy',
+                    node_id, stable_fault, current_fault)
+
+    state['stable_fault'] = current_fault
+    state['pending_fault'] = None
+    state['pending_count'] = 0
+    state['pending_before'] = None
+    if current_fault == 'E00':
+        state['last_normal'] = candidate
+    else:
+        state['last_fault'] = candidate
+
+
+def _reset_snapshot_state_for_tests() -> None:
+    _snapshot_states.clear()
+    _last_snapshot_skip_log_ts.clear()
 
 
 def _get_json_payload() -> dict:
@@ -270,7 +480,7 @@ AUX_CHANNEL_FIELDS = {
     4: ('t_igbt_c', 'IGBT温度', '°C', [20, 125]),
     5: ('t_dc_cap_c', '电容温度', '°C', [18, 115]),
     6: ('rh_cabinet_pct', '柜内湿度', '%RH', [8, 98]),
-    7: ('wind_load_pct', '风机负载', '%', [8, 110]),
+    7: ('r_iso_kohm', '绝缘电阻', 'kΩ', [20, 8000]),
 }
 
 CHANNEL_DISPLAY_META = {
@@ -281,7 +491,7 @@ CHANNEL_DISPLAY_META = {
     4: ('IGBT温度', '°C', 'AuxTemp', [20, 125]),
     5: ('电容温度', '°C', 'AuxTemp', [18, 115]),
     6: ('柜内湿度', '%RH', 'AuxHumidity', [8, 98]),
-    7: ('风机负载', '%', 'AuxLoad', [8, 110]),
+    7: ('绝缘电阻', 'kΩ', 'AuxRiso', [20, 8000]),
 }
 
 
@@ -311,7 +521,7 @@ def _submit_history_data(node_id: str, processed_data: dict) -> None:
         't_igbt_c': processed_data.get('t_igbt_c'),
         't_dc_cap_c': processed_data.get('t_dc_cap_c'),
         'rh_cabinet_pct': processed_data.get('rh_cabinet_pct'),
-        'wind_load_pct': processed_data.get('wind_load_pct'),
+        'r_iso_kohm': processed_data.get('r_iso_kohm'),
         'aux_valid_mask': processed_data.get('aux_valid_mask'),
     }
 
@@ -455,6 +665,26 @@ def _parse_int_range(value, lo: int, hi: int) -> int | None:
     return v if lo <= v <= hi else None
 
 
+def _parse_bool01(value) -> int | None:
+    if isinstance(value, bool):
+        return 1 if value else 0
+    if value is None:
+        return None
+    try:
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            if int(value) == value and int(value) in (0, 1):
+                return int(value)
+            return None
+        raw = str(value).strip().lower()
+        if raw in ('1', 'true', 'yes', 'on', 'enable', 'enabled'):
+            return 1
+        if raw in ('0', 'false', 'no', 'off', 'disable', 'disabled'):
+            return 0
+    except Exception:
+        return None
+    return None
+
+
 def _normalize_command_value(key: str, value):
     key = (key or '').strip()
     if key == 'report_mode':
@@ -476,6 +706,8 @@ def _normalize_command_value(key: str, value):
         return _parse_int_range(value, 0, 16)
     if key == 'chunk_delay_ms':
         return _parse_int_range(value, 0, MAX_CHUNK_DELAY_MS)
+    if key == 'fft_enabled':
+        return _parse_bool01(value)
     return None
 
 
@@ -684,7 +916,7 @@ def _ack_config_commands_from_payload(node_id: str, payload: dict) -> None:
     # 1) 4096 命令还没真正下发到 STM32，就被服务器误标记为 applied；
     # 2) 2048/1024 已经按真实波形长度生效，却因为顶层旧值没有被标记 applied。
     # upload_points 的 ACK 统一交给 _ack_upload_points_command()，并优先使用实际波形长度。
-    for key in ('downsample_step', 'heartbeat_ms', 'min_interval_ms', 'http_timeout_ms', 'chunk_kb', 'chunk_delay_ms'):
+    for key in ('downsample_step', 'heartbeat_ms', 'min_interval_ms', 'http_timeout_ms', 'chunk_kb', 'chunk_delay_ms', 'fft_enabled'):
         value = _normalize_command_value(key, payload.get(key))
         if value is not None:
             try:
@@ -1264,6 +1496,7 @@ def upload_data():
                     'http_timeout_ms': (active_nodes.get(device_id, {}).get('data', {}) or {}).get('http_timeout_ms'),
                     'chunk_kb': (active_nodes.get(device_id, {}).get('data', {}) or {}).get('chunk_kb'),
                     'chunk_delay_ms': (active_nodes.get(device_id, {}).get('data', {}) or {}).get('chunk_delay_ms'),
+                    'fft_enabled': (active_nodes.get(device_id, {}).get('data', {}) or {}).get('fft_enabled'),
                     'metrics': {
                         'voltage': float((data or {}).get('voltage', 0) or 0),
                         'voltage_neg': float((data or {}).get('voltage_neg', 0) or 0),
@@ -1376,7 +1609,7 @@ def _process_node_report(data: dict,
 
     processed_data = {
         'voltage': 0, 'voltage_neg': 0, 'current': 0, 'leakage': 0,
-        't_igbt_c': None, 't_dc_cap_c': None, 'rh_cabinet_pct': None, 'wind_load_pct': None,
+        't_igbt_c': None, 't_dc_cap_c': None, 'rh_cabinet_pct': None, 'r_iso_kohm': None,
         'aux_valid_mask': 0,
         'aux4': {},
         'voltage_waveform': [], 'voltage_spectrum': [],
@@ -1548,6 +1781,14 @@ def _process_node_report(data: dict,
     processed_data['spectrum_points_raw_max'] = max((fft_len for _, _, fft_len in raw_series_lens), default=0)
     processed_data['waveform_points_emit_max'] = max((len(ch.get('waveform') or []) for ch in processed_channels), default=0)
     processed_data['spectrum_points_emit_max'] = max((len(ch.get('fft_spectrum') or []) for ch in processed_channels), default=0)
+    has_fresh_waveform_frame = any(
+        isinstance(ch_id, int) and ch_id in SNAPSHOT_REQUIRED_CHANNELS and int(wave_len or 0) > 0
+        for ch_id, wave_len, _ in raw_series_lens
+    )
+    if has_fresh_waveform_frame:
+        processed_data['fft_enabled'] = 1 if processed_data['spectrum_points_raw_max'] > 0 else 0
+        data['fft_enabled'] = processed_data['fft_enabled']
+    _ack_config_commands_from_payload(node_id, data)
 
     actual_upload_points = _actual_upload_points_from_raw_series(raw_series_lens)
     reported_upload_points = _ack_upload_points_command(
@@ -1579,7 +1820,7 @@ def _process_node_report(data: dict,
     has_any_series = any(isinstance(processed_data.get(k), list) and len(processed_data.get(k)) > 0 for k in series_keys)
     if has_any_series:
         last_series = _last_series_log_ts.get(f'{request_tag}:{node_id}', 0)
-        if current_timestamp - last_series >= 2:
+        if current_timestamp - last_series >= FULL_FRAME_SERIES_LOG_SEC:
             _last_series_log_ts[f'{request_tag}:{node_id}'] = current_timestamp
             series_lens = [
                 (
@@ -1619,6 +1860,19 @@ def _process_node_report(data: dict,
                     (bad_wave_type > 0) or
                     (bad_spec_type > 0) or
                     (bad_id_type > 0))
+
+    snapshot_candidate = _build_snapshot_candidate(
+        node_id=node_id,
+        fault_code=fault_code,
+        data=data,
+        processed_channels=processed_channels,
+        raw_series_lens=raw_series_lens,
+        request_tag=request_tag,
+        report_mode=effective_report_mode,
+        current_timestamp=current_timestamp,
+        is_bad_frame=is_bad_frame,
+        is_empty_keepalive=is_empty_keepalive,
+    )
 
     if isinstance(prev, dict) and (is_bad_frame or is_empty_keepalive):
         processed_data = prev
@@ -1677,7 +1931,7 @@ def _process_node_report(data: dict,
                                       else active_data.get('downsample_step'))
     active_data['upload_points'] = (data.get('upload_points') if data.get('upload_points') is not None
                                     else active_data.get('upload_points'))
-    for key in ('heartbeat_ms', 'min_interval_ms', 'http_timeout_ms', 'chunk_kb', 'chunk_delay_ms'):
+    for key in ('heartbeat_ms', 'min_interval_ms', 'http_timeout_ms', 'chunk_kb', 'chunk_delay_ms', 'fft_enabled'):
         if data.get(key) is not None:
             active_data[key] = data.get(key)
     active_nodes[node_id] = {
@@ -1691,6 +1945,7 @@ def _process_node_report(data: dict,
         save_to_buffer(node_id, data, is_fault=False)
     else:
         save_to_buffer(node_id, data, is_fault=True)
+    _process_snapshot_candidate(node_id, fault_code, snapshot_candidate)
 
     previous_fault = node_fault_states.get(node_id, 'E00')
     current_fault = fault_code
@@ -1699,33 +1954,12 @@ def _process_node_report(data: dict,
     if previous_fault == 'E00' and current_fault != 'E00':
         logger.info(f'[fault] detected: {node_id} -> {current_fault}')
 
-        if node_id not in node_snapshot_saved or node_snapshot_saved[node_id].get('fault_code') != current_fault:
-            before_data = get_latest_normal_data(node_id)
-            if before_data:
-                db_executor.submit(save_fault_snapshot, db, app_instance, node_id, current_fault, 'before', before_data['data'])
-
-            db_executor.submit(save_fault_snapshot, db, app_instance, node_id, current_fault, 'after', data)
-
-            node_snapshot_saved[node_id] = {
-                'fault_code': current_fault,
-                'saved_types': ['before', 'after']
-            }
-
         if db_executor:
             db_executor.submit(_handle_fault_database_operation, node_id, current_fault, data)
             db_op_submitted = True
 
     elif previous_fault != 'E00' and current_fault == 'E00':
         logger.info(f'[fault] recovered: {node_id} {previous_fault} -> E00')
-
-        fault_data = get_latest_fault_data(node_id)
-        if fault_data:
-            db_executor.submit(save_fault_snapshot, db, app_instance, node_id, previous_fault, 'before_recovery', fault_data['data'])
-
-        db_executor.submit(save_fault_snapshot, db, app_instance, node_id, previous_fault, 'after_recovery', data)
-
-        if node_id in node_snapshot_saved:
-            del node_snapshot_saved[node_id]
 
     node_fault_states[node_id] = current_fault
 
@@ -1745,6 +1979,7 @@ def _process_node_report(data: dict,
             'http_timeout_ms': (active_nodes.get(node_id, {}).get('data', {}) or {}).get('http_timeout_ms'),
             'chunk_kb': (active_nodes.get(node_id, {}).get('data', {}) or {}).get('chunk_kb'),
             'chunk_delay_ms': (active_nodes.get(node_id, {}).get('data', {}) or {}).get('chunk_delay_ms'),
+            'fft_enabled': (active_nodes.get(node_id, {}).get('data', {}) or {}).get('fft_enabled'),
             'metrics': {
                 'voltage': processed_data.get('voltage', 0),
                 'voltage_neg': processed_data.get('voltage_neg', 0),
@@ -1753,7 +1988,7 @@ def _process_node_report(data: dict,
                 't_igbt_c': processed_data.get('t_igbt_c'),
                 't_dc_cap_c': processed_data.get('t_dc_cap_c'),
                 'rh_cabinet_pct': processed_data.get('rh_cabinet_pct'),
-                'wind_load_pct': processed_data.get('wind_load_pct'),
+                'r_iso_kohm': processed_data.get('r_iso_kohm'),
                 'aux_valid_mask': processed_data.get('aux_valid_mask', 0),
             }
         }
@@ -1901,6 +2136,7 @@ def node_full_frame_bin():
             'report_mode': decoded.payload.get('report_mode'),
             'downsample_step': decoded.payload.get('downsample_step'),
             'upload_points': decoded.payload.get('upload_points'),
+            'fft_enabled': decoded.payload.get('fft_enabled'),
             'rx_bytes': decoded.rx_bytes,
         }
         return _process_node_report(
@@ -2035,6 +2271,10 @@ def get_active_nodes():
                 pending_points = node_upload_points_commands.get(node_id)
                 if pending_points is not None:
                     node_data['upload_points'] = int(pending_points)
+            if 'fft_enabled' not in node_data:
+                pending_fft = _latest_pending_command_value(node_id, 'fft_enabled')
+                if pending_fft is not None:
+                    node_data['fft_enabled'] = int(pending_fft)
             if include_series:
                 cached = _last_processed_cache.get(node_id)
                 if isinstance(cached, dict):
@@ -2111,6 +2351,7 @@ def set_node_report_mode():
                     'report_mode': mode,
                     'downsample_step': downsample_step,
                     'upload_points': upload_points,
+                    'fft_enabled': ((node_info.get('data', {}) or {}).get('fft_enabled')),
                 }, namespace='/')
         except Exception:
             pass
@@ -2162,6 +2403,7 @@ def set_node_downsample_step():
                     'report_mode': mode,
                     'downsample_step': int(step),
                     'upload_points': upload_points,
+                    'fft_enabled': ((node_info.get('data', {}) or {}).get('fft_enabled')),
                 }, namespace='/')
         except Exception:
             pass
@@ -2228,6 +2470,7 @@ def set_node_upload_points():
                     'report_mode': mode,
                     'downsample_step': downsample_step,
                     'upload_points': int(points),
+                    'fft_enabled': ((node_info.get('data', {}) or {}).get('fft_enabled')),
                 }, namespace='/')
         except Exception:
             pass
@@ -2245,6 +2488,57 @@ def set_node_upload_points():
 
     except Exception as e:
         logger.exception(f"[/api/nodes/upload_points] 失败: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@api_bp.route('/nodes/fft_enabled', methods=['POST'])
+@login_required
+def set_node_fft_enabled():
+    """Queue device-side FFT upload enable/disable for a node."""
+    try:
+        payload = request.get_json() or {}
+        node_id = _normalize_node_id(payload.get('node_id') or payload.get('device_id'))
+        raw_value = payload.get('enabled')
+        if raw_value is None:
+            raw_value = payload.get('fft_enabled')
+        enabled = _normalize_command_value('fft_enabled', raw_value)
+
+        if not node_id:
+            return jsonify({'success': False, 'error': 'Missing node_id'}), 400
+        if len(node_id) > 100:
+            return jsonify({'success': False, 'error': 'node_id too long (max 100)'}), 400
+        if enabled is None:
+            return jsonify({'success': False, 'error': 'Invalid fft_enabled (expected 0/1)'}), 400
+
+        cmd = _enqueue_node_command(node_id, 'fft_enabled', int(enabled))
+        if cmd is None:
+            return jsonify({'success': False, 'error': 'Failed to persist command'}), 500
+
+        try:
+            if socketio_instance:
+                node_info = active_nodes.get(node_id) or {}
+                socketio_instance.emit('node_status_update', {
+                    'node_id': node_id,
+                    'status': node_info.get('status', 'online'),
+                    'fault_code': node_info.get('fault_code', 'E00'),
+                    'timestamp': time.time(),
+                    'report_mode': _get_report_mode(node_id),
+                    'downsample_step': ((node_info.get('data', {}) or {}).get('downsample_step')),
+                    'upload_points': ((node_info.get('data', {}) or {}).get('upload_points')),
+                    'fft_enabled': int(enabled),
+                }, namespace='/')
+        except Exception:
+            pass
+
+        return jsonify({
+            'success': True,
+            'node_id': node_id,
+            'fft_enabled': int(enabled),
+            'command_id': cmd.command_id,
+        }), 200
+
+    except Exception as e:
+        logger.exception(f"[/api/nodes/fft_enabled] failed: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
@@ -2820,9 +3114,16 @@ def get_faults():
             return 'general'
 
         orders = WorkOrder.query.order_by(WorkOrder.fault_time.desc()).all()
+        device_ids = {order.device_id for order in orders if order.device_id}
+        devices_by_id = {}
+        if device_ids:
+            devices_by_id = {
+                device.device_id: device
+                for device in Device.query.filter(Device.device_id.in_(device_ids)).all()
+            }
         faults = []
         for order in orders:
-            device = Device.query.filter_by(device_id=order.device_id).first()
+            device = devices_by_id.get(order.device_id)
             # 前端期望 status: pending/processing/resolved
             status = order.status or 'pending'
             if status == 'fixed':
@@ -3215,8 +3516,12 @@ def get_fault_snapshots_events():
         # 获取总数（用于前端显示）
         total_count = query.count()
         
-        # 查询快照
-        query = query.order_by(FaultSnapshot.timestamp.desc())
+        # Event list only needs metadata; avoid loading waveform/FFT JSON blobs.
+        query = query.with_entities(
+            FaultSnapshot.device_id,
+            FaultSnapshot.fault_code,
+            FaultSnapshot.timestamp,
+        ).order_by(FaultSnapshot.timestamp.desc())
         if limit is not None:
             snapshots = query.limit(limit).all()
         else:

@@ -491,7 +491,8 @@ static void apply_server_command_event(const server_command_event_t *command)
 
     ESP_LOGI(TAG,
              "server command id=%" PRIu32 " reset=%d mode=%d downsample=%d/%" PRIu32 " upload=%d/%" PRIu32
-             " hb=%d/%" PRIu32 " min=%d/%" PRIu32 " http=%d/%" PRIu32 " chunk=%d/%" PRIu32 " delay=%d/%" PRIu32,
+             " hb=%d/%" PRIu32 " min=%d/%" PRIu32 " http=%d/%" PRIu32 " chunk=%d/%" PRIu32 " delay=%d/%" PRIu32
+             " fft=%d/%" PRIu32,
              command_id,
              command->has_reset ? 1 : 0,
              command->has_report_mode ? (int) command->report_mode : -1,
@@ -508,7 +509,9 @@ static void apply_server_command_event(const server_command_event_t *command)
              command->has_chunk_kb ? 1 : 0,
              command->chunk_kb,
              command->has_chunk_delay_ms ? 1 : 0,
-             command->chunk_delay_ms);
+             command->chunk_delay_ms,
+             command->has_fft_enabled ? 1 : 0,
+             command->fft_enabled);
 
     if ((command->has_downsample_step && (command->downsample_step < 1U || command->downsample_step > 64U)) ||
         (command->has_upload_points && (command->upload_points < 256U || command->upload_points > 4096U || (command->upload_points % 256U) != 0U)) ||
@@ -516,7 +519,8 @@ static void apply_server_command_event(const server_command_event_t *command)
         (command->has_min_interval_ms && command->min_interval_ms > 600000U) ||
         (command->has_http_timeout_ms && (command->http_timeout_ms < 1000U || command->http_timeout_ms > 600000U)) ||
         (command->has_chunk_kb && command->chunk_kb > APP_COMM_CHUNK_KB_MAX) ||
-        (command->has_chunk_delay_ms && command->chunk_delay_ms > APP_COMM_CHUNK_DELAY_MS_MAX)) {
+        (command->has_chunk_delay_ms && command->chunk_delay_ms > APP_COMM_CHUNK_DELAY_MS_MAX) ||
+        (command->has_fft_enabled && command->fft_enabled > 1U)) {
         err = ESP_ERR_INVALID_ARG;
     }
 
@@ -610,6 +614,14 @@ static void apply_server_command_event(const server_command_event_t *command)
                             command->chunk_delay_ms,
                             0,
                             "chunk_delay_ms");
+    }
+    if (command->has_fft_enabled) {
+        send_protocol_event(PROTOCOL_EVENT_SERVER_COMMAND,
+                            map_err_to_result(err),
+                            10,
+                            command->fft_enabled ? 1U : 0U,
+                            0,
+                            "fft_enabled");
     }
 }
 

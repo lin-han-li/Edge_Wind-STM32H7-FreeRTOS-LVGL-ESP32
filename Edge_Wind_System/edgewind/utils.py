@@ -67,7 +67,7 @@ def calculate_statistics(waveform):
     }
 
 
-def save_fault_snapshot(db, app, device_id, fault_code, snapshot_type, data):
+def save_fault_snapshot(db, app, device_id, fault_code, snapshot_type, data, event_timestamp=None):
     """
     保存故障快照到数据库（在后台线程中执行）
     
@@ -102,11 +102,13 @@ def save_fault_snapshot(db, app, device_id, fault_code, snapshot_type, data):
                 if not waveform:
                     stats = calculate_statistics([current_val])
                 
+                snapshot_ts = event_timestamp if isinstance(event_timestamp, datetime) else datetime.utcnow()
+
                 snapshot = FaultSnapshot(
                     device_id=device_id,
                     fault_code=fault_code,
                     snapshot_type=snapshot_type,
-                    timestamp=datetime.utcnow(),
+                    timestamp=snapshot_ts,
                     channel_id=channel.get('id', 0),
                     channel_label=channel.get('label', ''),
                     channel_type=channel.get('type', ''),

@@ -26,6 +26,7 @@ void events_init_WifiConfig(lv_ui *ui);
 void events_init_ServerConfig(lv_ui *ui);
 void events_init_ParamConfig(lv_ui *ui);
 void events_init_DeviceConnect(lv_ui *ui);
+void edgewind_ui_attach_buzzer_tree(lv_obj_t *root);
 
 #ifdef __cplusplus
 }

@@ -80,6 +80,7 @@ typedef struct {
     uint32_t upload_points;
     uint32_t chunk_kb;
     uint32_t chunk_delay_ms;
+    uint32_t fft_enabled;
 } ESP_CommParams_t;
 
 void ESP_CommParams_Get(ESP_CommParams_t *out);
@@ -94,6 +95,7 @@ uint32_t ESP_CommParams_WaveStep(void);
 uint32_t ESP_CommParams_UploadPoints(void);
 uint32_t ESP_CommParams_ChunkKb(void);
 uint32_t ESP_CommParams_ChunkDelayMs(void);
+uint32_t ESP_CommParams_FftEnabled(void);
 
 bool ESP_AutoReconnect_Read(bool *auto_reconnect_en, bool *last_reporting);
 bool ESP_AutoReconnect_SetEnabled(bool auto_reconnect_en);

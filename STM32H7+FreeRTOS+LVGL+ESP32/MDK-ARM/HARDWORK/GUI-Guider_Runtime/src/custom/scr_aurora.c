@@ -6,6 +6,7 @@
 #include "scr_aurora.h"
 #include <stdbool.h>
 #include <stddef.h>
+#include "../generated/events_init.h"
 #include "../../gui_assets.h"
 #include "../../../EdgeComm/edge_comm.h"
 
@@ -611,4 +612,6 @@ void setup_scr_Aurora(lv_ui * ui)
             lv_obj_set_style_bg_color(dot, lv_color_hex(0xCBD5E1), 0);
         }
     }
+
+    edgewind_ui_attach_buzzer_tree(ui->Main_1);
 }

@@ -226,7 +226,7 @@ class FaultSnapshot(db.Model):
     # 通道信息
     channel_id = db.Column(db.Integer, nullable=False)  # 0-7; 0-3 为高速诊断通道，4-7 为 aux4 上下文量
     channel_label = db.Column(db.String(50))  # 通道名称
-    channel_type = db.Column(db.String(20))  # 'DC', 'Current', 'Leakage', 'AuxTemp', 'AuxHumidity', 'AuxLoad'
+    channel_type = db.Column(db.String(20))  # 'DC', 'Current', 'Leakage', 'AuxTemp', 'AuxHumidity', 'AuxRiso'
     
     # 数据快照
     current_value = db.Column(db.Float)  # 当前瞬时值
@@ -285,7 +285,8 @@ class HistoryData(db.Model):
     t_igbt_c = db.Column(db.Float)
     t_dc_cap_c = db.Column(db.Float)
     rh_cabinet_pct = db.Column(db.Float)
-    wind_load_pct = db.Column(db.Float)
+    r_iso_kohm = db.Column(db.Float)
+    wind_load_pct = db.Column(db.Float)  # v73 兼容字段；v74 新数据不再写入
     aux_valid_mask = db.Column(db.Integer)
     
     def to_dict(self):
@@ -302,6 +303,7 @@ class HistoryData(db.Model):
             't_igbt_c': self.t_igbt_c,
             't_dc_cap_c': self.t_dc_cap_c,
             'rh_cabinet_pct': self.rh_cabinet_pct,
+            'r_iso_kohm': self.r_iso_kohm,
             'wind_load_pct': self.wind_load_pct,
             'aux_valid_mask': self.aux_valid_mask
         }

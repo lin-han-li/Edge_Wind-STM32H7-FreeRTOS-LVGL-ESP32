@@ -21,7 +21,7 @@ HISTORY_FIELDS = (
     "t_igbt_c",
     "t_dc_cap_c",
     "rh_cabinet_pct",
-    "wind_load_pct",
+    "r_iso_kohm",
 )
 SNAPSHOT_TYPES = ("before", "after", "before_recovery", "after_recovery")
 

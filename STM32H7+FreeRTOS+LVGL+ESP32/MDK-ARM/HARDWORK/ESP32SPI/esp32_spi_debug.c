@@ -333,6 +333,8 @@ static uint8_t s_pending_server_chunk_kb_valid = 0U;
 static uint32_t s_pending_server_chunk_kb = 0U;
 static uint8_t s_pending_server_chunk_delay_valid = 0U;
 static uint32_t s_pending_server_chunk_delay_ms = 0U;
+static uint8_t s_pending_server_fft_enabled_valid = 0U;
+static uint8_t s_pending_server_fft_enabled = 1U;
 static char s_last_server_cmd_key[65];
 static uint32_t s_last_server_cmd_value = 0U;
 static uint32_t s_last_server_cmd_tick = 0U;
@@ -1022,6 +1024,9 @@ static void update_status_from_event(const esp32_event_payload_t *event)
         } else if (strcmp(text, "chunk_delay_ms") == 0) {
             s_pending_server_chunk_delay_valid = 1U;
             s_pending_server_chunk_delay_ms = event->value1;
+        } else if (strcmp(text, "fft_enabled") == 0) {
+            s_pending_server_fft_enabled_valid = 1U;
+            s_pending_server_fft_enabled = (event->value1 != 0U) ? 1U : 0U;
         }
         break;
     }
@@ -1626,7 +1631,9 @@ bool ESP32_SPI_ConsumeServerCommand(uint8_t *out_reset,
                                     uint8_t *out_has_chunk_kb,
                                     uint32_t *out_chunk_kb,
                                     uint8_t *out_has_chunk_delay_ms,
-                                    uint32_t *out_chunk_delay_ms)
+                                    uint32_t *out_chunk_delay_ms,
+                                    uint8_t *out_has_fft_enabled,
+                                    uint8_t *out_fft_enabled)
 {
     uint8_t has_any = (s_pending_server_reset ||
                        s_pending_server_report_mode_valid ||
@@ -1636,7 +1643,8 @@ bool ESP32_SPI_ConsumeServerCommand(uint8_t *out_reset,
                        s_pending_server_min_interval_valid ||
                        s_pending_server_http_timeout_valid ||
                        s_pending_server_chunk_kb_valid ||
-                       s_pending_server_chunk_delay_valid) ? 1U : 0U;
+                       s_pending_server_chunk_delay_valid ||
+                       s_pending_server_fft_enabled_valid) ? 1U : 0U;
 
     if (out_reset != NULL) {
         *out_reset = s_pending_server_reset;
@@ -1689,6 +1697,12 @@ bool ESP32_SPI_ConsumeServerCommand(uint8_t *out_reset,
     if (out_chunk_delay_ms != NULL) {
         *out_chunk_delay_ms = s_pending_server_chunk_delay_ms;
     }
+    if (out_has_fft_enabled != NULL) {
+        *out_has_fft_enabled = s_pending_server_fft_enabled_valid;
+    }
+    if (out_fft_enabled != NULL) {
+        *out_fft_enabled = s_pending_server_fft_enabled;
+    }
 
     s_pending_server_reset = 0U;
     s_pending_server_report_mode_valid = 0U;
@@ -1699,6 +1713,7 @@ bool ESP32_SPI_ConsumeServerCommand(uint8_t *out_reset,
     s_pending_server_http_timeout_valid = 0U;
     s_pending_server_chunk_kb_valid = 0U;
     s_pending_server_chunk_delay_valid = 0U;
+    s_pending_server_fft_enabled_valid = 0U;
     return has_any != 0U;
 }
 

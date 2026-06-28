@@ -80,6 +80,8 @@ typedef struct {
     uint32_t chunk_kb;
     bool has_chunk_delay_ms;
     uint32_t chunk_delay_ms;
+    bool has_fft_enabled;
+    uint32_t fft_enabled;
 } server_command_event_t;
 
 typedef struct {

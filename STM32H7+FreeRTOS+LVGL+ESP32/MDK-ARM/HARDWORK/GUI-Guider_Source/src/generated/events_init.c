@@ -10,11 +10,43 @@
 #include "events_init.h"
 #include <stdio.h>
 #include "lvgl.h"
+#include "edgewind_buzzer.h"
 
 #if LV_USE_GUIDER_SIMULATOR && LV_USE_FREEMASTER
 #include "freemaster_client.h"
 #endif
 
+static void ui_buzzer_click_event_cb(lv_event_t *e)
+{
+    (void)e;
+    EdgeWind_Buzzer_Play(EDGEWIND_BUZZER_EVT_UI_CLICK);
+}
+
+static void ui_buzzer_attach_click(lv_obj_t *obj)
+{
+    if (obj != NULL) {
+        (void)lv_obj_remove_event_cb(obj, ui_buzzer_click_event_cb);
+        lv_obj_add_event_cb(obj, ui_buzzer_click_event_cb,
+                            (lv_event_code_t)(LV_EVENT_CLICKED | LV_EVENT_PREPROCESS),
+                            NULL);
+    }
+}
+
+void edgewind_ui_attach_buzzer_tree(lv_obj_t *root)
+{
+    if ((root == NULL) || !lv_obj_is_valid(root)) {
+        return;
+    }
+
+    if (lv_obj_has_flag(root, LV_OBJ_FLAG_CLICKABLE)) {
+        ui_buzzer_attach_click(root);
+    }
+
+    uint32_t child_count = lv_obj_get_child_count(root);
+    for (uint32_t i = 0U; i < child_count; i++) {
+        edgewind_ui_attach_buzzer_tree(lv_obj_get_child(root, (int32_t)i));
+    }
+}
 
 static void Main_1_event_handler (lv_event_t *e)
 {
@@ -121,12 +153,19 @@ static void Main_1_img_6_event_handler (lv_event_t *e)
 void events_init_Main_1 (lv_ui *ui)
 {
     lv_obj_add_event_cb(ui->Main_1, Main_1_event_handler, LV_EVENT_ALL, ui);
+    ui_buzzer_attach_click(ui->Main_1_img_1);
+    ui_buzzer_attach_click(ui->Main_1_img_2);
+    ui_buzzer_attach_click(ui->Main_1_img_3);
+    ui_buzzer_attach_click(ui->Main_1_img_4);
+    ui_buzzer_attach_click(ui->Main_1_img_5);
+    ui_buzzer_attach_click(ui->Main_1_img_6);
     lv_obj_add_event_cb(ui->Main_1_img_1, Main_1_img_1_event_handler, LV_EVENT_ALL, ui);
     lv_obj_add_event_cb(ui->Main_1_img_2, Main_1_img_2_event_handler, LV_EVENT_ALL, ui);
     lv_obj_add_event_cb(ui->Main_1_img_3, Main_1_img_3_event_handler, LV_EVENT_ALL, ui);
     lv_obj_add_event_cb(ui->Main_1_img_4, Main_1_img_4_event_handler, LV_EVENT_ALL, ui);
     lv_obj_add_event_cb(ui->Main_1_img_5, Main_1_img_5_event_handler, LV_EVENT_ALL, ui);
     lv_obj_add_event_cb(ui->Main_1_img_6, Main_1_img_6_event_handler, LV_EVENT_ALL, ui);
+    edgewind_ui_attach_buzzer_tree(ui->Main_1);
 }
 
 static void Main_2_event_handler (lv_event_t *e)
@@ -240,12 +279,19 @@ static void Main_2_img_1_event_handler (lv_event_t *e)
 void events_init_Main_2 (lv_ui *ui)
 {
     lv_obj_add_event_cb(ui->Main_2, Main_2_event_handler, LV_EVENT_ALL, ui);
+    ui_buzzer_attach_click(ui->Main_2_img_1);
+    ui_buzzer_attach_click(ui->Main_2_img_2);
+    ui_buzzer_attach_click(ui->Main_2_img_3);
+    ui_buzzer_attach_click(ui->Main_2_img_4);
+    ui_buzzer_attach_click(ui->Main_2_img_5);
+    ui_buzzer_attach_click(ui->Main_2_img_6);
     lv_obj_add_event_cb(ui->Main_2_img_6, Main_2_img_6_event_handler, LV_EVENT_ALL, ui);
     lv_obj_add_event_cb(ui->Main_2_img_5, Main_2_img_5_event_handler, LV_EVENT_ALL, ui);
     lv_obj_add_event_cb(ui->Main_2_img_4, Main_2_img_4_event_handler, LV_EVENT_ALL, ui);
     lv_obj_add_event_cb(ui->Main_2_img_3, Main_2_img_3_event_handler, LV_EVENT_ALL, ui);
     lv_obj_add_event_cb(ui->Main_2_img_2, Main_2_img_2_event_handler, LV_EVENT_ALL, ui);
     lv_obj_add_event_cb(ui->Main_2_img_1, Main_2_img_1_event_handler, LV_EVENT_ALL, ui);
+    edgewind_ui_attach_buzzer_tree(ui->Main_2);
 }
 
 static void Main_3_event_handler (lv_event_t *e)
@@ -301,8 +347,11 @@ static void Main_3_img_1_event_handler (lv_event_t *e)
 void events_init_Main_3 (lv_ui *ui)
 {
     lv_obj_add_event_cb(ui->Main_3, Main_3_event_handler, LV_EVENT_ALL, ui);
+    ui_buzzer_attach_click(ui->Main_3_img_1);
+    ui_buzzer_attach_click(ui->Main_3_img_2);
     lv_obj_add_event_cb(ui->Main_3_img_2, Main_3_img_2_event_handler, LV_EVENT_ALL, ui);
     lv_obj_add_event_cb(ui->Main_3_img_1, Main_3_img_1_event_handler, LV_EVENT_ALL, ui);
+    edgewind_ui_attach_buzzer_tree(ui->Main_3);
 }
 
 

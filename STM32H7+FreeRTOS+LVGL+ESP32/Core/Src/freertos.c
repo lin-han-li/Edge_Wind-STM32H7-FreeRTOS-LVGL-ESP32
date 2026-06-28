@@ -39,6 +39,7 @@
 // Demo 已移除，使用自定义 EdgeWind UI
 #include "EdgeWind_UI/edgewind_ui.h"
 #include "edge_comm.h"
+#include "edgewind_buzzer.h"
 #include "ESP32SPI/esp32_spi_debug.h"
 #include "qspi_w25q256.h"
 #include "GUI-Guider_Runtime/gui_assets_sync.h"
@@ -373,6 +374,7 @@ void vApplicationTickHook(void)
   */
 void MX_FREERTOS_Init(void) {
   /* USER CODE BEGIN Init */
+  EdgeWind_Buzzer_Init();
 
   /* USER CODE END Init */
 
@@ -413,6 +415,13 @@ void MX_FREERTOS_Init(void) {
   UploadHandle = osThreadNew(Upload_Task, NULL, &Upload_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
+  static const osThreadAttr_t Buzzer_attributes = {
+    .name = "Buzzer",
+    .stack_size = 512 * 4,
+    .priority = (osPriority_t) osPriorityLow,
+  };
+  (void)osThreadNew(EdgeWind_Buzzer_Task, NULL, &Buzzer_attributes);
+
 #if ESP32_SPI_AUTOTEST_ON_BOOT
   static const osThreadAttr_t ESP32_SPI_Test_attributes = {
     .name = "ESP32SPITest",

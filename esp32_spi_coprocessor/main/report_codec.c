@@ -102,7 +102,7 @@ static const channel_meta_t s_channel_meta[REPORT_MAX_CHANNELS] = {
     {4, "IGBT\xE6\xB8\xA9\xE5\xBA\xA6", "\xC2\xB0""C", "AuxTemp", 20.0f, 125.0f},
     {5, "\xE7\x94\xB5\xE5\xAE\xB9\xE6\xB8\xA9\xE5\xBA\xA6", "\xC2\xB0""C", "AuxTemp", 18.0f, 115.0f},
     {6, "\xE6\x9F\x9C\xE5\x86\x85\xE6\xB9\xBF\xE5\xBA\xA6", "%RH", "AuxHumidity", 8.0f, 98.0f},
-    {7, "\xE9\xA3\x8E\xE6\x9C\xBA\xE8\xB4\x9F\xE8\xBD\xBD", "%", "AuxLoad", 8.0f, 110.0f},
+    {7, "\xE7\xBB\x9D\xE7\xBC\x98\xE7\x94\xB5\xE9\x98\xBB", "k\xCE\xA9", "AuxRiso", 20.0f, 8000.0f},
 };
 
 static const channel_meta_t *find_channel_meta(uint8_t channel_id)
@@ -1029,6 +1029,12 @@ bool report_codec_parse_server_command(const char *body, server_command_event_t 
         if (json_item_to_u32(item, &out_event->chunk_delay_ms)) {
             out_event->has_chunk_delay_ms = true;
         }
+
+        item = find_key_recursive(root, "fft_enabled");
+        if (json_item_to_u32(item, &out_event->fft_enabled)) {
+            out_event->fft_enabled = (out_event->fft_enabled != 0U) ? 1U : 0U;
+            out_event->has_fft_enabled = true;
+        }
         cJSON_Delete(root);
     } else {
         if (strstr(body, "\"command\":\"reset\"") != NULL || strstr(body, "command=reset") != NULL) {
@@ -1052,6 +1058,10 @@ bool report_codec_parse_server_command(const char *body, server_command_event_t 
         out_event->has_http_timeout_ms = fallback_parse_u32(body, "http_timeout_ms", &out_event->http_timeout_ms);
         out_event->has_chunk_kb = fallback_parse_u32(body, "chunk_kb", &out_event->chunk_kb);
         out_event->has_chunk_delay_ms = fallback_parse_u32(body, "chunk_delay_ms", &out_event->chunk_delay_ms);
+        out_event->has_fft_enabled = fallback_parse_u32(body, "fft_enabled", &out_event->fft_enabled);
+        if (out_event->has_fft_enabled) {
+            out_event->fft_enabled = (out_event->fft_enabled != 0U) ? 1U : 0U;
+        }
     }
 
     return out_event->has_reset ||
@@ -1062,5 +1072,6 @@ bool report_codec_parse_server_command(const char *body, server_command_event_t 
            out_event->has_min_interval_ms ||
            out_event->has_http_timeout_ms ||
            out_event->has_chunk_kb ||
-           out_event->has_chunk_delay_ms;
+           out_event->has_chunk_delay_ms ||
+           out_event->has_fft_enabled;
 }

@@ -7,6 +7,7 @@
 #include "gui_assets.h"
 #include "src/generated/gui_guider.h"
 #include "edge_comm.h"
+#include "edgewind_buzzer.h"
 
 lv_ui guider_ui;
 
@@ -71,6 +72,7 @@ void edgewind_ui_on_before_enter_button(void)
     (void)g_boot_autostart_timer;
     (void)boot_autostart_try_cb;
     g_boot_autostart_done = 1;
+    EdgeWind_Buzzer_Play(EDGEWIND_BUZZER_EVT_BOOT_READY);
 }
 
 
