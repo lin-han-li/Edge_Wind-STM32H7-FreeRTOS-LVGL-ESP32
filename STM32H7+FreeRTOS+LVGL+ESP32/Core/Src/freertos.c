@@ -325,7 +325,10 @@ osThreadId_t DSPAlgoHandle;
 const osThreadAttr_t DSPAlgo_attributes = {
   .name = "DSPAlgo",
   .stack_size = 3072 * 4,
-  .priority = (osPriority_t) osPriorityAboveNormal,
+  /* 低于 LVGL(Normal)：UI 每 11ms 刷新可立即抢占 DSP 的 FFT/AI 计算突发，
+     消除每秒约 4 次的周期性卡顿。DSP 消费的是 DMA 已就绪的采集窗口，
+     降优先级只是把计算穿插到 UI 空隙，不丢窗口、不改 250ms 推理节奏。 */
+  .priority = (osPriority_t) osPriorityBelowNormal,
 };
 /* Definitions for Upload */
 osThreadId_t UploadHandle;

@@ -170,3 +170,8 @@ __pycache__/
 # Local private credentials (generated from edge_comm_config.h before publishing)
 MDK-ARM/HARDWORK/EdgeComm/edge_comm_config_private.h
 
+# Keil 构建/烧录产物日志（-b/-r/-f 输出）；需放在 !*.txt 之后才能生效
+MDK-ARM/build_log.txt
+MDK-ARM/rebuild_log.txt
+MDK-ARM/flash_log.txt
+

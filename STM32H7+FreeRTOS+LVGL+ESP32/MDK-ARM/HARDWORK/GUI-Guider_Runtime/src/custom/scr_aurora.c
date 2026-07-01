@@ -9,6 +9,7 @@
 #include "../generated/events_init.h"
 #include "../../gui_assets.h"
 #include "../../../EdgeComm/edge_comm.h"
+#include "edgewind_buzzer.h"
 
 /**********************
  * DEFINES
@@ -35,7 +36,19 @@
 #define EW_AURORA_USE_SHADOW 0
 #endif
 
-/* Tailwind-like palette */
+/* Light premium palette — sky-blue to lavender gradient */
+#define COL_BG        lv_color_hex(0xE8F4FD)   /* light sky-blue top */
+#define COL_BG_BOT    lv_color_hex(0xEEECFD)   /* light lavender bottom */
+#define COL_PANEL     lv_color_hex(0xFFFFFF)   /* white header */
+#define COL_CARD      lv_color_hex(0xFFFFFF)   /* white card */
+#define COL_CARD_PR   lv_color_hex(0xE8F4FD)   /* light blue on press */
+#define COL_ICON_BG   lv_color_hex(0xFFFFFF)   /* base (overridden per-card) */
+#define COL_TEXT      lv_color_hex(0x1E293B)   /* dark slate text */
+#define COL_TEXT_DIM  lv_color_hex(0x64748B)   /* muted secondary text */
+#define COL_DIV       lv_color_hex(0xDDE6F0)   /* subtle divider */
+#define COL_TITLE_HL  lv_color_hex(0x0369A1)   /* deep ocean blue title */
+
+/* Accent colors - slightly deeper for legibility on light background */
 #define COL_BLUE   lv_color_hex(0x0EA5E9)
 #define COL_RED    lv_color_hex(0xEF4444)
 #define COL_PURPLE lv_color_hex(0x8B5CF6)
@@ -128,48 +141,31 @@ static void init_aurora_styles(void)
     }
 
     lv_style_init(&style_glass_panel);
-    lv_style_set_bg_color(&style_glass_panel, lv_color_white());
-    lv_style_set_bg_opa(&style_glass_panel, 180);
-    lv_style_set_border_width(&style_glass_panel, 1);
-    lv_style_set_border_color(&style_glass_panel, lv_color_white());
-#if EW_AURORA_USE_SHADOW
-    lv_style_set_shadow_width(&style_glass_panel, 8);
-    lv_style_set_shadow_color(&style_glass_panel, lv_color_make(0, 0, 0));
-    lv_style_set_shadow_opa(&style_glass_panel, 20);
-#else
+    lv_style_set_bg_color(&style_glass_panel, COL_PANEL);
+    lv_style_set_bg_opa(&style_glass_panel, 255);
+    lv_style_set_border_width(&style_glass_panel, 0);
     lv_style_set_shadow_width(&style_glass_panel, 0);
-#endif
 
+    /* Solid white card with subtle border */
     lv_style_init(&style_card);
-    lv_style_set_bg_color(&style_card, lv_color_white());
-    lv_style_set_bg_opa(&style_card, 200);
+    lv_style_set_bg_color(&style_card, COL_CARD);
+    lv_style_set_bg_opa(&style_card, 255);
     lv_style_set_radius(&style_card, 16);
     lv_style_set_border_width(&style_card, 1);
-    lv_style_set_border_color(&style_card, lv_color_white());
-#if EW_AURORA_USE_SHADOW
-    lv_style_set_shadow_width(&style_card, 16);
-    lv_style_set_shadow_offset_y(&style_card, 6);
-    lv_style_set_shadow_color(&style_card, lv_color_make(0, 0, 0));
-    lv_style_set_shadow_opa(&style_card, 30);
-#else
+    lv_style_set_border_color(&style_card, COL_DIV);
+    lv_style_set_border_opa(&style_card, 255);
     lv_style_set_shadow_width(&style_card, 0);
-#endif
 
+    /* Icon box: transparent base, pastel tint applied per-card inline */
     lv_style_init(&style_icon_box);
-    lv_style_set_bg_color(&style_icon_box, lv_color_white());
-    lv_style_set_bg_opa(&style_icon_box, 255);
-    lv_style_set_radius(&style_icon_box, 14);
-#if EW_AURORA_USE_SHADOW
-    lv_style_set_shadow_width(&style_icon_box, 10);
-    lv_style_set_shadow_color(&style_icon_box, lv_color_hex(0xE2E8F0));
-    lv_style_set_shadow_opa(&style_icon_box, 140);
-#else
+    lv_style_set_bg_color(&style_icon_box, COL_ICON_BG);
+    lv_style_set_bg_opa(&style_icon_box, 0);
+    lv_style_set_radius(&style_icon_box, 16);
     lv_style_set_shadow_width(&style_icon_box, 0);
-#endif
 
     lv_style_init(&style_title);
     lv_style_set_text_font(&style_title, gui_assets_get_font_20());
-    lv_style_set_text_color(&style_title, lv_color_hex(0x334155));
+    lv_style_set_text_color(&style_title, COL_TEXT);
 
     styles_inited = true;
 }
@@ -197,7 +193,7 @@ static lv_obj_t * create_status_item(lv_obj_t * parent, const char * text, lv_ob
 
     lv_obj_t * lbl = lv_label_create(item);
     lv_label_set_text(lbl, text ? text : "");
-    lv_obj_set_style_text_color(lbl, lv_color_hex(0x334155), 0);
+    lv_obj_set_style_text_color(lbl, COL_TEXT, 0);
     lv_obj_set_style_text_font(lbl, gui_assets_get_font_16(), 0);
 
     if (dot_out) *dot_out = dot;
@@ -250,45 +246,8 @@ static void aurora_status_timer_cb(lv_timer_t * t)
 
 static void create_aurora_background(lv_obj_t * parent)
 {
-    lv_obj_t * blob1 = lv_obj_create(parent);
-    lv_obj_remove_style_all(blob1);
-    lv_obj_set_size(blob1, 420, 420);
-    lv_obj_set_style_bg_color(blob1, COL_BLUE, 0);
-    lv_obj_set_style_bg_opa(blob1, 80, 0);
-#if EW_AURORA_USE_GRADIENT
-    lv_obj_set_style_bg_grad_color(blob1, lv_color_white(), 0);
-    lv_obj_set_style_bg_grad_dir(blob1, LV_GRAD_DIR_VER, 0);
-#endif
-    lv_obj_set_style_radius(blob1, LV_RADIUS_CIRCLE, 0);
-    lv_obj_align(blob1, LV_ALIGN_TOP_LEFT, -140, -140);
-    lv_obj_clear_flag(blob1, LV_OBJ_FLAG_SCROLLABLE);
-#if EW_AURORA_BG_ANIM
-    start_float_anim(blob1, 18, 7000, 0);
-#endif
-
-    lv_obj_t * blob2 = lv_obj_create(parent);
-    lv_obj_remove_style_all(blob2);
-    lv_obj_set_size(blob2, 340, 340);
-    lv_obj_set_style_bg_color(blob2, COL_PINK, 0);
-    lv_obj_set_style_bg_opa(blob2, 70, 0);
-    lv_obj_set_style_radius(blob2, LV_RADIUS_CIRCLE, 0);
-    lv_obj_align(blob2, LV_ALIGN_BOTTOM_RIGHT, 60, 60);
-    lv_obj_clear_flag(blob2, LV_OBJ_FLAG_SCROLLABLE);
-#if EW_AURORA_BG_ANIM
-    start_float_anim(blob2, -14, 8000, 800);
-#endif
-
-    lv_obj_t * blob3 = lv_obj_create(parent);
-    lv_obj_remove_style_all(blob3);
-    lv_obj_set_size(blob3, 260, 260);
-    lv_obj_set_style_bg_color(blob3, COL_AMBER, 0);
-    lv_obj_set_style_bg_opa(blob3, 60, 0);
-    lv_obj_set_style_radius(blob3, LV_RADIUS_CIRCLE, 0);
-    lv_obj_align(blob3, LV_ALIGN_CENTER, 40, -10);
-    lv_obj_clear_flag(blob3, LV_OBJ_FLAG_SCROLLABLE);
-#if EW_AURORA_BG_ANIM
-    start_float_anim(blob3, 12, 9000, 1400);
-#endif
+    /* Removed semi-transparent blobs — solid bg set on screen directly */
+    (void)parent;
 }
 
 static void update_page_indicator(uint32_t page)
@@ -307,7 +266,7 @@ static void update_page_indicator(uint32_t page)
             lv_obj_set_style_bg_color(dot, COL_BLUE, 0);
         } else {
             lv_obj_set_width(dot, 8);
-            lv_obj_set_style_bg_color(dot, lv_color_hex(0xCBD5E1), 0);
+            lv_obj_set_style_bg_color(dot, lv_color_hex(0x94A3B8), 0);
         }
     }
 }
@@ -346,6 +305,7 @@ static void aurora_nav_event_cb(lv_event_t * e)
         return;
     }
     lv_indev_wait_release(lv_indev_active());
+    EdgeWind_Buzzer_Play(EDGEWIND_BUZZER_EVT_UI_CLICK);
 
     switch (ctx->target) {
     case AURORA_NAV_REALTIME:
@@ -375,7 +335,7 @@ static void aurora_nav_event_cb(lv_event_t * e)
 }
 
 static lv_obj_t * create_app_card(lv_obj_t * parent, const char * name, uint32_t icon_index,
-                                  lv_color_t glow_color, aurora_nav_ctx_t * nav_ctx)
+                                  lv_color_t accent_color, aurora_nav_ctx_t * nav_ctx)
 {
     lv_obj_t * card = lv_obj_create(parent);
     lv_obj_add_style(card, &style_card, 0);
@@ -386,29 +346,26 @@ static lv_obj_t * create_app_card(lv_obj_t * parent, const char * name, uint32_t
     lv_obj_set_style_pad_gap(card, 8, 0);
     lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_set_style_transform_pivot_x(card, lv_pct(50), LV_PART_MAIN);
-    lv_obj_set_style_transform_pivot_y(card, lv_pct(50), LV_PART_MAIN);
-    lv_obj_set_style_transform_scale(card, 240, LV_STATE_PRESSED);
-
-    lv_obj_t * glow = lv_obj_create(card);
-    lv_obj_remove_style_all(glow);
-    lv_obj_set_size(glow, 220, 70);
-    lv_obj_set_style_bg_color(glow, glow_color, 0);
-    lv_obj_set_style_bg_opa(glow, 26, 0);
-#if EW_AURORA_USE_GRADIENT
-    lv_obj_set_style_bg_grad_color(glow, lv_color_white(), 0);
-    lv_obj_set_style_bg_grad_dir(glow, LV_GRAD_DIR_VER, 0);
-#endif
-    lv_obj_set_style_radius(glow, 16, 0);
-    lv_obj_align(glow, LV_ALIGN_TOP_MID, 0, -10);
-    lv_obj_add_flag(glow, LV_OBJ_FLAG_IGNORE_LAYOUT);
-    lv_obj_move_background(glow);
-    /* 让点击始终命中 card（避免子对象吞掉点击导致“只能点到字才进”） */
-    lv_obj_clear_flag(glow, LV_OBJ_FLAG_CLICKABLE);
+    /* Pressed: light blue tint on light bg */
+    lv_obj_set_style_bg_color(card, COL_CARD_PR, LV_STATE_PRESSED);
+    lv_obj_set_style_bg_opa(card, 255, LV_STATE_PRESSED);
+    /* Accent top strip — 4 px, full width, rounded top by card radius */
+    lv_obj_t * strip = lv_obj_create(card);
+    lv_obj_remove_style_all(strip);
+    lv_obj_set_size(strip, 220, 4);
+    lv_obj_set_style_bg_color(strip, accent_color, 0);
+    lv_obj_set_style_bg_opa(strip, 255, 0);
+    lv_obj_set_style_radius(strip, 0, 0);
+    lv_obj_align(strip, LV_ALIGN_TOP_MID, 0, 0);
+    lv_obj_add_flag(strip, LV_OBJ_FLAG_IGNORE_LAYOUT);
+    lv_obj_clear_flag(strip, LV_OBJ_FLAG_CLICKABLE);
 
     lv_obj_t * icon_box = lv_obj_create(card);
     lv_obj_remove_style_all(icon_box);
     lv_obj_add_style(icon_box, &style_icon_box, 0);
+    /* Tint icon box with per-card accent color for visual depth */
+    lv_obj_set_style_bg_color(icon_box, accent_color, 0);
+    lv_obj_set_style_bg_opa(icon_box, 45, 0);
     lv_obj_set_size(icon_box, 64, 64);
     lv_obj_set_layout(icon_box, LV_LAYOUT_FLEX);
     lv_obj_set_flex_align(icon_box, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -472,7 +429,9 @@ void setup_scr_Aurora(lv_ui * ui)
 
     lv_obj_remove_style_all(ui_AuroraScr);
     lv_obj_set_size(ui_AuroraScr, AURORA_SCREEN_W, AURORA_SCREEN_H);
-    lv_obj_set_style_bg_color(ui_AuroraScr, lv_color_hex(0xF0F9FF), 0);
+    lv_obj_set_style_bg_color(ui_AuroraScr, COL_BG, 0);
+    lv_obj_set_style_bg_grad_color(ui_AuroraScr, COL_BG_BOT, 0);
+    lv_obj_set_style_bg_grad_dir(ui_AuroraScr, LV_GRAD_DIR_VER, 0);
     lv_obj_set_style_bg_opa(ui_AuroraScr, 255, 0);
     lv_obj_set_scrollbar_mode(ui_AuroraScr, LV_SCROLLBAR_MODE_OFF);
     lv_obj_clear_flag(ui_AuroraScr, LV_OBJ_FLAG_SCROLLABLE);
@@ -498,22 +457,25 @@ void setup_scr_Aurora(lv_ui * ui)
 
     lv_obj_t * bar = lv_obj_create(title_box);
     lv_obj_remove_style_all(bar);
-    lv_obj_set_size(bar, 4, 18);
-    lv_obj_set_style_bg_color(bar, COL_BLUE, 0);
+    lv_obj_set_size(bar, 4, 20);
+    lv_obj_set_style_bg_color(bar, COL_TITLE_HL, 0);
     lv_obj_set_style_radius(bar, 2, 0);
 
     lv_obj_t * title_lbl = lv_label_create(title_box);
     lv_label_set_text(title_lbl, "WindSight 智风监测");
-    lv_obj_set_style_text_color(title_lbl, lv_color_hex(0x334155), 0);
+    lv_obj_set_style_text_color(title_lbl, COL_TITLE_HL, 0);
     lv_obj_set_style_text_font(title_lbl, gui_assets_get_font_30(), 0);
 
     lv_obj_t * status_pill = lv_obj_create(header);
     lv_obj_remove_style_all(status_pill);
     /* Two-line pill: Row1(WIFI/TCP/REG/REP) + Row2(NODE:xx) */
     lv_obj_set_size(status_pill, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-    lv_obj_set_style_bg_color(status_pill, lv_color_white(), 0);
-    lv_obj_set_style_bg_opa(status_pill, 120, 0);
+    lv_obj_set_style_bg_color(status_pill, COL_PANEL, 0);
+    lv_obj_set_style_bg_opa(status_pill, 255, 0);
     lv_obj_set_style_radius(status_pill, 18, 0);
+    lv_obj_set_style_border_width(status_pill, 1, 0);
+    lv_obj_set_style_border_color(status_pill, COL_DIV, 0);
+    lv_obj_set_style_border_opa(status_pill, 255, 0);
     lv_obj_set_flex_flow(status_pill, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(status_pill, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_hor(status_pill, 10, 0);
@@ -545,7 +507,7 @@ void setup_scr_Aurora(lv_ui * ui)
 
     lv_obj_t * node_lbl = lv_label_create(row2);
     lv_label_set_text(node_lbl, "NODE:--");
-    lv_obj_set_style_text_color(node_lbl, lv_color_hex(0x334155), 0);
+    lv_obj_set_style_text_color(node_lbl, COL_TEXT_DIM, 0);
     lv_obj_set_style_text_font(node_lbl, gui_assets_get_font_16(), 0);
     s_lbl_node = node_lbl;
 
@@ -609,7 +571,7 @@ void setup_scr_Aurora(lv_ui * ui)
             lv_obj_set_style_bg_color(dot, COL_BLUE, 0);
         } else {
             lv_obj_set_width(dot, 8);
-            lv_obj_set_style_bg_color(dot, lv_color_hex(0xCBD5E1), 0);
+            lv_obj_set_style_bg_color(dot, lv_color_hex(0x94A3B8), 0);
         }
     }
 
