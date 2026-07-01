@@ -353,7 +353,7 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+<!-- ECharts 由 base.html 统一本地加载（vendor/echarts-5.4.3.min.js），此处不再重复引 CDN -->
 <script src="{{ url_for('static', filename='js/chart-zoom-utils.js') }}"></script>
 <script>
 (function() {

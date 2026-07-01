@@ -4,6 +4,7 @@ flask-cors==4.0.0
 flask-login==0.6.3
 flask-socketio==5.3.5
 flask-wtf==1.2.1
+flask-limiter>=3.5.0  # 登录限流（防暴力破解）；未安装时自动降级不限流
 werkzeug==3.0.1
 requests==2.31.0
 python-docx==1.1.0

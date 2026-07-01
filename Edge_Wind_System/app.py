@@ -81,6 +81,12 @@ if CSRFProtect is not None:
 else:
     app.logger.warning("CSRFProtect 未安装（请执行 pip install -r requirements.txt），将跳过 CSRF 防护。")
 
+# ==================== 登录限流（防暴力破解） ====================
+# 仅对 /login 等显式加了 @limiter.limit(...) 的路由生效；
+# 不设全局 default_limits，避免误伤设备上报接口（/api/upload 每秒上报）。
+from edgewind.extensions import init_limiter
+init_limiter(app)
+
 # ==================== 日志系统初始化 ====================
 def setup_logging():
     """配置结构化日志系统"""
@@ -274,6 +280,26 @@ def _edgewind_unauthorized():
 def load_user(user_id):
     """Flask-Login 需要的用户加载函数"""
     return User.query.get(int(user_id))
+
+# ==================== 限流超限处理（HTTP 429） ====================
+from flask import render_template, flash
+
+@app.errorhandler(429)
+def _edgewind_ratelimit_handler(e):
+    """
+    限流触发（如登录尝试过于频繁）时的响应：
+    - API 路由（/api/*）：返回 429 JSON
+    - 页面路由（如 /login 表单提交）：渲染登录页并给出友好提示，避免用户看到裸 JSON
+    """
+    msg = '操作过于频繁，请稍后再试'
+    try:
+        if request.path.startswith('/api/'):
+            return jsonify({'success': False, 'error': msg}), 429
+        # 登录页限流：flash 提示 + 重新渲染登录页
+        flash('登录尝试过于频繁，请 1 分钟后再试', 'error')
+        return render_template('login.html'), 429
+    except Exception:
+        return jsonify({'success': False, 'error': msg}), 429
 
 # ==================== 全局变量（节点管理） ====================
 active_nodes = {}

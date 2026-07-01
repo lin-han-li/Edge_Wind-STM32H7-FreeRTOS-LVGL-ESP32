@@ -8,13 +8,13 @@
     <title>{% block title %}风电场DC系统故障监测与智能诊断平台{% endblock %}</title>
     
     <!-- Bootstrap 5 CSS -->
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="{{ url_for('static', filename='vendor/bootstrap-5.3.2.min.css') }}" rel="stylesheet">
     <!-- Bootstrap Icons -->
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.2/font/bootstrap-icons.css">
+    <link rel="stylesheet" href="{{ url_for('static', filename='vendor/bootstrap-icons/bootstrap-icons.min.css') }}">
     <!-- ECharts 5.0 -->
     <script src="{{ url_for('static', filename='vendor/echarts-5.4.3.min.js') }}"></script>
     <!-- Socket.IO Client -->
-    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <script src="{{ url_for('static', filename='vendor/socket.io-4.5.4.min.js') }}"></script>
     
     <style>
         :root {
@@ -761,7 +761,7 @@
     <div id="toast-container" class="toast-container"></div>
 
     <!-- Bootstrap 5 JS -->
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="{{ url_for('static', filename='vendor/bootstrap-5.3.2.bundle.min.js') }}"></script>
     
     <!-- 基础JavaScript -->
     <script>

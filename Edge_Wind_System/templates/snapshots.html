@@ -328,7 +328,7 @@
 {% block extra_js %}
 <!-- 加版本号避免浏览器缓存导致“改了没效果” -->
 <script src="{{ url_for('static', filename='js/chart-zoom-utils.js') }}?v=20260107_6"></script>
-<script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+<!-- ECharts 由 base.html 统一本地加载（vendor/echarts-5.4.3.min.js），此处不再重复引 CDN -->
 <script>
     let currentEvents = [];
     let currentSnapshotEvent = null;
