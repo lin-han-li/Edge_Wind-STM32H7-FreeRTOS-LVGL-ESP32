@@ -752,6 +752,7 @@
                 type: 'value',
                 name: 'V',
                 nameLocation: 'end',
+                scale: true,
                 splitLine: {
                     lineStyle: { type: 'dashed', opacity: 0.3 }
                 }
@@ -791,9 +792,10 @@
             series: [{
                 name: '历史曲线',
                 type: 'line',
-                smooth: false,
+                smooth: 0.3,
                 symbol: 'none',
-                lineStyle: { width: 1.5 },
+                sampling: 'lttb',
+                lineStyle: { width: 2 },
                 areaStyle: {
                     opacity: 0.1
                 },
@@ -827,11 +829,12 @@
                 return {
                     name: ch.label,
                     type: 'line',
-                    smooth: false,
+                    smooth: 0.3,
                     symbol: 'none',
+                    sampling: 'lttb',
                     data,
                     itemStyle: { color: ch.color },
-                    lineStyle: { color: ch.color, width: 1.5 }
+                    lineStyle: { color: ch.color, width: 2 }
                 };
             }).filter(s => s.data.length > 0);
 
@@ -912,9 +915,13 @@
             },
             series: [{
                 name: config.label,
+                type: 'line',
+                smooth: 0.3,
+                symbol: 'none',
+                sampling: 'lttb',
                 data: seriesData,
                 itemStyle: { color: config.color },
-                lineStyle: { color: config.color },
+                lineStyle: { color: config.color, width: 2 },
                 areaStyle: { color: config.color, opacity: 0.1 }
             }]
         }, { replaceMerge: ['series'], lazyUpdate: true });

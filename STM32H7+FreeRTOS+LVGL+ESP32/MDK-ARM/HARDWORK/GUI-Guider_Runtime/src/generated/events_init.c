@@ -13,6 +13,7 @@
 #include <stdlib.h> /* atoi */
 #include "lvgl.h"
 #include "../../gui_assets.h"
+#include "../../gui_assets_sync.h"
 #include "../../gui_ime_pinyin.h"
 #include "../custom/scr_aurora.h"
 #include "cmsis_os.h"
@@ -59,86 +60,6 @@ void edgewind_ui_attach_buzzer_tree(lv_obj_t *root)
     }
 }
 
-static void Main_1_event_handler (lv_event_t *e)
-{
-    lv_event_code_t code = lv_event_get_code(e);
-    switch (code) {
-    case LV_EVENT_GESTURE:
-    {
-        lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_active());
-        switch(dir) {
-        case LV_DIR_LEFT:
-        {
-            lv_indev_wait_release(lv_indev_active());
-            ui_load_scr_animation(&guider_ui, &guider_ui.Main_2, guider_ui.Main_2_del, &guider_ui.Main_1_del, setup_scr_Main_2, LV_SCR_LOAD_ANIM_FADE_ON, 200, 20, false, false);
-            break;
-        }
-        default:
-            break;
-        }
-        break;
-    }
-    default:
-        break;
-    }
-}
-
-static void Main_1_dot_2_event_handler(lv_event_t *e)
-{
-    lv_ui *ui = (lv_ui *)lv_event_get_user_data(e);
-    if (!ui) {
-        return;
-    }
-    lv_indev_wait_release(lv_indev_active());
-    if (ui->Main_2 == NULL) {
-        setup_scr_Main_2(ui);
-    }
-    gui_assets_patch_images(ui);
-    lv_screen_load_anim(ui->Main_2, LV_SCR_LOAD_ANIM_MOVE_LEFT, 300, 0, false);
-}
-
-static void Main_1_dot_3_event_handler(lv_event_t *e)
-{
-    lv_ui *ui = (lv_ui *)lv_event_get_user_data(e);
-    if (!ui) {
-        return;
-    }
-    lv_indev_wait_release(lv_indev_active());
-    if (ui->Main_3 == NULL) {
-        setup_scr_Main_3(ui);
-    }
-    gui_assets_patch_images(ui);
-    lv_screen_load_anim(ui->Main_3, LV_SCR_LOAD_ANIM_MOVE_LEFT, 300, 0, false);
-}
-
-static void Main_1_tile_1_event_handler(lv_event_t *e)
-{
-    lv_event_code_t code = lv_event_get_code(e);
-    switch (code) {
-    case LV_EVENT_CLICKED:
-    {
-        lv_indev_wait_release(lv_indev_active());
-        ui_load_scr_animation(&guider_ui, &guider_ui.RealtimeMonitor, guider_ui.RealtimeMonitor_del,
-                              &guider_ui.Main_1_del, setup_scr_RealtimeMonitor,
-                              LV_SCR_LOAD_ANIM_FADE_ON, 200, 20, false, false);
-        break;
-    }
-    default:
-        break;
-    }
-}
-
-void events_init_Main_1 (lv_ui *ui)
-{
-    lv_obj_add_event_cb(ui->Main_1, Main_1_event_handler, LV_EVENT_ALL, ui);
-    ui_buzzer_attach_click(ui->Main_1_tile_1);
-    ui_buzzer_attach_click(ui->Main_1_dot_2);
-    ui_buzzer_attach_click(ui->Main_1_dot_3);
-    lv_obj_add_event_cb(ui->Main_1_tile_1, Main_1_tile_1_event_handler, LV_EVENT_CLICKED, ui);
-    lv_obj_add_event_cb(ui->Main_1_dot_2, Main_1_dot_2_event_handler, LV_EVENT_CLICKED, ui);
-    lv_obj_add_event_cb(ui->Main_1_dot_3, Main_1_dot_3_event_handler, LV_EVENT_CLICKED, ui);
-}
-
 static void RealtimeMonitor_back_event_handler(lv_event_t *e)
 {
     lv_ui *ui = (lv_ui *)lv_event_get_user_data(e);
@@ -150,195 +71,66 @@ static void RealtimeMonitor_back_event_handler(lv_event_t *e)
                           setup_scr_Aurora, LV_SCR_LOAD_ANIM_FADE_ON, 200, 20, false, false);
 }
 
-static void Main_2_event_handler (lv_event_t *e)
+/* ================= 全局输入框防遮挡（键盘弹出时把当前输入框抬到键盘上方） =================
+ * 各配置页键盘统一为 800x200 贴底显示（顶边约 y=280），拼音候选条位于键盘上方 lv_layer_top。
+ * 焦点输入框若被键盘（或候选条）遮住，则把其所在的 *_cont_panel 用 translate_y 整体上移，
+ * 使输入框底边落在键盘顶边上方。translate_y 只影响渲染与命中测试、不改布局，复位即置 0。
+ * 面板上移量做上限保护：面板顶边最多到屏幕顶（不会把面板拉出屏幕外看不到标题）。 */
+#define EDGEWIND_KB_INPUT_GAP        8   /* 输入框底边与键盘/候选条之间保留的间隙(px) */
+#define EDGEWIND_KB_CAND_RESERVE     44  /* 为拼音候选条预留的高度(px) */
+
+static lv_obj_t *s_edgewind_kb_lifted_panel = NULL;  /* 当前被上移的面板，NULL 表示无 */
+
+/* 复位上移：把之前抬起的面板 translate_y 归零。幂等，可安全重复调用。 */
+static void edgewind_kb_input_reset(void)
 {
-    lv_event_code_t code = lv_event_get_code(e);
-    switch (code) {
-    case LV_EVENT_GESTURE:
-    {
-        lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_active());
-        switch(dir) {
-        case LV_DIR_LEFT:
-        {
-            lv_indev_wait_release(lv_indev_active());
-            ui_load_scr_animation(&guider_ui, &guider_ui.Main_3, guider_ui.Main_3_del, &guider_ui.Main_2_del, setup_scr_Main_3, LV_SCR_LOAD_ANIM_MOVE_LEFT, 300, 0, false, false);
-            break;
+    if (s_edgewind_kb_lifted_panel != NULL) {
+        if (lv_obj_is_valid(s_edgewind_kb_lifted_panel)) {
+            lv_obj_set_style_translate_y(s_edgewind_kb_lifted_panel, 0, LV_PART_MAIN);
         }
-        case LV_DIR_RIGHT:
-    {
-            lv_indev_wait_release(lv_indev_active());
-            ui_load_scr_animation(&guider_ui, &guider_ui.Main_1, guider_ui.Main_1_del, &guider_ui.Main_2_del, setup_scr_Main_1, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 300, 0, false, false);
-            break;
-        }
-        default:
-            break;
-        }
-        break;
-    }
-    default:
-        break;
+        s_edgewind_kb_lifted_panel = NULL;
     }
 }
 
-static void Main_2_tile_3_event_handler (lv_event_t *e)
+/* 键盘弹出时调用：把 ta 所在面板抬到键盘上方，保证 ta 完整可见。 */
+static void edgewind_kb_input_lift(lv_obj_t *kb, lv_obj_t *ta)
 {
-    lv_event_code_t code = lv_event_get_code(e);
-    switch (code) {
-    case LV_EVENT_CLICKED:
-    {
-        lv_indev_wait_release(lv_indev_active());
-        ui_load_scr_animation(&guider_ui, &guider_ui.ServerConfig, guider_ui.ServerConfig_del, &guider_ui.Main_2_del,
-                              setup_scr_ServerConfig, LV_SCR_LOAD_ANIM_FADE_ON, 200, 20, false, false);
-        break;
-    }
-    default:
-        break;
-    }
-}
-
-static void Main_2_tile_1_event_handler (lv_event_t *e)
-{
-    lv_event_code_t code = lv_event_get_code(e);
-    switch (code) {
-    case LV_EVENT_CLICKED:
-    {
-        lv_indev_wait_release(lv_indev_active());
-        ui_load_scr_animation(&guider_ui, &guider_ui.ParamConfig, guider_ui.ParamConfig_del, &guider_ui.Main_2_del,
-                              setup_scr_ParamConfig, LV_SCR_LOAD_ANIM_FADE_ON, 200, 20, false, false);
-        break;
-    }
-    default:
-        break;
-    }
-}
-
-static void Main_2_tile_2_event_handler (lv_event_t *e)
-{
-    lv_event_code_t code = lv_event_get_code(e);
-    switch (code) {
-    case LV_EVENT_CLICKED:
-    {
-        lv_indev_wait_release(lv_indev_active());
-        ui_load_scr_animation(&guider_ui, &guider_ui.WifiConfig, guider_ui.WifiConfig_del, &guider_ui.Main_2_del,
-                              setup_scr_WifiConfig, LV_SCR_LOAD_ANIM_FADE_ON, 200, 20, false, false);
-        break;
-    }
-    default:
-        break;
-    }
-}
-
-static void Main_2_tile_5_event_handler(lv_event_t *e)
-{
-    lv_event_code_t code = lv_event_get_code(e);
-    switch (code) {
-    case LV_EVENT_CLICKED:
-    {
-        lv_indev_wait_release(lv_indev_active());
-        ui_load_scr_animation(&guider_ui, &guider_ui.DeviceConnect, guider_ui.DeviceConnect_del, &guider_ui.Main_2_del,
-                              setup_scr_DeviceConnect, LV_SCR_LOAD_ANIM_FADE_ON, 200, 20, false, false);
-        break;
-    }
-    default:
-        break;
-    }
-}
-
-static void Main_2_dot_1_event_handler(lv_event_t *e)
-{
-    lv_ui *ui = (lv_ui *)lv_event_get_user_data(e);
-    if (!ui) {
+    edgewind_kb_input_reset();
+    if (kb == NULL || ta == NULL || !lv_obj_is_valid(kb) || !lv_obj_is_valid(ta)) {
         return;
     }
-    lv_indev_wait_release(lv_indev_active());
-    if (ui->Main_1 == NULL) {
-        setup_scr_Main_1(ui);
-    }
-    gui_assets_patch_images(ui);
-    lv_screen_load_anim(ui->Main_1, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 300, 0, false);
-    }
-
-static void Main_2_dot_3_event_handler(lv_event_t *e)
-{
-    lv_ui *ui = (lv_ui *)lv_event_get_user_data(e);
-    if (!ui) {
+    lv_obj_t *panel = lv_obj_get_parent(ta);
+    if (panel == NULL || !lv_obj_is_valid(panel)) {
         return;
     }
-    lv_indev_wait_release(lv_indev_active());
-    if (ui->Main_3 == NULL) {
-        setup_scr_Main_3(ui);
-    }
-    gui_assets_patch_images(ui);
-    lv_screen_load_anim(ui->Main_3, LV_SCR_LOAD_ANIM_MOVE_LEFT, 300, 0, false);
-}
+    lv_obj_t *scr = lv_obj_get_screen(ta);
+    /* 先归零再测量：translate_y 会计入对象 area，须先复位再刷新布局取真实坐标 */
+    lv_obj_set_style_translate_y(panel, 0, LV_PART_MAIN);
+    lv_obj_update_layout(scr ? scr : panel);
 
-void events_init_Main_2 (lv_ui *ui)
-{
-    lv_obj_add_event_cb(ui->Main_2, Main_2_event_handler, LV_EVENT_ALL, ui);
-    ui_buzzer_attach_click(ui->Main_2_tile_1);
-    ui_buzzer_attach_click(ui->Main_2_tile_2);
-    ui_buzzer_attach_click(ui->Main_2_tile_3);
-    ui_buzzer_attach_click(ui->Main_2_tile_5);
-    ui_buzzer_attach_click(ui->Main_2_dot_1);
-    ui_buzzer_attach_click(ui->Main_2_dot_3);
-    lv_obj_add_event_cb(ui->Main_2_tile_1, Main_2_tile_1_event_handler, LV_EVENT_CLICKED, ui);
-    lv_obj_add_event_cb(ui->Main_2_tile_2, Main_2_tile_2_event_handler, LV_EVENT_CLICKED, ui);
-    lv_obj_add_event_cb(ui->Main_2_tile_3, Main_2_tile_3_event_handler, LV_EVENT_CLICKED, ui);
-    lv_obj_add_event_cb(ui->Main_2_tile_5, Main_2_tile_5_event_handler, LV_EVENT_CLICKED, ui);
-    lv_obj_add_event_cb(ui->Main_2_dot_1, Main_2_dot_1_event_handler, LV_EVENT_CLICKED, ui);
-    lv_obj_add_event_cb(ui->Main_2_dot_3, Main_2_dot_3_event_handler, LV_EVENT_CLICKED, ui);
-}
+    /* 统一使用屏幕绝对坐标，避免 ta(相对面板) 与 kb(相对屏幕) 坐标系混用 */
+    lv_area_t ta_area, kb_area, panel_area;
+    lv_obj_get_coords(ta, &ta_area);
+    lv_obj_get_coords(kb, &kb_area);
+    lv_obj_get_coords(panel, &panel_area);
 
-static void Main_3_event_handler (lv_event_t *e)
-{
-    lv_event_code_t code = lv_event_get_code(e);
-    switch (code) {
-    case LV_EVENT_GESTURE:
-    {
-        lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_active());
-        switch(dir) {
-        case LV_DIR_RIGHT:
-        {
-            lv_indev_wait_release(lv_indev_active());
-            ui_load_scr_animation(&guider_ui, &guider_ui.Main_2, guider_ui.Main_2_del, &guider_ui.Main_3_del, setup_scr_Main_2, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 300, 0, false, false);
-            break;
-        }
-        default:
-            break;
-        }
-        break;
-    }
-    default:
-        break;
-    }
-}
+    lv_coord_t ta_bottom = ta_area.y2;
+    lv_coord_t kb_top    = kb_area.y1;
+    lv_coord_t safe_line = kb_top - EDGEWIND_KB_CAND_RESERVE - EDGEWIND_KB_INPUT_GAP;
 
-static void Main_3_dot_1_event_handler(lv_event_t *e)
-{
-    lv_ui *ui = (lv_ui *)lv_event_get_user_data(e);
-    if (!ui) {
-        return;
+    if (ta_bottom <= safe_line) {
+        return; /* 未被遮挡，无需上移 */
     }
-    lv_indev_wait_release(lv_indev_active());
-    if (ui->Main_1 == NULL) {
-        setup_scr_Main_1(ui);
-    }
-    gui_assets_patch_images(ui);
-    lv_screen_load_anim(ui->Main_1, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 300, 0, false);
-}
 
-static void Main_3_dot_2_event_handler(lv_event_t *e)
-{
-    lv_ui *ui = (lv_ui *)lv_event_get_user_data(e);
-    if (!ui) {
-        return;
+    lv_coord_t lift = ta_bottom - safe_line;           /* 需要上移的像素数 */
+    lv_coord_t panel_top = panel_area.y1;              /* 面板当前屏幕顶边(绝对) */
+    if (lift > panel_top) {
+        lift = panel_top;                              /* 上限：面板顶边最多到屏幕顶 */
     }
-    lv_indev_wait_release(lv_indev_active());
-    if (ui->Main_2 == NULL) {
-        setup_scr_Main_2(ui);
+    if (lift > 0) {
+        lv_obj_set_style_translate_y(panel, -lift, LV_PART_MAIN);
+        s_edgewind_kb_lifted_panel = panel;
     }
-    gui_assets_patch_images(ui);
-    lv_screen_load_anim(ui->Main_2, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 300, 0, false);
 }
 
 static void WifiConfig_ta_event_handler(lv_event_t *e)
@@ -357,6 +149,7 @@ static void WifiConfig_ta_event_handler(lv_event_t *e)
             (void)gui_ime_pinyin_attach(ui->WifiConfig_kb);
 #endif
             lv_obj_remove_flag(ui->WifiConfig_kb, LV_OBJ_FLAG_HIDDEN);
+            edgewind_kb_input_lift(ui->WifiConfig_kb, ta);
         }
     }
 }
@@ -370,6 +163,7 @@ static void WifiConfig_kb_event_handler(lv_event_t *e)
     }
     if (code == LV_EVENT_READY || code == LV_EVENT_CANCEL) {
         lv_obj_add_flag(ui->WifiConfig_kb, LV_OBJ_FLAG_HIDDEN);
+        edgewind_kb_input_reset();
     }
 }
 
@@ -406,6 +200,15 @@ static void ui_wifi_cfg_rstrip(char *s)
 static volatile uint8_t g_ui_sd_mounted = 0;
 static volatile FRESULT g_ui_sd_last_err = FR_OK;
 static uint32_t g_ui_sd_last_err_tick = 0;
+
+static FRESULT ui_wait_qspi_sd_idle(uint32_t wait_ms)
+{
+    if (!EdgeWind_SD_WaitIdle(wait_ms)) {
+        printf("[UI_SD] QSPI sync still busy after %lu ms\r\n", (unsigned long)wait_ms);
+        return FR_TIMEOUT;
+    }
+    return FR_OK;
+}
 
 /* 统一 SD 错误码到 UI 状态文本的映射 */
 static void ui_sd_result_to_status(lv_ui *ui, FRESULT res, 
@@ -444,10 +247,12 @@ static void ui_sd_result_to_status(lv_ui *ui, FRESULT res,
 static FRESULT ui_sd_mount_with_mkfs(void)
 {
     /* 检查是否正在 QSPI 同步（防止竞争） */
-    extern volatile uint8_t g_qspi_sd_sync_in_progress;
-    if (g_qspi_sd_sync_in_progress) {
-        printf("[UI_SD] QSPI sync in progress, skip mount\r\n");
-        return FR_DISK_ERR;
+    FRESULT wait_res = ui_wait_qspi_sd_idle(800U);
+    if (wait_res != FR_OK) {
+        return wait_res;
+    }
+    if (!EdgeWind_SD_Lock(1200U)) {
+        return FR_TIMEOUT;
     }
 
     /* 即使已经 mount，也需要验证 SD 卡状态（可能在前一次写入后变为 BUSY/ERROR） */
@@ -459,6 +264,7 @@ static FRESULT ui_sd_mount_with_mkfs(void)
         
         /* 若状态正常，直接返回 */
         if (card_state == SD_TRANSFER_OK && !(disk_st & STA_NOINIT)) {
+            EdgeWind_SD_Unlock();
             return FR_OK;
         }
         
@@ -472,6 +278,7 @@ static FRESULT ui_sd_mount_with_mkfs(void)
     if (g_ui_sd_last_err == FR_NO_FILESYSTEM) {
         if ((osKernelGetTickCount() - g_ui_sd_last_err_tick) < 5000U) {
             printf("[UI_SD] skip mount (cached NO_FILESYSTEM)\r\n");
+            EdgeWind_SD_Unlock();
             return FR_NO_FILESYSTEM;
         }
     }
@@ -488,6 +295,7 @@ static FRESULT ui_sd_mount_with_mkfs(void)
         g_ui_sd_last_err = FR_NOT_READY;
         g_ui_sd_last_err_tick = osKernelGetTickCount();
         printf("[UI_SD] SD not present\r\n");
+        EdgeWind_SD_Unlock();
         return FR_NOT_READY;
     }
 
@@ -505,6 +313,7 @@ static FRESULT ui_sd_mount_with_mkfs(void)
         res = FR_NOT_READY;
         g_ui_sd_last_err = res;
         g_ui_sd_last_err_tick = osKernelGetTickCount();
+        EdgeWind_SD_Unlock();
         return res;
     }
 
@@ -529,6 +338,7 @@ static FRESULT ui_sd_mount_with_mkfs(void)
         if (mkdir_res != FR_OK && mkdir_res != FR_EXIST) {
             printf("[UI_SD] mkdir 0:/config -> %d (non-fatal)\r\n", (int)mkdir_res);
         }
+        EdgeWind_SD_Unlock();
         return FR_OK;
     }
 
@@ -538,6 +348,7 @@ static FRESULT ui_sd_mount_with_mkfs(void)
         printf("[UI_SD] no filesystem, mkfs disabled in UI path\r\n");
         g_ui_sd_last_err = FR_NO_FILESYSTEM;
         g_ui_sd_last_err_tick = osKernelGetTickCount();
+        EdgeWind_SD_Unlock();
         return FR_NO_FILESYSTEM;
 #if 0
         printf("[UI_SD] no filesystem, formatting (FAT32)...\r\n");
@@ -568,6 +379,7 @@ static FRESULT ui_sd_mount_with_mkfs(void)
     g_ui_sd_mounted = 0;
     g_ui_sd_last_err = res;
     g_ui_sd_last_err_tick = osKernelGetTickCount();
+    EdgeWind_SD_Unlock();
     return res;
 }
 
@@ -849,6 +661,7 @@ static void WifiConfig_save_event_handler(lv_event_t *e)
     lv_indev_wait_release(lv_indev_active());
     if (ui->WifiConfig_kb) {
         lv_obj_add_flag(ui->WifiConfig_kb, LV_OBJ_FLAG_HIDDEN);
+        edgewind_kb_input_reset();
     }
     if (ui->WifiConfig_btn_save && lv_obj_is_valid(ui->WifiConfig_btn_save))
         lv_obj_add_state(ui->WifiConfig_btn_save, LV_STATE_DISABLED);
@@ -866,6 +679,7 @@ static void WifiConfig_scan_event_handler(lv_event_t *e)
     lv_indev_wait_release(lv_indev_active());
     if (ui->WifiConfig_kb) {
         lv_obj_add_flag(ui->WifiConfig_kb, LV_OBJ_FLAG_HIDDEN);
+        edgewind_kb_input_reset();
     }
     ui_wifi_cfg_set_status(ui, "正在加载...", 0xFFA500);
     lv_obj_update_layout(ui->WifiConfig);
@@ -883,6 +697,7 @@ static void WifiConfig_back_event_handler(lv_event_t *e)
     lv_indev_wait_release(lv_indev_active());
     if (ui->WifiConfig_kb) {
         lv_obj_add_flag(ui->WifiConfig_kb, LV_OBJ_FLAG_HIDDEN);
+        edgewind_kb_input_reset();
     }
     ui_load_scr_animation(&guider_ui, &guider_ui.Main_1, guider_ui.Main_1_del, &guider_ui.WifiConfig_del,
                           setup_scr_Aurora, LV_SCR_LOAD_ANIM_FADE_ON, 200, 20, false, false);
@@ -904,6 +719,7 @@ static void ServerConfig_ta_event_handler(lv_event_t *e)
             (void)gui_ime_pinyin_attach(ui->ServerConfig_kb);
 #endif
             lv_obj_remove_flag(ui->ServerConfig_kb, LV_OBJ_FLAG_HIDDEN);
+            edgewind_kb_input_lift(ui->ServerConfig_kb, ta);
         }
     }
 }
@@ -917,6 +733,7 @@ static void ServerConfig_kb_event_handler(lv_event_t *e)
     }
     if (code == LV_EVENT_READY || code == LV_EVENT_CANCEL) {
         lv_obj_add_flag(ui->ServerConfig_kb, LV_OBJ_FLAG_HIDDEN);
+        edgewind_kb_input_reset();
     }
 }
 
@@ -929,6 +746,7 @@ static void ServerConfig_back_event_handler(lv_event_t *e)
             lv_indev_wait_release(lv_indev_active());
     if (ui->ServerConfig_kb) {
         lv_obj_add_flag(ui->ServerConfig_kb, LV_OBJ_FLAG_HIDDEN);
+        edgewind_kb_input_reset();
     }
     ui_load_scr_animation(&guider_ui, &guider_ui.Main_1, guider_ui.Main_1_del, &guider_ui.ServerConfig_del,
                           setup_scr_Aurora, LV_SCR_LOAD_ANIM_FADE_ON, 200, 20, false, false);
@@ -1218,6 +1036,7 @@ static void ServerConfig_save_event_handler(lv_event_t *e)
     lv_indev_wait_release(lv_indev_active());
     if (ui->ServerConfig_kb) {
         lv_obj_add_flag(ui->ServerConfig_kb, LV_OBJ_FLAG_HIDDEN);
+        edgewind_kb_input_reset();
     }
     if (ui->ServerConfig_btn_save && lv_obj_is_valid(ui->ServerConfig_btn_save))
         lv_obj_add_state(ui->ServerConfig_btn_save, LV_STATE_DISABLED);
@@ -1234,6 +1053,7 @@ static void ServerConfig_load_event_handler(lv_event_t *e)
     lv_indev_wait_release(lv_indev_active());
     if (ui->ServerConfig_kb) {
         lv_obj_add_flag(ui->ServerConfig_kb, LV_OBJ_FLAG_HIDDEN);
+        edgewind_kb_input_reset();
     }
     ui_server_cfg_set_status(ui, "正在加载...", 0xFFA500);
     lv_obj_update_layout(ui->ServerConfig);
@@ -1801,6 +1621,7 @@ static void ParamConfig_ta_event_handler(lv_event_t *e)
             lv_textarea_clear_selection(ta);
             lv_keyboard_set_textarea(ui->ParamConfig_kb, ta);
             lv_obj_remove_flag(ui->ParamConfig_kb, LV_OBJ_FLAG_HIDDEN);
+            edgewind_kb_input_lift(ui->ParamConfig_kb, ta);
         }
     }
     else if (code == LV_EVENT_VALUE_CHANGED) {
@@ -1817,6 +1638,7 @@ static void ParamConfig_kb_event_handler(lv_event_t *e)
     }
     if (code == LV_EVENT_READY || code == LV_EVENT_CANCEL) {
         lv_obj_add_flag(ui->ParamConfig_kb, LV_OBJ_FLAG_HIDDEN);
+        edgewind_kb_input_reset();
     }
 }
 
@@ -1830,6 +1652,7 @@ static void ParamConfig_apply_preset(lv_ui *ui,
     lv_indev_wait_release(lv_indev_active());
     if (ui->ParamConfig_kb) {
         lv_obj_add_flag(ui->ParamConfig_kb, LV_OBJ_FLAG_HIDDEN);
+        edgewind_kb_input_reset();
     }
 
     if (ui->ParamConfig_ta_heartbeat && lv_obj_is_valid(ui->ParamConfig_ta_heartbeat))
@@ -1882,6 +1705,7 @@ static void ParamConfig_nochunk_event_handler(lv_event_t *e)
     lv_indev_wait_release(lv_indev_active());
     if (ui->ParamConfig_kb) {
         lv_obj_add_flag(ui->ParamConfig_kb, LV_OBJ_FLAG_HIDDEN);
+        edgewind_kb_input_reset();
     }
 
     if (ui->ParamConfig_ta_chunkkb && lv_obj_is_valid(ui->ParamConfig_ta_chunkkb)) {
@@ -1906,6 +1730,7 @@ static void ParamConfig_back_event_handler(lv_event_t *e)
     lv_indev_wait_release(lv_indev_active());
     if (ui->ParamConfig_kb) {
         lv_obj_add_flag(ui->ParamConfig_kb, LV_OBJ_FLAG_HIDDEN);
+        edgewind_kb_input_reset();
     }
     /*
      * 统一返回规则（强约定，避免界面层级混乱）：
@@ -1923,6 +1748,7 @@ static void ParamConfig_load_event_handler(lv_event_t *e)
     lv_indev_wait_release(lv_indev_active());
     if (ui->ParamConfig_kb) {
         lv_obj_add_flag(ui->ParamConfig_kb, LV_OBJ_FLAG_HIDDEN);
+        edgewind_kb_input_reset();
     }
     ui_param_cfg_set_status(ui, "正在加载...", 0xFFA500);
     lv_obj_update_layout(ui->ParamConfig);
@@ -1937,6 +1763,7 @@ static void ParamConfig_save_event_handler(lv_event_t *e)
     lv_indev_wait_release(lv_indev_active());
     if (ui->ParamConfig_kb) {
         lv_obj_add_flag(ui->ParamConfig_kb, LV_OBJ_FLAG_HIDDEN);
+        edgewind_kb_input_reset();
     }
     if (ui->ParamConfig_btn_save && lv_obj_is_valid(ui->ParamConfig_btn_save))
         lv_obj_add_state(ui->ParamConfig_btn_save, LV_STATE_DISABLED);
@@ -1946,13 +1773,22 @@ static void ParamConfig_save_event_handler(lv_event_t *e)
     ui_param_cfg_do_save_sync(ui);
 }
 
-void events_init_Main_3 (lv_ui *ui)
+/* About 返回按钮 → 返回 Aurora 主界面（Main_1） */
+static void About_back_event_handler(lv_event_t *e)
 {
-    lv_obj_add_event_cb(ui->Main_3, Main_3_event_handler, LV_EVENT_ALL, ui);
-    ui_buzzer_attach_click(ui->Main_3_dot_1);
-    ui_buzzer_attach_click(ui->Main_3_dot_2);
-    lv_obj_add_event_cb(ui->Main_3_dot_1, Main_3_dot_1_event_handler, LV_EVENT_CLICKED, ui);
-    lv_obj_add_event_cb(ui->Main_3_dot_2, Main_3_dot_2_event_handler, LV_EVENT_CLICKED, ui);
+    lv_ui *ui = (lv_ui *)lv_event_get_user_data(e);
+    if (!ui) {
+        return;
+    }
+    lv_indev_wait_release(lv_indev_active());
+    ui_load_scr_animation(&guider_ui, &guider_ui.Main_1, guider_ui.Main_1_del, &guider_ui.About_del,
+                          setup_scr_Aurora, LV_SCR_LOAD_ANIM_FADE_ON, 200, 20, false, false);
+}
+
+void events_init_About(lv_ui *ui)
+{
+    ui_buzzer_attach_click(ui->About_btn_back);
+    lv_obj_add_event_cb(ui->About_btn_back, About_back_event_handler, LV_EVENT_CLICKED, ui);
 }
 
 void events_init_RealtimeMonitor(lv_ui *ui)

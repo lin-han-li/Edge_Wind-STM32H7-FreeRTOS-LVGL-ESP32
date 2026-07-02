@@ -33,6 +33,9 @@
 FRESULT GUI_Assets_SyncFromSD(void);
 bool GUI_Assets_QSPIReady(void);
 bool GUI_Assets_GetResSize(gui_res_id_t id, uint32_t * size_out);
+bool EdgeWind_SD_WaitIdle(uint32_t wait_ms);
+bool EdgeWind_SD_Lock(uint32_t wait_ms);
+void EdgeWind_SD_Unlock(void);
 
 /* SD 同步进度标志（供 UI 配置界面检测，避免在 QSPI 同步期间访问 SD） */
 extern volatile uint8_t g_qspi_sd_sync_in_progress;

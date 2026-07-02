@@ -19,6 +19,8 @@ extern "C" {
 typedef struct
 {
 	// === Screen 1 (Main) ===
+	// Runtime note: setup_ui() loads the custom Aurora screen into ui->Main_1.
+	// The generated Main_1 tile fields are kept to preserve the GUI-Guider lv_ui layout.
 	lv_obj_t *Main_1;
 	bool Main_1_del;
 	lv_obj_t *Main_1_header;
@@ -196,6 +198,17 @@ typedef struct
 	lv_obj_t *DeviceConnect_btn_auto;
 	lv_obj_t *DeviceConnect_lbl_auto;
 	lv_obj_t *DeviceConnect_ta_console;
+
+	// About Screen Objects (关于系统 - 纯展示)
+	lv_obj_t *About;
+	bool About_del;
+	lv_obj_t *About_lbl_title;
+	lv_obj_t *About_lbl_fw_value;
+	lv_obj_t *About_lbl_build_value;
+	lv_obj_t *About_lbl_node_value;
+	lv_obj_t *About_lbl_sn_value;
+	lv_obj_t *About_btn_back;
+	lv_obj_t *About_lbl_back;
 }lv_ui;
 
 typedef void (*ui_setup_scr_t)(lv_ui * ui);
@@ -226,11 +239,14 @@ extern lv_ui guider_ui;
 void setup_scr_Main_1(lv_ui *ui);
 void setup_scr_Main_2(lv_ui *ui);
 void setup_scr_Main_3(lv_ui *ui);
+/* 运行时主界面由 custom/scr_aurora.c 的 setup_scr_Aurora() 创建（装入 ui->Main_1）。 */
+void setup_scr_Aurora(lv_ui *ui);
 void setup_scr_RealtimeMonitor(lv_ui *ui);
 void setup_scr_WifiConfig(lv_ui *ui);
 void setup_scr_ServerConfig(lv_ui *ui);
 void setup_scr_ParamConfig(lv_ui *ui);
 void setup_scr_DeviceConnect(lv_ui *ui);
+void setup_scr_About(lv_ui *ui);
 
 
 

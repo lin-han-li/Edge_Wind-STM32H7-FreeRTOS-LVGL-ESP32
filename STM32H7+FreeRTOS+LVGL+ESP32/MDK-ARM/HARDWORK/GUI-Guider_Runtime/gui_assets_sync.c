@@ -5,6 +5,7 @@
 #include "draw/lv_image_dsc.h"
 
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -14,6 +15,7 @@
 
 #include "FreeRTOS.h"
 #include "task.h"
+#include "semphr.h"
 
 typedef struct {
     gui_res_id_t id;
@@ -81,6 +83,55 @@ static uint32_t g_qspi_res_sizes[GUI_RES_COUNT];
 
 /* SD 同步进度标志（供 UI 配置界面检测，避免在 QSPI 同步期间访问 SD 造成竞争） */
 volatile uint8_t g_qspi_sd_sync_in_progress = 0;
+
+static StaticSemaphore_t g_edgewind_sd_mutex_buf;
+static SemaphoreHandle_t g_edgewind_sd_mutex = NULL;
+
+static SemaphoreHandle_t edgewind_sd_mutex_get(void)
+{
+    if (xTaskGetSchedulerState() == taskSCHEDULER_NOT_STARTED) {
+        return NULL;
+    }
+
+    taskENTER_CRITICAL();
+    if (g_edgewind_sd_mutex == NULL) {
+        g_edgewind_sd_mutex = xSemaphoreCreateRecursiveMutexStatic(&g_edgewind_sd_mutex_buf);
+    }
+    taskEXIT_CRITICAL();
+
+    return g_edgewind_sd_mutex;
+}
+
+bool EdgeWind_SD_WaitIdle(uint32_t wait_ms)
+{
+    uint32_t t0 = HAL_GetTick();
+    while (g_qspi_sd_sync_in_progress) {
+        if ((HAL_GetTick() - t0) >= wait_ms) {
+            return false;
+        }
+        vTaskDelay(pdMS_TO_TICKS(5U));
+    }
+    return true;
+}
+
+bool EdgeWind_SD_Lock(uint32_t wait_ms)
+{
+    SemaphoreHandle_t mutex = edgewind_sd_mutex_get();
+    if (mutex == NULL) {
+        return true;
+    }
+
+    TickType_t ticks = (wait_ms == UINT32_MAX) ? portMAX_DELAY : pdMS_TO_TICKS(wait_ms);
+    return (xSemaphoreTakeRecursive(mutex, ticks) == pdTRUE);
+}
+
+void EdgeWind_SD_Unlock(void)
+{
+    SemaphoreHandle_t mutex = g_edgewind_sd_mutex;
+    if (mutex != NULL && xTaskGetSchedulerState() != taskSCHEDULER_NOT_STARTED) {
+        (void)xSemaphoreGiveRecursive(mutex);
+    }
+}
 
 typedef struct {
     uint32_t magic;
@@ -392,12 +443,21 @@ FRESULT GUI_Assets_SyncFromSD(void)
     bool force_update = false;
 
     g_qspi_sd_sync_in_progress = 1; /* 标记 SD 同步开始 */
+    if (!EdgeWind_SD_Lock(30000U)) {
+        printf("[QSPI_FS] SD lock timeout before asset sync\r\n");
+        g_qspi_sd_sync_in_progress = 0;
+        return FR_TIMEOUT;
+    }
+
     g_qspi_assets_ready = 0;
     memset(g_qspi_res_sizes, 0, sizeof(g_qspi_res_sizes));
+
+    (void)QSPI_W25Qxx_ExitMemoryMapped();
 
     if (QSPI_W25Qxx_Init() != QSPI_W25Qxx_OK) {
         printf("[QSPI_FS] QSPI init failed\r\n");
         g_qspi_sd_sync_in_progress = 0;
+        EdgeWind_SD_Unlock();
         return FR_NOT_READY;
     }
 
@@ -406,6 +466,7 @@ FRESULT GUI_Assets_SyncFromSD(void)
     if (res != FR_OK) {
         printf("[QSPI_FS] QSPI mount/mkfs -> %d\r\n", (int)res);
         g_qspi_sd_sync_in_progress = 0;
+        EdgeWind_SD_Unlock();
         return res;
     }
 
@@ -440,10 +501,12 @@ FRESULT GUI_Assets_SyncFromSD(void)
         g_qspi_assets_ready = 1;
         printf("[QSPI_FS] QSPI assets complete, SD sync disabled by EW_QSPI_SYNC_MODE=2\r\n");
         g_qspi_sd_sync_in_progress = 0;
+        EdgeWind_SD_Unlock();
         return FR_OK;
     } else {
         printf("[QSPI_FS] QSPI assets incomplete, SD sync disabled by EW_QSPI_SYNC_MODE=2\r\n");
         g_qspi_sd_sync_in_progress = 0;
+        EdgeWind_SD_Unlock();
         return FR_NOT_READY;
     }
 #endif
@@ -454,6 +517,7 @@ FRESULT GUI_Assets_SyncFromSD(void)
         /* 不在这里进入 memory-mapped，让字体通过 FatFs 加载，图标访问时再按需进入 */
         printf("[QSPI_FS] QSPI assets complete, no SD update requested\r\n");
         g_qspi_sd_sync_in_progress = 0;
+        EdgeWind_SD_Unlock();
         return FR_OK;
     }
 #endif
@@ -482,9 +546,11 @@ FRESULT GUI_Assets_SyncFromSD(void)
         if (qspi_ok) {
             g_qspi_assets_ready = 1;
             g_qspi_sd_sync_in_progress = 0;
+            EdgeWind_SD_Unlock();
             return FR_OK;
         }
         g_qspi_sd_sync_in_progress = 0;
+        EdgeWind_SD_Unlock();
         return res;
     }
 
@@ -552,6 +618,7 @@ FRESULT GUI_Assets_SyncFromSD(void)
     if (QSPI_W25Qxx_Init() != QSPI_W25Qxx_OK) {
         printf("[QSPI_FS] QSPI reinit failed\r\n");
         g_qspi_sd_sync_in_progress = 0;
+        EdgeWind_SD_Unlock();
         return FR_NOT_READY;
     }
     (void)QSPI_W25Qxx_SectorErase(RES_MAGIC_OFFSET);
@@ -623,5 +690,6 @@ FRESULT GUI_Assets_SyncFromSD(void)
     printf("[QSPI_FS] sync done: copied=%lu missing=%lu copy_fail=%lu\r\n",
            (unsigned long)copied, (unsigned long)missing, (unsigned long)copy_fail);
     g_qspi_sd_sync_in_progress = 0; /* 标记同步结束 */
+    EdgeWind_SD_Unlock();
     return FR_OK;
 }

@@ -5616,24 +5616,9 @@
               <FilePath>.\HARDWORK\GUI-Guider_Runtime\src\generated\widgets_init.c</FilePath>
             </File>
             <File>
-              <FileName>setup_scr_Main_1.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>.\HARDWORK\GUI-Guider_Runtime\src\generated\setup_scr_Main_1.c</FilePath>
-            </File>
-            <File>
               <FileName>setup_scr_RealtimeMonitor.c</FileName>
               <FileType>1</FileType>
               <FilePath>.\HARDWORK\GUI-Guider_Runtime\src\generated\setup_scr_RealtimeMonitor.c</FilePath>
-            </File>
-            <File>
-              <FileName>setup_scr_Main_2.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>.\HARDWORK\GUI-Guider_Runtime\src\generated\setup_scr_Main_2.c</FilePath>
-            </File>
-            <File>
-              <FileName>setup_scr_Main_3.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>.\HARDWORK\GUI-Guider_Runtime\src\generated\setup_scr_Main_3.c</FilePath>
             </File>
             <File>
               <FileName>setup_scr_WifiConfig.c</FileName>
@@ -5654,6 +5639,11 @@
               <FileName>setup_scr_DeviceConnect.c</FileName>
               <FileType>1</FileType>
               <FilePath>.\HARDWORK\GUI-Guider_Runtime\src\generated\setup_scr_DeviceConnect.c</FilePath>
+            </File>
+            <File>
+              <FileName>setup_scr_About.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\HARDWORK\GUI-Guider_Runtime\src\generated\setup_scr_About.c</FilePath>
             </File>
             <File>
               <FileName>gui_assets.c</FileName>

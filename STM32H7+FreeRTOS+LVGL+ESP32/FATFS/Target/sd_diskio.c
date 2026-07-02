@@ -54,7 +54,7 @@ See BSP_SD_ErrorCallback() and BSP_SD_AbortCallback() below
  * in case of errors in either BSP_SD_ReadCpltCallback() or BSP_SD_WriteCpltCallback()
  * the value by default is as defined in the BSP platform driver otherwise 30 secs
  */
-#define SD_TIMEOUT 2000U
+#define SD_TIMEOUT (30U * 1000U)
 
 #define SD_DEFAULT_BLOCK_SIZE 512
 
@@ -510,21 +510,21 @@ DRESULT SD_write(BYTE lun, const BYTE *buff, DWORD sector, UINT count)
         ret = BSP_SD_WriteBlocks_DMA((uint32_t*)scratch, (uint32_t)sector++, 1);
         if (ret == MSD_OK )
         {
-          /* wait until the read is successful or a timeout occurs */
+          /* wait until the write is successful or a timeout occurs */
 #if (osCMSIS < 0x20000U)
           /* wait for a message from the queue or a timeout */
           event = osMessageGet(SDQueueID, SD_TIMEOUT);
 
           if (event.status == osEventMessage)
           {
-            if (event.value.v == READ_CPLT_MSG)
+            if (event.value.v == WRITE_CPLT_MSG)
             {
               timer = osKernelSysTick();
               /* block until SDIO IP is ready or a timeout occur */
               while(osKernelSysTick() - timer <SD_TIMEOUT)
 #else
                 status = osMessageQueueGet(SDQueueID, (void *)&event, NULL, SD_TIMEOUT);
-              if ((status == osOK) && (event == READ_CPLT_MSG))
+              if ((status == osOK) && (event == WRITE_CPLT_MSG))
               {
                 timer = osKernelGetTickCount();
                 /* block until SDIO IP is ready or a timeout occur */

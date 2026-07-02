@@ -159,7 +159,7 @@ static void EdgeWind_Buzzer_PlaySegments(const EdgeWind_BuzzerSegment_t *segment
 
 static void EdgeWind_Buzzer_PlayPattern(EdgeWind_BuzzerEvent_t event)
 {
-    static const EdgeWind_BuzzerSegment_t ui_click[] = {{10U, 0U}};
+    static const EdgeWind_BuzzerSegment_t ui_click[] = {{30U, 0U}};
     static const EdgeWind_BuzzerSegment_t boot_ready[] = {{60U, 80U}, {60U, 0U}};
     static const EdgeWind_BuzzerSegment_t success[] = {{40U, 60U}, {40U, 0U}};
     static const EdgeWind_BuzzerSegment_t error[] = {{180U, 0U}};

@@ -27,6 +27,7 @@
 #include "fatfs.h"
 #include "diskio.h"
 #include "bsp_driver_sd.h"
+#include "../GUI-Guider_Runtime/gui_assets_sync.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -1189,12 +1190,19 @@ static bool cfg_parse_u32_relaxed(const char *s, uint32_t *out)
     return true;
 }
 
+static bool esp_wait_qspi_sd_idle(uint32_t wait_ms)
+{
+    return EdgeWind_SD_WaitIdle(wait_ms);
+}
+
 /* 上电/进入界面时加载一次：仅影响通讯参数缓存，不影响 WiFi/Server/SystemConfig_t */
 bool ESP_CommParams_LoadFromSD(void)
 {
     /* 避免与 QSPI/SD 同步竞争（该标志在 GUI_Assets_SyncFromSD 期间置位） */
-    extern volatile uint8_t g_qspi_sd_sync_in_progress;
-    if (g_qspi_sd_sync_in_progress) {
+    if (!esp_wait_qspi_sd_idle(800U)) {
+        return false;
+    }
+    if (!EdgeWind_SD_Lock(1200U)) {
         return false;
     }
 
@@ -1214,11 +1222,13 @@ bool ESP_CommParams_LoadFromSD(void)
     }
 
     if (f_mount(&SDFatFS, (TCHAR const *)SDPath, 1) != FR_OK) {
+        EdgeWind_SD_Unlock();
         return false;
     }
 
     FIL fil;
     if (f_open(&fil, "0:/config/ui_param.cfg", FA_READ) != FR_OK) {
+        EdgeWind_SD_Unlock();
         return false;
     }
 
@@ -1260,6 +1270,7 @@ bool ESP_CommParams_LoadFromSD(void)
     (void)f_close(&fil);
 
     ESP_CommParams_Apply(&p);
+    EdgeWind_SD_Unlock();
     return true;
 }
 
@@ -1277,8 +1288,10 @@ bool ESP_CommParams_LoadFromSD(void)
 static bool esp_sd_try_mount(uint32_t wait_ms)
 {
     /* 避免与 QSPI/SD 同步竞争（该标志在 GUI_Assets_SyncFromSD 期间置位） */
-    extern volatile uint8_t g_qspi_sd_sync_in_progress;
-    if (g_qspi_sd_sync_in_progress) {
+    if (!esp_wait_qspi_sd_idle(800U)) {
+        return false;
+    }
+    if (!EdgeWind_SD_Lock(wait_ms + 400U)) {
         return false;
     }
 
@@ -1293,7 +1306,9 @@ static bool esp_sd_try_mount(uint32_t wait_ms)
         osDelay(5);
     }
 
-    return (f_mount(&SDFatFS, (TCHAR const *)SDPath, 1) == FR_OK);
+    bool ok = (f_mount(&SDFatFS, (TCHAR const *)SDPath, 1) == FR_OK);
+    EdgeWind_SD_Unlock();
+    return ok;
 }
 
 static FRESULT ESP_AI_GoldenReadFloats(const char *path, float *dst, uint32_t count)

@@ -90,7 +90,8 @@ typedef enum {
     AURORA_NAV_PARAM,
     AURORA_NAV_WIFI,
     AURORA_NAV_SERVER,
-    AURORA_NAV_DEVICE
+    AURORA_NAV_DEVICE,
+    AURORA_NAV_ABOUT
 } aurora_nav_target_t;
 
 typedef struct {
@@ -103,6 +104,7 @@ static aurora_nav_ctx_t nav_server;
 static aurora_nav_ctx_t nav_device;
 static aurora_nav_ctx_t nav_param;
 static aurora_nav_ctx_t nav_realtime;
+static aurora_nav_ctx_t nav_about;
 
 /**********************
  * ANIMATION FUNCTIONS
@@ -329,6 +331,10 @@ static void aurora_nav_event_cb(lv_event_t * e)
         ui_load_scr_animation(ctx->ui, &ctx->ui->DeviceConnect, ctx->ui->DeviceConnect_del, &ctx->ui->Main_1_del,
                               setup_scr_DeviceConnect, LV_SCR_LOAD_ANIM_FADE_ON, 200, 20, false, false);
         break;
+    case AURORA_NAV_ABOUT:
+        ui_load_scr_animation(ctx->ui, &ctx->ui->About, ctx->ui->About_del, &ctx->ui->Main_1_del,
+                              setup_scr_About, LV_SCR_LOAD_ANIM_FADE_ON, 200, 20, false, false);
+        break;
     default:
         break;
     }
@@ -423,6 +429,8 @@ void setup_scr_Aurora(lv_ui * ui)
     nav_param.target = AURORA_NAV_PARAM;
     nav_realtime.ui = ui;
     nav_realtime.target = AURORA_NAV_REALTIME;
+    nav_about.ui = ui;
+    nav_about.target = AURORA_NAV_ABOUT;
 
     ui->Main_1 = lv_obj_create(NULL);
     ui_AuroraScr = ui->Main_1;
@@ -549,7 +557,7 @@ void setup_scr_Aurora(lv_ui * ui)
 
     lv_obj_t * p3 = create_grid_page(ui_Carousel);
     create_app_card(p3, "固件升级", 12, COL_TEAL, NULL);
-    create_app_card(p3, "关于系统", 13, COL_BLUE, NULL);
+    create_app_card(p3, "关于系统", 13, COL_BLUE, &nav_about);
 
     ui_PageIndicator = lv_obj_create(ui_AuroraScr);
     lv_obj_remove_style_all(ui_PageIndicator);

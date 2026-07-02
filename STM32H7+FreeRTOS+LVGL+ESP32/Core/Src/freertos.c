@@ -421,7 +421,7 @@ void MX_FREERTOS_Init(void) {
   static const osThreadAttr_t Buzzer_attributes = {
     .name = "Buzzer",
     .stack_size = 512 * 4,
-    .priority = (osPriority_t) osPriorityLow,
+    .priority = (osPriority_t) osPriorityAboveNormal,
   };
   (void)osThreadNew(EdgeWind_Buzzer_Task, NULL, &Buzzer_attributes);
 

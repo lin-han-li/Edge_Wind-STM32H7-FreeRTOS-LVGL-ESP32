@@ -122,6 +122,7 @@ void init_scr_del_flag(lv_ui *ui)
     ui->ServerConfig_del = true;
     ui->ParamConfig_del = true;
     ui->DeviceConnect_del = true;
+    ui->About_del = true;
 }
 
 void setup_bottom_layer(void)
@@ -134,6 +135,9 @@ void setup_ui(lv_ui *ui)
     setup_bottom_layer();
     init_scr_del_flag(ui);
     init_keyboard(ui);
+    /* 主界面 = Aurora 自定义界面（Carousel 轮播 + app_card），见 custom/scr_aurora.c。
+     * setup_scr_Aurora() 会创建界面并存入 ui->Main_1，随后 lv_screen_load 载入。
+     * （原 GUI-Guider 生成的 Main_1/2/3 网格 tile 屏已废弃删除，勿再新增。） */
     setup_scr_Aurora(ui);
     lv_screen_load(ui->Main_1);
 }

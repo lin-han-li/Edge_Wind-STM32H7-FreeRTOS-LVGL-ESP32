@@ -79,18 +79,65 @@
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
             <div class="modal-body">
-                <div class="diagnosis-workbench">
-                    <aside class="diagnosis-pane diagnosis-summary-pane">
-                        <div class="diagnosis-pane-title">故障摘要</div>
+                <ul class="nav nav-tabs diagnosis-tabs" role="tablist">
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link active" id="diag-tabbtn-summary" data-bs-toggle="tab" data-bs-target="#diag-tab-summary" type="button" role="tab">
+                            <i class="bi bi-clipboard-data"></i> 故障摘要
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="diag-tabbtn-ai" data-bs-toggle="tab" data-bs-target="#diag-tab-ai" type="button" role="tab">
+                            <i class="bi bi-stars"></i> AI 诊断
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="diag-tabbtn-graph" data-bs-toggle="tab" data-bs-target="#diag-tab-graph" type="button" role="tab">
+                            <i class="bi bi-diagram-3"></i> 知识图谱
+                        </button>
+                    </li>
+                </ul>
+                <div class="tab-content diagnosis-tab-content">
+                    <!-- 标签1：故障摘要（设备/位置/时间/类型/状态/AI推荐） -->
+                    <div class="tab-pane fade show active diagnosis-tab-pane" id="diag-tab-summary" role="tabpanel">
+                        <div class="diagnosis-pane-title mb-2">故障摘要</div>
                         <div id="fault-details">
                             <!-- 动态填充 -->
                         </div>
-                    </aside>
-                    <section class="diagnosis-pane diagnosis-graph-pane">
+                    </div>
+                    <!-- 标签2：AI 诊断（DeepSeek 分析大段文字 + 推理证据链），整块可滚动 -->
+                    <div class="tab-pane fade diagnosis-tab-pane" id="diag-tab-ai" role="tabpanel">
+                        <div class="ai-diagnosis-card" id="deepseek-diagnosis-panel">
+                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                <strong class="text-info"><i class="bi bi-stars"></i> DeepSeek V4 Pro</strong>
+                                <div class="d-inline-flex gap-2">
+                                    <button type="button" class="btn btn-sm btn-outline-info" id="deepseek-diagnosis-btn" onclick="requestDeepSeekDiagnosis(false)">
+                                        <i class="bi bi-stars"></i> DeepSeek 分析
+                                    </button>
+                                    <button type="button" class="btn btn-sm btn-outline-info" id="deepseek-regenerate-btn" onclick="requestDeepSeekDiagnosis(true)" style="display: none;">
+                                        重新生成
+                                    </button>
+                                </div>
+                            </div>
+                            <div id="deepseek-diagnosis-status" class="small text-muted">正在读取 AI 配置状态...</div>
+                            <div id="deepseek-diagnosis-result" class="mt-2" style="display: none;"></div>
+                        </div>
+                        <div class="diagnosis-insight-header diagnosis-section-gap">
+                            <div>
+                                <div class="diagnosis-pane-title mb-0">AI 推理洞察</div>
+                                <div id="graph-reasoning-status" class="small text-muted">打开工单后加载图谱推理状态...</div>
+                            </div>
+                            <button type="button" class="btn btn-sm btn-outline-info" id="deepseek-graph-btn" onclick="requestGraphReasoning(false)">
+                                <i class="bi bi-diagram-3"></i> 图谱推理
+                            </button>
+                        </div>
+                        <div id="graph-reasoning-panel" class="graph-insight-panel"></div>
+                    </div>
+                    <!-- 标签3：知识图谱（图谱占满 + 下方节点详情） -->
+                    <div class="tab-pane fade diagnosis-tab-pane" id="diag-tab-graph" role="tabpanel">
                         <div class="diagnosis-graph-toolbar">
                             <div>
                                 <div class="diagnosis-pane-title mb-0" id="graph-main-title">本次推理证据链</div>
-                                <div class="diagnosis-pane-subtitle" id="graph-main-subtitle">本次故障的证据、命中根因和建议动作是主诊断路径；点击节点可联动右侧解释</div>
+                                <div class="diagnosis-pane-subtitle" id="graph-main-subtitle">本次故障的证据、命中根因和建议动作是主诊断路径；点击节点可联动下方解释</div>
                                 <div class="diagnosis-graph-legend">
                                     <span><i class="legend-dot legend-dot-fault"></i>故障</span>
                                     <span><i class="legend-dot legend-dot-cause"></i>根因</span>
@@ -114,31 +161,14 @@
                             <div id="diagnosis-graph"></div>
                             <div id="diagnosis-graph-3d-main"></div>
                         </div>
-                    </section>
-                    <aside class="diagnosis-pane diagnosis-insight-pane">
-                        <div class="diagnosis-insight-scroll">
-                            <div class="diagnosis-insight-header">
-                            <div>
-                                <div class="diagnosis-pane-title mb-0">AI 推理洞察</div>
-                                <div id="graph-reasoning-status" class="small text-muted">打开工单后加载图谱推理状态...</div>
-                            </div>
-                            <button type="button" class="btn btn-sm btn-outline-info" id="deepseek-graph-btn" onclick="requestGraphReasoning(false)">
-                                <i class="bi bi-diagram-3"></i> 图谱推理
-                            </button>
-                        </div>
-                        <div id="graph-reasoning-panel" class="graph-insight-panel"></div>
                         <div id="graph-node-detail-panel" class="node-detail-panel">
                             <div class="node-detail-empty">点击图谱节点后，这里显示节点解释和关联证据。</div>
                         </div>
-                        </div>
-                    </aside>
+                    </div>
                 </div>
             </div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
-                <button type="button" class="btn btn-outline-info" id="deepseek-diagnosis-btn" onclick="requestDeepSeekDiagnosis(false)">
-                    <i class="bi bi-stars"></i> DeepSeek 分析
-                </button>
                 <button type="button" class="btn btn-success" onclick="exportWorkOrder()">
                     <i class="bi bi-file-earmark-word"></i> 导出工单
                 </button>
@@ -283,15 +313,14 @@
 
     /* ========== 知识图谱模态框样式 ========== */
     #diagnosisModal .modal-dialog {
-        max-width: 98vw !important;
-        width: 98vw !important;
-        max-height: 96vh;
-        margin: 2vh auto;
+        max-width: 94vw !important;
+        width: min(1180px, 94vw) !important;
+        margin: 3vh auto;
     }
 
     #diagnosisModal .modal-content {
-        height: 96vh !important;
-        max-height: 96vh !important;
+        height: auto !important;
+        max-height: 94vh !important;
         display: flex;
         flex-direction: column;
         background: #ffffff !important;
@@ -317,42 +346,78 @@
         color: #1f2937 !important;
         background: #ffffff !important;
         min-height: 0;
+        display: flex;
+        flex-direction: column;
     }
 
-    .diagnosis-workbench {
-        display: grid;
-        grid-template-columns: clamp(205px, 13vw, 235px) minmax(0, 1fr) clamp(300px, 20vw, 350px);
-        gap: 0.75rem;
-        height: 100%;
+    /* 三标签：故障摘要 / AI 诊断 / 知识图谱 */
+    .diagnosis-tabs {
+        flex: 0 0 auto;
+        margin-bottom: 0.6rem;
+        border-bottom: 1px solid #dee2e6;
+    }
+
+    .diagnosis-tabs .nav-link {
+        color: #475569;
+        font-weight: 600;
+        border: none;
+        border-bottom: 2px solid transparent;
+        padding: 0.4rem 1rem;
+    }
+
+    .diagnosis-tabs .nav-link:hover {
+        color: #2563eb;
+        border-bottom-color: #bfdbfe;
+    }
+
+    .diagnosis-tabs .nav-link.active {
+        color: #1d4ed8;
+        background: transparent;
+        border-bottom-color: #2563eb;
+    }
+
+    .diagnosis-tab-content {
+        flex: 1;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+    }
+
+    .diagnosis-tab-content > .diagnosis-tab-pane {
         min-height: 0;
     }
 
-    .diagnosis-pane {
-        min-width: 0;
+    .diagnosis-tab-content > .diagnosis-tab-pane.active {
+        flex: 1 1 auto;
         min-height: 0;
+    }
+
+    /* 文字类标签（摘要 / AI）整块可滚动 */
+    #diag-tab-summary,
+    #diag-tab-ai {
+        overflow-y: auto;
+        padding: 0.85rem;
         border: 1px solid #e5e7eb;
         border-radius: 8px;
         background: #ffffff;
     }
 
-    .diagnosis-summary-pane {
-        overflow-y: auto;
-        padding: 0.85rem;
-    }
-
-    .diagnosis-insight-pane {
+    /* 知识图谱标签：图谱占满 + 下方节点详情 */
+    #diag-tab-graph.active {
         display: flex;
         flex-direction: column;
         overflow: hidden;
         padding: 0.85rem;
-        gap: 0.85rem;
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        background: #ffffff;
     }
 
-    .diagnosis-graph-pane {
-        display: flex;
-        flex-direction: column;
-        overflow: hidden;
-        padding: 0.85rem;
+    /* 摘要与 AI 洞察之间的分隔 */
+    .diagnosis-section-gap {
+        margin-top: 1rem;
+        padding-top: 0.85rem;
+        border-top: 1px solid #e5e7eb;
     }
 
     .diagnosis-pane-title {
@@ -456,8 +521,8 @@
     }
 
     .diagnosis-graph-shell {
-        flex: 1;
-        min-height: 0;
+        flex: 1 1 auto;
+        min-height: 60vh;
         margin-top: 0.75rem;
         border: 1px solid #eef2f7;
         border-radius: 8px;
@@ -509,13 +574,6 @@
 
     #diagnosisModal #diagnosis-graph canvas {
         display: block;
-    }
-
-    .diagnosis-insight-scroll {
-        flex: 1;
-        min-height: 0;
-        overflow-y: auto;
-        padding-right: 0.1rem;
     }
 
     .diagnosis-insight-header > div {
@@ -599,10 +657,10 @@
     }
 
     #current-ai-recommendation {
-        display: -webkit-box;
-        -webkit-line-clamp: 4;
-        -webkit-box-orient: vertical;
-        overflow: hidden;
+        display: block;
+        white-space: pre-wrap;
+        word-break: break-word;
+        line-height: 1.6;
     }
 
     #diagnosisModal .modal-footer {
@@ -806,7 +864,12 @@
     }
 
     .node-detail-panel {
-        padding-top: 0.75rem;
+        flex: 0 0 auto;
+        margin-top: 0.6rem;
+        padding-top: 0.6rem;
+        border-top: 1px solid #e5e7eb;
+        max-height: 26%;
+        overflow-y: auto;
     }
 
     .node-detail-empty,
@@ -834,29 +897,12 @@
     }
 
     @media (max-width: 1180px) {
-        .diagnosis-workbench {
-            grid-template-columns: 1fr;
-            overflow-y: auto;
-        }
-
-        #diagnosisModal .modal-body {
-            overflow: hidden;
-        }
-
         .diagnosis-graph-shell {
-            min-height: 560px;
+            min-height: 420px;
         }
 
-        .diagnosis-insight-pane {
-            overflow: visible;
-        }
-
-        .diagnosis-summary-pane {
-            overflow: visible;
-        }
-
-        .diagnosis-insight-scroll {
-            overflow: visible;
+        .node-detail-panel {
+            max-height: none;
         }
     }
 
@@ -2885,16 +2931,6 @@
                 <strong>AI推荐:</strong><br>
                 <small class="text-muted" id="current-ai-recommendation">${escapeHtml(fault.ai_recommendation || '暂无推荐')}</small>
             </div>
-            <div class="ai-diagnosis-card mt-3" id="deepseek-diagnosis-panel">
-                <div class="d-flex justify-content-between align-items-center mb-2">
-                    <strong class="text-info"><i class="bi bi-stars"></i> DeepSeek V4 Pro</strong>
-                    <button type="button" class="btn btn-sm btn-outline-info" id="deepseek-regenerate-btn" onclick="requestDeepSeekDiagnosis(true)" style="display: none;">
-                        重新生成
-                    </button>
-                </div>
-                <div id="deepseek-diagnosis-status" class="small text-muted">正在读取 AI 配置状态...</div>
-                <div id="deepseek-diagnosis-result" class="mt-2" style="display: none;"></div>
-            </div>
         `;
 
         document.getElementById('fault-details').innerHTML = detailsHtml;
@@ -2932,6 +2968,30 @@
         // 显示模态框
         const modalElement = document.getElementById('diagnosisModal');
         const modal = new bootstrap.Modal(modalElement);
+
+        // 每次打开重置到"故障摘要"标签
+        ['summary', 'ai', 'graph'].forEach(function(key) {
+            const btn = document.getElementById('diag-tabbtn-' + key);
+            const pane = document.getElementById('diag-tab-' + key);
+            if (btn) btn.classList.toggle('active', key === 'summary');
+            if (pane) {
+                pane.classList.toggle('show', key === 'summary');
+                pane.classList.toggle('active', key === 'summary');
+            }
+        });
+
+        // 切到"知识图谱"标签时才渲染图谱（隐藏容器无法测量尺寸）
+        const graphTabBtn = document.getElementById('diag-tabbtn-graph');
+        if (graphTabBtn && !graphTabBtn.dataset.renderBound) {
+            graphTabBtn.dataset.renderBound = '1';
+            graphTabBtn.addEventListener('shown.bs.tab', function() {
+                setTimeout(() => {
+                    renderKnowledgeGraphView();
+                    if (diagnosisChart) diagnosisChart.resize();
+                    resizeKnowledgeGraph3D();
+                }, 60);
+            });
+        }
 
         // 等待模态框完全显示后调整图表大小
         modalElement.addEventListener('shown.bs.modal', function handler() {

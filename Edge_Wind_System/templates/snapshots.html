@@ -50,24 +50,53 @@
         background: #f8f9fa;
     }
 
-    /* 故障快照详情弹窗：对齐“故障管理-诊断弹窗”的尺寸/布局 */
+    /* 故障快照详情弹窗：宽度适中、高度随内容自适应（上限 90vh），
+       图表用固定合理高度，弹窗大小由内容决定、不再霸屏 */
     #snapshotDetailModal .modal-dialog {
-        max-width: 60% !important;
-        width: 60% !important;
-        max-height: 78.4vh;
-        margin: 1vh auto;
+        max-width: 94vw !important;
+        width: min(1360px, 94vw) !important;
+        margin: 3vh auto;
     }
 
     #snapshotDetailModal .modal-content {
-        height: 78.4vh !important;
-        max-height: 78.4vh !important;
+        height: auto !important;
+        max-height: 90vh !important;
         display: flex;
         flex-direction: column;
+        overflow: hidden;
+    }
+
+    #snapshotDetailModal .modal-header {
+        flex: 0 0 auto;
+        padding: 0.6rem 1rem;
     }
 
     #snapshotDetailModal .modal-body {
-        flex: 1;
-        overflow-y: auto;
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow-y: auto;           /* 内容超过 90vh 时在弹窗内滚动 */
+        -webkit-overflow-scrolling: touch;
+        padding: 0.5rem 1rem;
+    }
+
+    /* 顶部各固定块按内容占高、间距压紧，把纵向空间尽量让给图表 */
+    #snapshotDetailModal .modal-body > .mb-3,
+    #snapshotDetailModal .modal-body > .snapshot-ai-card,
+    #snapshotDetailModal .modal-body > .nav-tabs {
+        flex: 0 0 auto;
+    }
+
+    #snapshotDetailModal .modal-body h6 {
+        margin-bottom: 0.2rem;
+    }
+
+    #snapshotDetailModal .modal-body > .mb-3 {
+        margin-bottom: 0.4rem !important;
+    }
+
+    #snapshotDetailModal .snapshot-ai-card {
+        margin: 0.35rem 0 0.5rem;
+        padding: 0.5rem 0.75rem;
     }
     
     .snapshot-type-label {
@@ -105,11 +134,80 @@
         min-height: 300px;
     }
 
-    /* 详情弹窗内图表：固定更高高度 */
-    #snapshotDetailModal .chart-row .chart-container {
-        height: 47vh;
+    /* ===== 详情弹窗：图表用固定合理高度，弹窗高度随内容自适应 ===== */
+    #snapshotDetailModal #snapshotTabContent > .tab-pane > .mt-3 {
+        margin-top: 0.5rem !important;
+    }
+    #snapshotDetailModal .mt-3 > .nav-pills {
+        margin-bottom: 0.5rem !important;
+    }
+    #snapshotDetailModal .card-body {
+        padding: 0.6rem 0.75rem;
+    }
+    #snapshotDetailModal .card-body > .stats-grid {
+        margin-top: 0.25rem;
+    }
+    #snapshotDetailModal .card-body > .chart-row {
+        margin-top: 0.5rem;
+    }
+    #snapshotDetailModal .card-body > .chart-row .chart-container {
+        height: 300px;
+        min-height: 300px;
+        margin-top: 0.25rem;
+    }
+    /* 四通道同窗图表高度（同窗与单通道互斥，可给更高） */
+    #snapshotDetailModal .snapshot-fast-overlay .chart-container {
+        height: 340px;
         min-height: 340px;
-        margin-top: 0.75rem;
+    }
+
+    /* 单通道选项卡压紧：单行紧凑布局，避免两行 pill 换行占据过多纵向空间 */
+    #snapshotDetailModal .mt-3 > .nav-pills {
+        gap: 0.35rem;
+    }
+    #snapshotDetailModal .mt-3 > .nav-pills .nav-link {
+        padding: 0.3rem 0.7rem;
+        margin-right: 0;
+        border-width: 1px;
+        display: flex;
+        align-items: baseline;
+        gap: 0.4rem;
+    }
+    #snapshotDetailModal .mt-3 > .nav-pills .nav-link .channel-name {
+        font-size: 0.82rem;
+    }
+    #snapshotDetailModal .mt-3 > .nav-pills .nav-link .channel-value {
+        font-size: 0.72rem;
+        margin-top: 0;
+    }
+
+    /* ===== 展开四通道同窗：与单通道详情互斥，避免弹窗过高 =====
+       展开时隐藏下方通道选项卡与单通道详情，只显示同窗两张图 */
+    #snapshotDetailModal .mt-3.fast-overlay-active > .nav-pills,
+    #snapshotDetailModal .mt-3.fast-overlay-active > .tab-content {
+        display: none !important;
+    }
+
+    /* ===== 顶层两个标签：故障波形 / DeepSeek 快照证据解释 ===== */
+    #snapshotDetailModal .snapshot-top-tabs {
+        flex: 0 0 auto;
+        border-bottom: 1px solid #dee2e6;
+    }
+    #snapshotDetailModal .snapshot-top-tabs .nav-link {
+        color: #475569;
+        font-weight: 600;
+        border: none;
+        border-bottom: 2px solid transparent;
+        padding: 0.4rem 1rem;
+    }
+    #snapshotDetailModal .snapshot-top-tabs .nav-link:hover {
+        color: #2563eb;
+        border-bottom-color: #bfdbfe;
+    }
+    #snapshotDetailModal .snapshot-top-tabs .nav-link.active {
+        color: #1d4ed8;
+        background: transparent;
+        border-bottom-color: #2563eb;
     }
 
     .snapshot-ai-card {
@@ -212,27 +310,72 @@
     
     .stats-grid {
         display: grid;
-        grid-template-columns: repeat(4, 1fr);
-        gap: 0.5rem;
+        grid-template-columns: repeat(5, 1fr);
+        gap: 0.6rem;
         margin-top: 0.5rem;
         font-size: 0.9rem;
     }
-    
+
     .stat-item {
-        background: white;
-        padding: 0.5rem;
-        border-radius: 4px;
-        text-align: center;
+        position: relative;
+        background: #ffffff;
+        padding: 0.55rem 0.65rem 0.55rem 0.85rem;
+        border: 1px solid #e5e7eb;
+        border-radius: 10px;
+        box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+        overflow: hidden;
     }
-    
+
+    /* 左侧色条 */
+    .stat-item::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 0;
+        bottom: 0;
+        width: 4px;
+        background: #cbd5e1;
+    }
+
     .stat-label {
-        color: #666;
-        font-size: 0.8rem;
+        color: #64748b;
+        font-size: 0.72rem;
+        font-weight: 600;
+        letter-spacing: 0.02em;
     }
-    
+
     .stat-value {
-        font-weight: bold;
-        color: #333;
+        font-weight: 700;
+        color: #0f172a;
+        font-size: 1.02rem;
+        line-height: 1.25;
+        margin-top: 0.1rem;
+        word-break: break-word;
+    }
+
+    /* 当前值：最重要指标，主色高亮 */
+    .stat-item.stat-item-primary {
+        background: #eff6ff;
+        border-color: #bfdbfe;
+    }
+
+    .stat-item.stat-item-primary::before {
+        background: #2563eb;
+    }
+
+    .stat-item.stat-item-primary .stat-label {
+        color: #1d4ed8;
+    }
+
+    .stat-item.stat-item-primary .stat-value {
+        color: #1e3a8a;
+    }
+
+    /* 窄屏：5 列容易过挤，自动换成两/三列 */
+    @media (max-width: 1200px) {
+        .stats-grid {
+            grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+        }
     }
 </style>
 {% endblock %}
@@ -323,6 +466,7 @@
         </div>
     </div>
 </div>
+<!-- DeepSeek 证据解释已作为详情弹窗内的第二个标签，不再单独弹窗 -->
 {% endblock %}
 
 {% block extra_js %}
@@ -651,7 +795,7 @@
             showError('删除失败: ' + error.message);
         }
     }
-    
+
     // 查看快照详情
     async function viewSnapshotDetail(deviceId, faultCode, timestamp) {
         try {
@@ -712,24 +856,28 @@
         }
         
         let html = `
-            <div class="mb-3">
-                <h6>设备: ${escapeHtml(data.device_id)}</h6>
-                <h6>故障: ${escapeHtml(data.fault_code)} - ${escapeHtml(FAULT_NAMES[data.fault_code] || '未知故障')}</h6>
-                <h6>时间: ${escapeHtml(data.timestamp)}</h6>
+            <div class="mb-2">
+                <h6 class="mb-1">设备: ${escapeHtml(data.device_id)}</h6>
+                <h6 class="mb-1">故障: ${escapeHtml(data.fault_code)} - ${escapeHtml(FAULT_NAMES[data.fault_code] || '未知故障')}</h6>
+                <h6 class="mb-0">时间: ${escapeHtml(data.timestamp)}</h6>
             </div>
-            <div class="snapshot-ai-card">
-                <div class="d-flex justify-content-between align-items-center gap-2">
-                    <div>
-                        <strong class="text-info"><i class="bi bi-stars"></i> DeepSeek 快照证据解释</strong>
-                        <div class="small text-muted" id="snapshot-ai-status">只分析统计摘要、频谱峰值和历史窗口，不发送原始全量帧。</div>
-                    </div>
-                    <button class="btn btn-sm btn-outline-info" id="snapshot-ai-btn" type="button" onclick="requestSnapshotExplanation(false)">
-                        <i class="bi bi-stars"></i> 解释证据
+            <ul class="nav nav-tabs snapshot-top-tabs" id="snapshotTopTabs" role="tablist">
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link active" id="snap-top-waveform-tab"
+                            data-bs-toggle="tab" data-bs-target="#snap-tab-waveform" type="button">
+                        <i class="bi bi-activity"></i> 故障波形
                     </button>
-                </div>
-                <div class="snapshot-ai-result mt-2" id="snapshot-ai-result" style="display:none;"></div>
-            </div>
-            <ul class="nav nav-tabs" id="snapshotTabs" role="tablist">
+                </li>
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link" id="snap-top-ai-tab"
+                            data-bs-toggle="tab" data-bs-target="#snap-tab-ai" type="button">
+                        <i class="bi bi-stars"></i> DeepSeek 快照证据解释
+                    </button>
+                </li>
+            </ul>
+            <div class="tab-content snapshot-top-content" id="snapshotTopContent">
+                <div class="tab-pane fade show active" id="snap-tab-waveform" role="tabpanel">
+                    <ul class="nav nav-tabs mt-2" id="snapshotTabs" role="tablist">
         `;
         
         availableTypes.forEach((type, index) => {
@@ -761,8 +909,41 @@
             `;
         });
         
-        html += '</div>';
+        html += '</div>'; // #snapshotTabContent
+        html += '</div>'; // #snap-tab-waveform
+
+        html += `
+                <div class="tab-pane fade" id="snap-tab-ai" role="tabpanel">
+                    <div class="snapshot-ai-card mt-3">
+                        <div class="d-flex justify-content-between align-items-center gap-2">
+                            <div>
+                                <strong class="text-info"><i class="bi bi-stars"></i> DeepSeek 快照证据解释</strong>
+                                <div class="small text-muted" id="snapshot-ai-status">只分析统计摘要、频谱峰值和历史窗口，不发送原始全量帧。</div>
+                            </div>
+                            <button class="btn btn-sm btn-outline-info" id="snapshot-ai-btn" type="button" onclick="requestSnapshotExplanation(false)">
+                                <i class="bi bi-stars"></i> 解释证据
+                            </button>
+                        </div>
+                        <div class="snapshot-ai-result mt-2" id="snapshot-ai-result" style="display:none;"></div>
+                    </div>
+                </div>
+            </div>
+        `; // close #snap-tab-ai and #snapshotTopContent
         container.innerHTML = html;
+
+        // 记录当前快照事件，供 DeepSeek 证据解释使用
+        currentSnapshotEvent = {
+            device_id: data.device_id,
+            fault_code: data.fault_code,
+            timestamp: data.timestamp
+        };
+        setSnapshotAiState(false, '<i class="bi bi-stars"></i> 解释证据',
+            '只分析统计摘要、频谱峰值和历史窗口，不发送原始全量帧。', 'muted');
+        const aiResultEl = document.getElementById('snapshot-ai-result');
+        if (aiResultEl) {
+            aiResultEl.style.display = 'none';
+            aiResultEl.innerHTML = '';
+        }
         
         // 初始化图表（延迟以确保DOM已渲染）
         setTimeout(() => {
@@ -818,6 +999,26 @@
                             }
                         });
                     }
+                });
+            });
+
+            // 监听顶层标签切换（故障波形 / DeepSeek），切回波形时重算图表尺寸
+            const topTabButtons = document.querySelectorAll('#snapshotTopTabs button[data-bs-toggle="tab"]');
+            topTabButtons.forEach(button => {
+                button.addEventListener('shown.bs.tab', function(event) {
+                    const targetPaneId = event.target.getAttribute('data-bs-target');
+                    if (targetPaneId !== '#snap-tab-waveform') {
+                        return;
+                    }
+                    const charts = document.querySelectorAll('#snap-tab-waveform [id^="chart-"]');
+                    charts.forEach(chartContainer => {
+                        const chartInstance = echarts.getInstanceByDom(chartContainer);
+                        if (chartInstance) {
+                            setTimeout(() => {
+                                chartInstance.resize();
+                            }, 100);
+                        }
+                    });
                 });
             });
         }, 300);
@@ -1105,7 +1306,7 @@
                     <div class="card">
                         <div class="card-body">
                             <div class="stats-grid">
-                                <div class="stat-item">
+                                <div class="stat-item stat-item-primary">
                                     <div class="stat-label">当前值</div>
                                     <div class="stat-value">${formatSnapshotValue(snapshot.current_value)} ${unit}</div>
                                 </div>
@@ -1142,6 +1343,10 @@
         const btn = document.getElementById(`btn-fast-snapshot-${type}`);
         if (!body) return;
         body.classList.toggle('show', shouldShow);
+        // 与单通道详情互斥：展开时同窗独占一屏，折叠时恢复单通道视图
+        const overlay = body.closest('.snapshot-fast-overlay');
+        const pane = overlay ? overlay.closest('.mt-3') : null;
+        if (pane) pane.classList.toggle('fast-overlay-active', shouldShow);
         if (btn) {
             btn.classList.toggle('btn-primary', shouldShow);
             btn.classList.toggle('btn-outline-primary', !shouldShow);
@@ -1155,6 +1360,16 @@
                 ['time', 'freq'].forEach(kind => {
                     const dom = document.getElementById(`chart-fast-${kind}-${type}`);
                     const chart = dom ? echarts.getInstanceByDom(dom) : null;
+                    if (chart) chart.resize();
+                });
+            }, 120);
+        } else {
+            // 折叠后，单通道图重新可见，触发一次 resize 以适配恢复的空间
+            setTimeout(() => {
+                const activePane = document.querySelector(`#${type}-pane .tab-content .tab-pane.active`);
+                if (!activePane) return;
+                activePane.querySelectorAll('.chart-container').forEach(dom => {
+                    const chart = echarts.getInstanceByDom(dom);
                     if (chart) chart.resize();
                 });
             }, 120);
