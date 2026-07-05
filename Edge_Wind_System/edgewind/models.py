@@ -85,6 +85,7 @@ class Device(db.Model):
     # 关联数据点和工单
     datapoints = db.relationship('DataPoint', backref='device', lazy=True, cascade='all, delete-orphan')
     work_orders = db.relationship('WorkOrder', backref='device', lazy=True, cascade='all, delete-orphan')
+    fault_events = db.relationship('FaultEvent', backref='device', lazy=True, cascade='all, delete-orphan')
 
 
 class DataPoint(db.Model):
@@ -111,6 +112,63 @@ class WorkOrder(db.Model):
     ai_recommendation = db.Column(db.Text)
     status = db.Column(db.String(20), default='pending')  # pending, processing, fixed
     ai_analysis_tasks = db.relationship('AIAnalysisTask', backref='work_order', lazy=True, cascade='all, delete-orphan')
+
+
+class FaultEvent(db.Model):
+    """Lightweight fault fact event used by Web dashboard and node summary sync."""
+    __tablename__ = 'fault_events'
+    __table_args__ = (
+        db.Index('idx_fault_events_device_rev', 'device_id', 'updated_rev'),
+        db.Index('idx_fault_events_device_state', 'device_id', 'state'),
+        db.Index('idx_fault_events_code_state', 'fault_code', 'state'),
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    event_key = db.Column(db.String(160), unique=True, nullable=False, index=True)
+    device_id = db.Column(db.String(100), db.ForeignKey('devices.device_id'), nullable=False, index=True)
+    fault_code = db.Column(db.String(20), nullable=False, index=True)
+    severity = db.Column(db.String(20), default='medium', nullable=False, index=True)
+    state = db.Column(db.String(20), default='active', nullable=False, index=True)
+    description = db.Column(db.String(200))
+    root_cause = db.Column(db.String(200))
+    advice_short = db.Column(db.String(240))
+    ai_status = db.Column(db.String(20), default='none', nullable=False)
+    work_order_id = db.Column(db.Integer, db.ForeignKey('work_orders.id'), index=True)
+    updated_rev = db.Column(db.Integer, default=1, nullable=False, index=True)
+    detected_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False, index=True)
+    ack_at = db.Column(db.DateTime)
+    ignored_at = db.Column(db.DateTime)
+    recovered_at = db.Column(db.DateTime)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False, index=True)
+
+    work_order = db.relationship('WorkOrder', backref=db.backref('fault_events', lazy=True))
+
+    def to_dict(self):
+        from edgewind.time_utils import fmt_beijing, iso_beijing
+
+        return {
+            'id': self.id,
+            'fault_id': self.id,
+            'event_key': self.event_key,
+            'device_id': self.device_id,
+            'fault_code': self.fault_code,
+            'severity': self.severity,
+            'status': self.state,
+            'state': self.state,
+            'description': self.description,
+            'root_cause': self.root_cause,
+            'advice_short': self.advice_short,
+            'ai_status': self.ai_status,
+            'work_order_id': self.work_order_id,
+            'updated_rev': self.updated_rev,
+            'timestamp': fmt_beijing(self.detected_at),
+            'detected_at': fmt_beijing(self.detected_at),
+            'detected_at_iso': iso_beijing(self.detected_at),
+            'ack_at': fmt_beijing(self.ack_at) if self.ack_at else None,
+            'ignored_at': fmt_beijing(self.ignored_at) if self.ignored_at else None,
+            'recovered_at': fmt_beijing(self.recovered_at) if self.recovered_at else None,
+            'updated_at': fmt_beijing(self.updated_at) if self.updated_at else None,
+        }
 
 
 class AIAnalysisTask(db.Model):

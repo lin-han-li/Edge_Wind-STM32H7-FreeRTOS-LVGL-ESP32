@@ -423,9 +423,12 @@
         }
 
         .msg-item-icon {
-            font-size: 16px;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            display: inline-block;
             flex-shrink: 0;
-            margin-top: 2px;
+            margin-top: 6px;
         }
 
         .msg-item-content {
@@ -446,19 +449,34 @@
         }
 
         .msg-item.online .msg-item-icon {
-            color: #10b981;
+            background: #10b981;
         }
 
         .msg-item.offline .msg-item-icon {
-            color: #f59e0b;
+            background: #f59e0b;
         }
 
         .msg-item.fault .msg-item-icon {
-            color: #ef4444;
+            background: #ef4444;
         }
 
         .msg-item.info .msg-item-icon {
-            color: #3b82f6;
+            background: #3b82f6;
+        }
+
+        .msg-empty-symbol {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 34px;
+            height: 24px;
+            border-radius: 8px;
+            background: #eef2ff;
+            color: #4f46e5;
+            font-size: 11px;
+            font-weight: 700;
+            font-family: Arial, Helvetica, sans-serif;
+            margin-bottom: 6px;
         }
 
         .user-profile {
@@ -582,8 +600,38 @@
         }
         
         .custom-toast-icon {
-            font-size: 28px;
+            width: 34px;
+            height: 34px;
+            border-radius: 50%;
+            color: #fff;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
             flex-shrink: 0;
+        }
+
+        .custom-toast-icon svg {
+            width: 20px;
+            height: 20px;
+            display: block;
+        }
+
+        .custom-toast.success .custom-toast-icon {
+            background: #28a745;
+        }
+
+        .custom-toast.warning .custom-toast-icon {
+            background: #ffc107;
+            color: #1f2937;
+        }
+
+        .custom-toast.error .custom-toast-icon {
+            background: #dc3545;
+        }
+
+        .custom-toast.info .custom-toast-icon {
+            background: #0dcaf0;
+            color: #073642;
         }
         
         .custom-toast-content {
@@ -675,6 +723,10 @@
                 <i class="bi bi-exclamation-triangle"></i>
                 <span>故障管理</span>
             </a>
+            <a href="/fault-monitor" class="nav-item" data-page="fault-monitor">
+                <i class="bi bi-activity"></i>
+                <span>故障监测</span>
+            </a>
             <a href="/snapshots" class="nav-item" data-page="snapshots">
                 <i class="bi bi-camera"></i>
                 <span>故障快照</span>
@@ -727,7 +779,7 @@
                         </div>
                         <div id="msgListContent" style="max-height: 350px; overflow-y: auto;">
                             <div class="text-center text-muted py-4" id="msgEmptyState">
-                                <i class="bi bi-inbox"></i><br>
+                                <span class="msg-empty-symbol">MSG</span><br>
                                 <small>暂无新消息</small>
                             </div>
                         </div>
@@ -1283,12 +1335,39 @@
             }
         }
 
+        function normalizeNotificationText(value) {
+            return String(value ?? '')
+                .replace(/[\u2705\u274c\u26a0\u2139]/g, '')
+                .replace(/\ufe0f/g, '')
+                .replace(/^\s+/, '');
+        }
+
+        function escapeHtmlText(value) {
+            return String(value ?? '').replace(/[&<>"']/g, ch => ({
+                '&': '&amp;',
+                '<': '&lt;',
+                '>': '&gt;',
+                '"': '&quot;',
+                "'": '&#39;'
+            }[ch]));
+        }
+
+        function getToastIconHtml(type) {
+            const icons = {
+                success: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.2 4.2L19 7"/></svg>',
+                warning: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4l9 16H3L12 4z"/><path d="M12 9v5"/><path d="M12 17.5h.01"/></svg>',
+                error: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M7 7l10 10"/><path d="M17 7L7 17"/></svg>',
+                info: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round"><path d="M12 10v7"/><path d="M12 7h.01"/><circle cx="12" cy="12" r="9"/></svg>'
+            };
+            return icons[type] || icons.info;
+        }
+
         // 添加消息到历史
         function addMessageToHistory(title, type = 'info') {
             const messages = getMessageHistory();
             const newMessage = {
                 id: Date.now(),
-                title: title,
+                title: normalizeNotificationText(title),
                 type: type,
                 timestamp: Date.now()
             };
@@ -1327,26 +1406,26 @@
                 if (messages.length === 0) {
                     content.innerHTML = `
                         <div class="text-center text-muted py-4" id="msgEmptyState">
-                            <i class="bi bi-inbox"></i><br>
+                            <span class="msg-empty-symbol">MSG</span><br>
                             <small>暂无新消息</small>
                         </div>
                     `;
                 } else {
                     const typeConfig = {
-                        'success': { icon: 'bi-circle-fill', class: 'online' },
-                        'warning': { icon: 'bi-circle-fill', class: 'offline' },
-                        'error': { icon: 'bi-circle-fill', class: 'fault' },
-                        'fault': { icon: 'bi-circle-fill', class: 'fault' },
-                        'info': { icon: 'bi-circle-fill', class: 'info' }
+                        'success': { class: 'online' },
+                        'warning': { class: 'offline' },
+                        'error': { class: 'fault' },
+                        'fault': { class: 'fault' },
+                        'info': { class: 'info' }
                     };
 
                     const html = messages.map(msg => {
                         const config = typeConfig[msg.type] || typeConfig['info'];
                         return `
                             <div class="msg-item ${config.class}">
-                                <i class="bi ${config.icon} msg-item-icon"></i>
+                                <span class="msg-item-icon" aria-hidden="true"></span>
                                 <div class="msg-item-content">
-                                    <div class="msg-item-text">${msg.title}</div>
+                                    <div class="msg-item-text">${escapeHtmlText(normalizeNotificationText(msg.title))}</div>
                                     <div class="msg-time">${formatRelativeTime(msg.timestamp)}</div>
                                 </div>
                             </div>
@@ -1401,6 +1480,9 @@
 
         // 全局函数：供其他页面调用
         window.addMessageToHistory = addMessageToHistory;
+        window.normalizeNotificationText = normalizeNotificationText;
+        window.escapeHtmlText = escapeHtmlText;
+        window.getToastIconHtml = getToastIconHtml;
         
         // ========== 全局 Toast 通知函数 ==========
         // 确保在所有页面都可用
@@ -1413,23 +1495,24 @@
             
             // 类型映射
             const typeConfig = {
-                'success': { icon: '✅', color: 'success' },
-                'warning': { icon: '⚠️', color: 'warning' },
-                'error': { icon: '❌', color: 'error' },
-                'info': { icon: 'ℹ️', color: 'info' }
+                'success': { color: 'success' },
+                'warning': { color: 'warning' },
+                'error': { color: 'error' },
+                'info': { color: 'info' }
             };
             
             const config = typeConfig[type] || typeConfig['info'];
+            const safeMessage = escapeHtmlText(normalizeNotificationText(message));
             
             // 创建 Toast 元素
             const toast = document.createElement('div');
             toast.className = `custom-toast ${config.color}`;
             toast.innerHTML = `
-                <span class="custom-toast-icon">${config.icon}</span>
+                <span class="custom-toast-icon" aria-hidden="true">${getToastIconHtml(type)}</span>
                 <div class="custom-toast-content">
-                    <div class="custom-toast-message">${message}</div>
+                    <div class="custom-toast-message">${safeMessage}</div>
                 </div>
-                <span class="custom-toast-close" role="button" aria-label="关闭通知">×</span>
+                <span class="custom-toast-close" role="button" aria-label="关闭通知">x</span>
             `;
             
             // 优化：立即添加到DOM，然后使用requestAnimationFrame触发显示动画
@@ -1455,7 +1538,7 @@
             }, 5000);
         };
 
-        // ========== Toast 关闭按钮：事件委托（修复“× 点了没反应”）==========
+        // ========== Toast 关闭按钮：事件委托 ==========
         document.addEventListener('click', function(e) {
             const btn = e.target && e.target.closest ? e.target.closest('.custom-toast-close') : null;
             if (!btn) return;
@@ -1494,7 +1577,7 @@
             // 对于故障消息，使用 node_id + fault_code 作为去重键
             if (type === 'error' || type === 'fault') {
                 // 尝试从消息中提取节点ID和故障代码
-                // 消息格式示例: "⚠️ 节点 STM32_Node_001 检测到故障: 交流窜入 (E01)"
+                // 消息格式示例: "节点 STM32_Node_001 检测到故障: 交流窜入 (E01)"
                 const nodeIdMatch = message.match(/节点\s+(\S+)\s+检测到故障/);
                 const faultCodeMatch = message.match(/\(([E]\d{2})\)/);
                 
@@ -1645,7 +1728,7 @@
                             // 使用 publishSystemEvent（自带去重逻辑）
                             if (typeof window.publishSystemEvent === 'function') {
                                 window.publishSystemEvent(
-                                    `⚠️ 节点 ${id} 检测到故障: ${faultTypeName} (${currentFaultCode})`,
+                                    `节点 ${id} 检测到故障: ${faultTypeName} (${currentFaultCode})`,
                                     'error'
                                 );
                             }
@@ -1655,7 +1738,7 @@
                             // 使用 publishSystemEvent（自带去重逻辑）
                             if (typeof window.publishSystemEvent === 'function') {
                                 window.publishSystemEvent(
-                                    `✅ 节点 ${id} 故障已清除，恢复正常状态`,
+                                    `节点 ${id} 故障已清除，恢复正常状态`,
                                     'success'
                                 );
                             }

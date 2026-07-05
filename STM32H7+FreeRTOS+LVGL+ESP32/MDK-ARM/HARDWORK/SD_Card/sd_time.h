@@ -11,5 +11,6 @@ bool SD_Time_GetTimestamp(char *buf, size_t len);
 bool SD_Time_GetDatePath(char *buf, size_t len, const char *base_dir);
 bool SD_Time_GetMonthTag(char *buf, size_t len);
 uint32_t SD_Time_GetUnix(void);
+bool SD_Time_SetUnixWithOffset(uint32_t unix_utc, int16_t tz_offset_minutes);
 
 #endif /* SD_TIME_H */

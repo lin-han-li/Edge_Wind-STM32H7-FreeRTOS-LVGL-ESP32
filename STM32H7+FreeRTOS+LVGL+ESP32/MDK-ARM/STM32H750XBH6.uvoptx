@@ -119,8 +119,28 @@
       <TargetDriverDllRegistry>
         <SetRegEntry>
           <Number>0</Number>
+          <Key>ARMRTXEVENTFLAGS</Key>
+          <Name>-L70 -Z18 -C0 -M0 -T1</Name>
+        </SetRegEntry>
+        <SetRegEntry>
+          <Number>0</Number>
+          <Key>DLGTARM</Key>
+          <Name>(1010=-1,-1,-1,-1,0)(6017=-1,-1,-1,-1,0)(1008=-1,-1,-1,-1,0)(6016=-1,-1,-1,-1,0)(1012=-1,-1,-1,-1,0)</Name>
+        </SetRegEntry>
+        <SetRegEntry>
+          <Number>0</Number>
+          <Key>ARMDBGFLAGS</Key>
+          <Name></Name>
+        </SetRegEntry>
+        <SetRegEntry>
+          <Number>0</Number>
+          <Key>DLGUARM</Key>
+          <Name></Name>
+        </SetRegEntry>
+        <SetRegEntry>
+          <Number>0</Number>
           <Key>CMSIS_AGDI</Key>
-          <Name>-X"Any" -UAny -O206 -S8 -C0 -P00000000 -N00("ARM CoreSight SW-DP") -D00(6BA02477) -L00(0) -TO65554 -TC1000000 -TT1000000 -TP20 -TDS8007 -TDT0 -TDC1F -TIEFFFFFFFF -TIP8 -FO15 -FD20000000 -FC8000 -FN1 -FF0STM32H7x_2048 -FS08000000 -FL0200000</Name>
+          <Name>-X"Any" -UAny -O206 -S0 -C0 -P00000000 -N00("ARM CoreSight SW-DP") -D00(6BA02477) -L00(0) -TO65554 -TC1000000 -TT1000000 -TP20 -TDS8007 -TDT0 -TDC1F -TIEFFFFFFFF -TIP8 -FO15 -FD20000000 -FC8000 -FN1 -FF0STM32H7x_2048 -FS08000000 -FL0200000</Name>
         </SetRegEntry>
         <SetRegEntry>
           <Number>0</Number>
@@ -135,12 +155,12 @@
       <DebugFlag>
         <trace>0</trace>
         <periodic>0</periodic>
-        <aLwin>0</aLwin>
+        <aLwin>1</aLwin>
         <aCover>0</aCover>
         <aSer1>0</aSer1>
         <aSer2>0</aSer2>
         <aPa>0</aPa>
-        <viewmode>0</viewmode>
+        <viewmode>1</viewmode>
         <vrSel>0</vrSel>
         <aSym>0</aSym>
         <aTbox>0</aTbox>
@@ -5382,18 +5402,6 @@
       <tvExp>0</tvExp>
       <tvExpOptDlg>0</tvExpOptDlg>
       <bDave2>0</bDave2>
-      <PathWithFileName>.\HARDWORK\GUI-Guider_Runtime\src\generated\setup_scr_Main_1.c</PathWithFileName>
-      <FilenameWithoutPath>setup_scr_Main_1.c</FilenameWithoutPath>
-      <RteFlg>0</RteFlg>
-      <bShared>0</bShared>
-    </File>
-    <File>
-      <GroupNumber>24</GroupNumber>
-      <FileNumber>419</FileNumber>
-      <FileType>1</FileType>
-      <tvExp>0</tvExp>
-      <tvExpOptDlg>0</tvExpOptDlg>
-      <bDave2>0</bDave2>
       <PathWithFileName>.\HARDWORK\GUI-Guider_Runtime\src\generated\setup_scr_RealtimeMonitor.c</PathWithFileName>
       <FilenameWithoutPath>setup_scr_RealtimeMonitor.c</FilenameWithoutPath>
       <RteFlg>0</RteFlg>
@@ -5401,31 +5409,7 @@
     </File>
     <File>
       <GroupNumber>24</GroupNumber>
-      <FileNumber>420</FileNumber>
-      <FileType>1</FileType>
-      <tvExp>0</tvExp>
-      <tvExpOptDlg>0</tvExpOptDlg>
-      <bDave2>0</bDave2>
-      <PathWithFileName>.\HARDWORK\GUI-Guider_Runtime\src\generated\setup_scr_Main_2.c</PathWithFileName>
-      <FilenameWithoutPath>setup_scr_Main_2.c</FilenameWithoutPath>
-      <RteFlg>0</RteFlg>
-      <bShared>0</bShared>
-    </File>
-    <File>
-      <GroupNumber>24</GroupNumber>
-      <FileNumber>421</FileNumber>
-      <FileType>1</FileType>
-      <tvExp>0</tvExp>
-      <tvExpOptDlg>0</tvExpOptDlg>
-      <bDave2>0</bDave2>
-      <PathWithFileName>.\HARDWORK\GUI-Guider_Runtime\src\generated\setup_scr_Main_3.c</PathWithFileName>
-      <FilenameWithoutPath>setup_scr_Main_3.c</FilenameWithoutPath>
-      <RteFlg>0</RteFlg>
-      <bShared>0</bShared>
-    </File>
-    <File>
-      <GroupNumber>24</GroupNumber>
-      <FileNumber>422</FileNumber>
+      <FileNumber>419</FileNumber>
       <FileType>1</FileType>
       <tvExp>0</tvExp>
       <tvExpOptDlg>0</tvExpOptDlg>
@@ -5437,7 +5421,7 @@
     </File>
     <File>
       <GroupNumber>24</GroupNumber>
-      <FileNumber>423</FileNumber>
+      <FileNumber>420</FileNumber>
       <FileType>1</FileType>
       <tvExp>0</tvExp>
       <tvExpOptDlg>0</tvExpOptDlg>
@@ -5449,7 +5433,7 @@
     </File>
     <File>
       <GroupNumber>24</GroupNumber>
-      <FileNumber>424</FileNumber>
+      <FileNumber>421</FileNumber>
       <FileType>1</FileType>
       <tvExp>0</tvExp>
       <tvExpOptDlg>0</tvExpOptDlg>
@@ -5461,7 +5445,7 @@
     </File>
     <File>
       <GroupNumber>24</GroupNumber>
-      <FileNumber>425</FileNumber>
+      <FileNumber>422</FileNumber>
       <FileType>1</FileType>
       <tvExp>0</tvExp>
       <tvExpOptDlg>0</tvExpOptDlg>
@@ -5473,7 +5457,19 @@
     </File>
     <File>
       <GroupNumber>24</GroupNumber>
-      <FileNumber>426</FileNumber>
+      <FileNumber>423</FileNumber>
+      <FileType>1</FileType>
+      <tvExp>0</tvExp>
+      <tvExpOptDlg>0</tvExpOptDlg>
+      <bDave2>0</bDave2>
+      <PathWithFileName>.\HARDWORK\GUI-Guider_Runtime\src\generated\setup_scr_About.c</PathWithFileName>
+      <FilenameWithoutPath>setup_scr_About.c</FilenameWithoutPath>
+      <RteFlg>0</RteFlg>
+      <bShared>0</bShared>
+    </File>
+    <File>
+      <GroupNumber>24</GroupNumber>
+      <FileNumber>424</FileNumber>
       <FileType>1</FileType>
       <tvExp>0</tvExp>
       <tvExpOptDlg>0</tvExpOptDlg>
@@ -5485,7 +5481,7 @@
     </File>
     <File>
       <GroupNumber>24</GroupNumber>
-      <FileNumber>427</FileNumber>
+      <FileNumber>425</FileNumber>
       <FileType>1</FileType>
       <tvExp>0</tvExp>
       <tvExpOptDlg>0</tvExpOptDlg>
@@ -5497,7 +5493,7 @@
     </File>
     <File>
       <GroupNumber>24</GroupNumber>
-      <FileNumber>428</FileNumber>
+      <FileNumber>426</FileNumber>
       <FileType>5</FileType>
       <tvExp>0</tvExp>
       <tvExpOptDlg>0</tvExpOptDlg>
@@ -5509,7 +5505,7 @@
     </File>
     <File>
       <GroupNumber>24</GroupNumber>
-      <FileNumber>429</FileNumber>
+      <FileNumber>427</FileNumber>
       <FileType>5</FileType>
       <tvExp>0</tvExp>
       <tvExpOptDlg>0</tvExpOptDlg>
@@ -5521,7 +5517,7 @@
     </File>
     <File>
       <GroupNumber>24</GroupNumber>
-      <FileNumber>430</FileNumber>
+      <FileNumber>428</FileNumber>
       <FileType>1</FileType>
       <tvExp>0</tvExp>
       <tvExpOptDlg>0</tvExpOptDlg>
@@ -5533,7 +5529,7 @@
     </File>
     <File>
       <GroupNumber>24</GroupNumber>
-      <FileNumber>431</FileNumber>
+      <FileNumber>429</FileNumber>
       <FileType>5</FileType>
       <tvExp>0</tvExp>
       <tvExpOptDlg>0</tvExpOptDlg>
@@ -5553,7 +5549,7 @@
     <RteFlg>0</RteFlg>
     <File>
       <GroupNumber>25</GroupNumber>
-      <FileNumber>432</FileNumber>
+      <FileNumber>430</FileNumber>
       <FileType>1</FileType>
       <tvExp>0</tvExp>
       <tvExpOptDlg>0</tvExpOptDlg>
@@ -5565,7 +5561,7 @@
     </File>
     <File>
       <GroupNumber>25</GroupNumber>
-      <FileNumber>433</FileNumber>
+      <FileNumber>431</FileNumber>
       <FileType>1</FileType>
       <tvExp>0</tvExp>
       <tvExpOptDlg>0</tvExpOptDlg>
@@ -5577,7 +5573,7 @@
     </File>
     <File>
       <GroupNumber>25</GroupNumber>
-      <FileNumber>434</FileNumber>
+      <FileNumber>432</FileNumber>
       <FileType>1</FileType>
       <tvExp>0</tvExp>
       <tvExpOptDlg>0</tvExpOptDlg>
@@ -5589,7 +5585,7 @@
     </File>
     <File>
       <GroupNumber>25</GroupNumber>
-      <FileNumber>435</FileNumber>
+      <FileNumber>433</FileNumber>
       <FileType>4</FileType>
       <tvExp>0</tvExp>
       <tvExpOptDlg>0</tvExpOptDlg>

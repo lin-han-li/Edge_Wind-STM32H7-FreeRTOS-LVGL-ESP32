@@ -277,7 +277,13 @@ static bool is_low_priority_tx_packet(const protocol_packet_t *packet)
 {
     const protocol_event_payload_t *event;
 
-    if (packet == NULL || packet->header.msg_type != PROTOCOL_MSG_EVENT ||
+    if (packet == NULL) {
+        return false;
+    }
+    if (packet->header.msg_type == PROTOCOL_MSG_FAULT_SUMMARY) {
+        return true;
+    }
+    if (packet->header.msg_type != PROTOCOL_MSG_EVENT ||
         packet->header.payload_len < sizeof(protocol_event_payload_t)) {
         return false;
     }
@@ -396,6 +402,45 @@ static void send_tx_result(uint32_t ref_seq, uint32_t frame_id, int http_status,
 
     protocol_packet_prepare(&packet, PROTOCOL_MSG_TX_RESULT, s_session_epoch, 0, 0, 0);
     if (protocol_packet_set_payload(&packet, &payload, sizeof(payload)) == ESP_OK) {
+        queue_packet(&packet);
+    }
+}
+
+static void send_fault_summary(const protocol_fault_summary_payload_t *summary)
+{
+    protocol_packet_t packet;
+
+    if (summary == NULL) {
+        return;
+    }
+
+    protocol_packet_prepare(&packet, PROTOCOL_MSG_FAULT_SUMMARY, s_session_epoch, 0, 0, 0);
+    if (protocol_packet_set_payload(&packet, summary, sizeof(*summary)) == ESP_OK) {
+        ESP_LOGI(TAG,
+                 "FAULT_SUMMARY SPI enqueue rev=%" PRIu32 " count=%u cloud=%u bytes=%u",
+                 summary->latest_rev,
+                 (unsigned int) summary->count,
+                 (unsigned int) summary->cloud_status,
+                 (unsigned int) sizeof(*summary));
+        queue_packet(&packet);
+    }
+}
+
+static void send_time_sync(const protocol_time_sync_payload_t *time_sync)
+{
+    protocol_packet_t packet;
+
+    if (time_sync == NULL || time_sync->valid == 0U) {
+        return;
+    }
+
+    protocol_packet_prepare(&packet, PROTOCOL_MSG_TIME_SYNC, s_session_epoch, 0, 0, 0);
+    if (protocol_packet_set_payload(&packet, time_sync, sizeof(*time_sync)) == ESP_OK) {
+        ESP_LOGI(TAG,
+                 "TIME_SYNC SPI enqueue unix=%" PRIu32 " offset=%d local=%s",
+                 time_sync->unix_utc,
+                 (int) time_sync->tz_offset_minutes,
+                 time_sync->iso_local);
         queue_packet(&packet);
     }
 }
@@ -1219,6 +1264,28 @@ static void process_cloud_event(const cloud_client_event_t *event)
     case CLOUD_CLIENT_EVENT_SERVER_COMMAND:
         apply_server_command_event(&event->server_command);
         break;
+
+    case CLOUD_CLIENT_EVENT_FAULT_SUMMARY:
+    {
+        protocol_fault_summary_payload_t summary;
+        if (cloud_client_get_fault_summary(&summary)) {
+            send_fault_summary(&summary);
+        } else {
+            send_protocol_event(PROTOCOL_EVENT_ERROR, PROTOCOL_RESULT_INTERNAL, 0, 0, 0, "fault_summary_missing");
+        }
+        break;
+    }
+
+    case CLOUD_CLIENT_EVENT_TIME_SYNC:
+    {
+        protocol_time_sync_payload_t time_sync;
+        if (cloud_client_get_time_sync(&time_sync)) {
+            send_time_sync(&time_sync);
+        } else {
+            send_protocol_event(PROTOCOL_EVENT_ERROR, PROTOCOL_RESULT_INTERNAL, 0, 0, 0, "time_sync_missing");
+        }
+        break;
+    }
 
     case CLOUD_CLIENT_EVENT_ERROR:
         lock_status();

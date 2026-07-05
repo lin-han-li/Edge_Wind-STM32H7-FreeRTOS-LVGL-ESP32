@@ -14,6 +14,7 @@ class Config:
     # avoid cross-app session/remember-token collisions across ports.
     SESSION_COOKIE_NAME = os.environ.get('SESSION_COOKIE_NAME', 'edgewind_session')
     REMEMBER_COOKIE_NAME = os.environ.get('REMEMBER_COOKIE_NAME', 'edgewind_remember')
+    EDGEWIND_DISABLE_LOGIN = os.environ.get('EDGEWIND_DISABLE_LOGIN', 'false').strip().lower() in ('1', 'true', 'yes', 'on')
     # Monitoring pages often stay open for hours; keep CSRF valid for 24h by default.
     WTF_CSRF_TIME_LIMIT = int(os.environ.get('WTF_CSRF_TIME_LIMIT', os.environ.get('EDGEWIND_CSRF_TIME_LIMIT', 86400)))
     

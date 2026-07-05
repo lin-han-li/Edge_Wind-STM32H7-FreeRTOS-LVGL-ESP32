@@ -164,6 +164,12 @@ bool ESP_UI_IsWiFiOk(void);
 bool ESP_UI_IsTcpOk(void);
 bool ESP_UI_IsRegOk(void);
 const char *ESP_UI_NodeId(void);
+const char *ESP_UI_FaultCode(void);
+const char *ESP_UI_FaultName(void);
+const char *ESP_UI_FaultLevelText(void);
+const char *ESP_UI_FaultAdvice(void);
+bool ESP_UI_FaultLogSdOk(void);
+const char *ESP_UI_FaultLogStatus(void);
 void ESP_UI_InvalidateReg(void);
 
 #ifdef __cplusplus

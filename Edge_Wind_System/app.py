@@ -20,7 +20,7 @@ from logging.handlers import RotatingFileHandler
 from flask import Flask, request, jsonify, redirect, url_for
 from flask_cors import CORS
 from flask_socketio import SocketIO
-from flask_login import LoginManager
+from flask_login import LoginManager, current_user, login_user
 from concurrent.futures import ThreadPoolExecutor
 
 # Flask-WTF（可选）：用于 CSRFProtect
@@ -281,6 +281,39 @@ def load_user(user_id):
     """Flask-Login 需要的用户加载函数"""
     return User.query.get(int(user_id))
 
+
+@app.before_request
+def _edgewind_disable_login_autologin():
+    """现场网关模式：EDGEWIND_DISABLE_LOGIN=true 时自动使用本地管理员会话。"""
+    if not app.config.get('EDGEWIND_DISABLE_LOGIN'):
+        return None
+    if request.path.startswith('/static/'):
+        return None
+    try:
+        if current_user.is_authenticated:
+            return None
+    except Exception:
+        pass
+    try:
+        admin_username = (os.environ.get('EDGEWIND_ADMIN_USERNAME') or 'Edge_Wind').strip() or 'Edge_Wind'
+        admin = User.query.filter_by(username=admin_username).first() or User.query.order_by(User.id.asc()).first()
+        if not admin:
+            admin = User(username=admin_username)
+            init_pwd = (os.environ.get('EDGEWIND_ADMIN_INIT_PASSWORD') or '').strip()
+            if not init_pwd:
+                init_pwd = f"{secrets.token_urlsafe(24)}A1!"
+                app.logger.warning(
+                    "EDGEWIND_DISABLE_LOGIN created local admin %s with a generated password; set EDGEWIND_ADMIN_INIT_PASSWORD for a stable password.",
+                    admin_username
+                )
+            admin.set_password(init_pwd, app.config)
+            db.session.add(admin)
+            db.session.commit()
+        login_user(admin, remember=True)
+    except Exception as exc:
+        app.logger.warning("EDGEWIND_DISABLE_LOGIN auto-login failed: %s", exc)
+    return None
+
 # ==================== 限流超限处理（HTTP 429） ====================
 from flask import render_template, flash
 
@@ -401,6 +434,54 @@ with app.app_context():
             if history_schema_changed:
                 db.session.commit()
                 app.logger.info("HistoryData schema has been extended for aux4 fields")
+            fault_event_cols = {
+                row[1]
+                for row in db.session.execute(text("PRAGMA table_info(fault_events)")).fetchall()
+            }
+            fault_event_schema_changed = False
+            for col_name, col_type in {
+                'description': 'VARCHAR(200)',
+                'advice_short': 'VARCHAR(240)',
+                'ai_status': "VARCHAR(20) NOT NULL DEFAULT 'none'",
+                'ignored_at': 'DATETIME',
+            }.items():
+                if col_name not in fault_event_cols:
+                    db.session.execute(text(f"ALTER TABLE fault_events ADD COLUMN {col_name} {col_type}"))
+                    fault_event_schema_changed = True
+            if fault_event_schema_changed:
+                db.session.execute(text("UPDATE fault_events SET description = COALESCE(description, fault_code)"))
+                if 'recommendation' in fault_event_cols:
+                    db.session.execute(text("UPDATE fault_events SET advice_short = COALESCE(advice_short, recommendation)"))
+                if 'ignore_at' in fault_event_cols:
+                    db.session.execute(text("UPDATE fault_events SET ignored_at = COALESCE(ignored_at, ignore_at)"))
+                db.session.commit()
+                app.logger.info("FaultEvent schema has been extended for node summary sync")
+            oversized_fault_revs = db.session.execute(text(
+                "SELECT id FROM fault_events "
+                "WHERE updated_rev IS NULL OR updated_rev <= 0 OR updated_rev >= 4294967295 "
+                "ORDER BY COALESCE(updated_at, detected_at), id"
+            )).fetchall()
+            if oversized_fault_revs:
+                rev_base = max(1, int(time.time()) - len(oversized_fault_revs) - 1)
+                for offset, row in enumerate(oversized_fault_revs, start=1):
+                    db.session.execute(
+                        text("UPDATE fault_events SET updated_rev = :rev WHERE id = :id"),
+                        {'rev': rev_base + offset, 'id': row[0]},
+                    )
+                db.session.commit()
+                app.logger.info("Normalized %s legacy FaultEvent revisions to uint32 range", len(oversized_fault_revs))
+            for index_sql in (
+                "CREATE INDEX IF NOT EXISTS idx_fault_events_device_rev ON fault_events (device_id, updated_rev)",
+                "CREATE INDEX IF NOT EXISTS idx_fault_events_device_state ON fault_events (device_id, state)",
+                "CREATE INDEX IF NOT EXISTS idx_fault_events_code_state ON fault_events (fault_code, state)",
+                "CREATE INDEX IF NOT EXISTS idx_work_orders_device_time ON work_orders (device_id, fault_time)",
+                "CREATE INDEX IF NOT EXISTS idx_work_orders_status_time ON work_orders (status, fault_time)",
+                "CREATE INDEX IF NOT EXISTS idx_fault_snapshots_device_code_time ON fault_snapshots (device_id, fault_code, timestamp)",
+                "CREATE INDEX IF NOT EXISTS idx_history_data_device_time ON history_data (device_id, timestamp)",
+                "CREATE INDEX IF NOT EXISTS idx_ai_tasks_work_type_status ON ai_analysis_tasks (work_order_id, task_type, status)",
+            ):
+                db.session.execute(text(index_sql))
+            db.session.commit()
         stale_ai_tasks = AIAnalysisTask.query.filter(AIAnalysisTask.status.in_(['queued', 'running'])).update({
             'status': 'failed',
             'error_message': 'server restarted before AI analysis finished',

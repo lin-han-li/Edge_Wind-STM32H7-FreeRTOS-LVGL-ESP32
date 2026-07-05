@@ -15,6 +15,7 @@
 #include "esp_http_client.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "cJSON.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
@@ -33,7 +34,10 @@ static const char *TAG = "cloud_client";
 #define CLOUD_QUEUE_LENGTH 32
 #define CLOUD_JSON_SCRATCH_LEN 2048
 #define CLOUD_RESPONSE_MAX_LEN 1024
+#define CLOUD_FAULT_RESPONSE_MAX_LEN 4096
 #define CLOUD_LOOP_POLL_MS 200
+#define CLOUD_FAULT_SYNC_INTERVAL_MS 2000U
+#define CLOUD_TIME_SYNC_PUSH_INTERVAL_MS 60000U
 #define CLOUD_SUBMIT_QUEUE_TIMEOUT_MS 20
 #define CLOUD_SUMMARY_COALESCE_THRESHOLD 4
 #define CLOUD_FULL_HTTP_TIMEOUT_MIN_MS 2500U
@@ -85,6 +89,17 @@ static bool s_registered;
 static int64_t s_last_request_us;
 static uint32_t s_report_transport_fail_streak;
 static int64_t s_last_wifi_recover_us;
+static int64_t s_last_fault_sync_us;
+static uint32_t s_fault_since_rev;
+static uint32_t s_last_pushed_fault_rev;
+static bool s_fault_summary_sent_once;
+static protocol_fault_summary_payload_t s_latest_fault_summary;
+static bool s_latest_fault_summary_valid;
+static portMUX_TYPE s_fault_summary_mux = portMUX_INITIALIZER_UNLOCKED;
+static protocol_time_sync_payload_t s_latest_time_sync;
+static bool s_latest_time_sync_valid;
+static portMUX_TYPE s_time_sync_mux = portMUX_INITIALIZER_UNLOCKED;
+static int64_t s_last_time_sync_push_us;
 static int s_full_raw_sock = -1;
 static char s_full_raw_host[96];
 static uint16_t s_full_raw_port;
@@ -117,6 +132,271 @@ static void post_event(cloud_client_event_id_t id,
     if (s_callback != NULL) {
         s_callback(&event, s_callback_ctx);
     }
+}
+
+static void copy_fixed_string(char *dst, size_t dst_len, const char *src)
+{
+    if (dst == NULL || dst_len == 0U) {
+        return;
+    }
+    dst[0] = '\0';
+    if (src == NULL) {
+        return;
+    }
+    strncpy(dst, src, dst_len - 1U);
+    dst[dst_len - 1U] = '\0';
+}
+
+static void store_fault_summary(const protocol_fault_summary_payload_t *summary)
+{
+    if (summary == NULL) {
+        return;
+    }
+    portENTER_CRITICAL(&s_fault_summary_mux);
+    s_latest_fault_summary = *summary;
+    s_latest_fault_summary_valid = true;
+    portEXIT_CRITICAL(&s_fault_summary_mux);
+}
+
+bool cloud_client_get_fault_summary(protocol_fault_summary_payload_t *out_summary)
+{
+    bool valid;
+
+    if (out_summary == NULL) {
+        return false;
+    }
+    portENTER_CRITICAL(&s_fault_summary_mux);
+    valid = s_latest_fault_summary_valid;
+    if (valid) {
+        *out_summary = s_latest_fault_summary;
+    }
+    portEXIT_CRITICAL(&s_fault_summary_mux);
+    return valid;
+}
+
+static void post_fault_summary_event(const protocol_fault_summary_payload_t *summary)
+{
+    cloud_client_event_t event = {
+        .id = CLOUD_CLIENT_EVENT_FAULT_SUMMARY,
+        .error = ESP_OK,
+        .http_status = 200,
+    };
+
+    if (summary == NULL) {
+        return;
+    }
+    store_fault_summary(summary);
+    ESP_LOGI(TAG,
+             "fault summary event push rev=%" PRIu32 " count=%u cloud=%u",
+             summary->latest_rev,
+             (unsigned int) summary->count,
+             (unsigned int) summary->cloud_status);
+    event.ref_seq = summary->latest_rev;
+    event.frame_id = ((uint32_t) summary->count << 8) | summary->cloud_status;
+    copy_fixed_string(event.message, sizeof(event.message), "fault_summary");
+    if (s_callback != NULL) {
+        s_callback(&event, s_callback_ctx);
+    }
+}
+
+static void store_time_sync(const protocol_time_sync_payload_t *time_sync)
+{
+    if (time_sync == NULL) {
+        return;
+    }
+    portENTER_CRITICAL(&s_time_sync_mux);
+    s_latest_time_sync = *time_sync;
+    s_latest_time_sync_valid = true;
+    portEXIT_CRITICAL(&s_time_sync_mux);
+}
+
+bool cloud_client_get_time_sync(protocol_time_sync_payload_t *out_time)
+{
+    bool valid;
+
+    if (out_time == NULL) {
+        return false;
+    }
+    portENTER_CRITICAL(&s_time_sync_mux);
+    valid = s_latest_time_sync_valid;
+    if (valid) {
+        *out_time = s_latest_time_sync;
+    }
+    portEXIT_CRITICAL(&s_time_sync_mux);
+    return valid;
+}
+
+static void post_time_sync_event(const protocol_time_sync_payload_t *time_sync)
+{
+    cloud_client_event_t event = {
+        .id = CLOUD_CLIENT_EVENT_TIME_SYNC,
+        .error = ESP_OK,
+        .http_status = 200,
+    };
+
+    if (time_sync == NULL || time_sync->valid == 0U) {
+        return;
+    }
+    store_time_sync(time_sync);
+    ESP_LOGI(TAG,
+             "time sync event push unix=%" PRIu32 " offset=%d local=%s",
+             time_sync->unix_utc,
+             (int) time_sync->tz_offset_minutes,
+             time_sync->iso_local);
+    event.ref_seq = time_sync->unix_utc;
+    event.frame_id = (uint32_t) ((uint16_t) time_sync->tz_offset_minutes);
+    copy_fixed_string(event.message, sizeof(event.message), "time_sync");
+    if (s_callback != NULL) {
+        s_callback(&event, s_callback_ctx);
+    }
+}
+
+static bool url_encode_component(const char *src, char *dst, size_t dst_len)
+{
+    static const char hex[] = "0123456789ABCDEF";
+    size_t out = 0U;
+
+    if (src == NULL || dst == NULL || dst_len == 0U) {
+        return false;
+    }
+    for (const unsigned char *p = (const unsigned char *) src; *p != '\0'; ++p) {
+        unsigned char ch = *p;
+        bool safe = ((ch >= 'A' && ch <= 'Z') ||
+                     (ch >= 'a' && ch <= 'z') ||
+                     (ch >= '0' && ch <= '9') ||
+                     ch == '-' || ch == '_' || ch == '.' || ch == '~');
+        if (safe) {
+            if (out + 1U >= dst_len) {
+                return false;
+            }
+            dst[out++] = (char) ch;
+        } else {
+            if (out + 3U >= dst_len) {
+                return false;
+            }
+            dst[out++] = '%';
+            dst[out++] = hex[(ch >> 4) & 0x0F];
+            dst[out++] = hex[ch & 0x0F];
+        }
+    }
+    dst[out] = '\0';
+    return true;
+}
+
+static const char *json_string_or_empty(const cJSON *obj, const char *key)
+{
+    const cJSON *item = cJSON_GetObjectItemCaseSensitive(obj, key);
+    return cJSON_IsString(item) && item->valuestring != NULL ? item->valuestring : "";
+}
+
+static uint32_t json_uint_or_zero(const cJSON *obj, const char *key)
+{
+    const cJSON *item = cJSON_GetObjectItemCaseSensitive(obj, key);
+    return cJSON_IsNumber(item) ? (uint32_t) item->valuedouble : 0U;
+}
+
+static int json_int_or_default(const cJSON *obj, const char *key, int default_value)
+{
+    const cJSON *item = cJSON_GetObjectItemCaseSensitive(obj, key);
+    return cJSON_IsNumber(item) ? (int) item->valuedouble : default_value;
+}
+
+static void maybe_post_time_sync_from_response(const cJSON *root)
+{
+    protocol_time_sync_payload_t time_sync;
+    uint32_t unix_utc;
+    int offset_minutes;
+    int64_t now_us;
+
+    if (root == NULL) {
+        return;
+    }
+
+    unix_utc = json_uint_or_zero(root, "server_time_unix");
+    if (unix_utc < 946684800U) {
+        return;
+    }
+
+    now_us = esp_timer_get_time();
+    if (s_latest_time_sync_valid &&
+        s_last_time_sync_push_us != 0 &&
+        (now_us - s_last_time_sync_push_us) < ((int64_t) CLOUD_TIME_SYNC_PUSH_INTERVAL_MS * 1000LL)) {
+        return;
+    }
+
+    offset_minutes = json_int_or_default(root, "server_tz_offset_minutes", 480);
+    if (offset_minutes < -720 || offset_minutes > 840) {
+        offset_minutes = 480;
+    }
+
+    memset(&time_sync, 0, sizeof(time_sync));
+    time_sync.unix_utc = unix_utc;
+    time_sync.tz_offset_minutes = (int16_t) offset_minutes;
+    time_sync.source = 1U;
+    time_sync.valid = 1U;
+    copy_fixed_string(time_sync.iso_local, sizeof(time_sync.iso_local), json_string_or_empty(root, "server_time_local"));
+    post_time_sync_event(&time_sync);
+    s_last_time_sync_push_us = now_us;
+}
+
+static uint8_t fault_severity_code(const char *text)
+{
+    if (text == NULL) {
+        return PROTOCOL_FAULT_SEVERITY_UNKNOWN;
+    }
+    if (strcmp(text, "high") == 0 || strcmp(text, "critical") == 0) {
+        return PROTOCOL_FAULT_SEVERITY_HIGH;
+    }
+    if (strcmp(text, "medium") == 0 || strcmp(text, "warning") == 0) {
+        return PROTOCOL_FAULT_SEVERITY_MEDIUM;
+    }
+    if (strcmp(text, "low") == 0 || strcmp(text, "info") == 0) {
+        return PROTOCOL_FAULT_SEVERITY_LOW;
+    }
+    return PROTOCOL_FAULT_SEVERITY_UNKNOWN;
+}
+
+static uint8_t fault_state_code(const char *text)
+{
+    if (text == NULL) {
+        return PROTOCOL_FAULT_STATE_UNKNOWN;
+    }
+    if (strcmp(text, "active") == 0) {
+        return PROTOCOL_FAULT_STATE_ACTIVE;
+    }
+    if (strcmp(text, "acknowledged") == 0) {
+        return PROTOCOL_FAULT_STATE_ACKNOWLEDGED;
+    }
+    if (strcmp(text, "recovered") == 0) {
+        return PROTOCOL_FAULT_STATE_RECOVERED;
+    }
+    if (strcmp(text, "ignored") == 0) {
+        return PROTOCOL_FAULT_STATE_IGNORED;
+    }
+    return PROTOCOL_FAULT_STATE_UNKNOWN;
+}
+
+static uint8_t fault_ai_status_code(const char *text)
+{
+    if (text == NULL || text[0] == '\0' || strcmp(text, "none") == 0) {
+        return PROTOCOL_FAULT_AI_NONE;
+    }
+    if (strcmp(text, "pending") == 0 || strcmp(text, "queued") == 0 || strcmp(text, "running") == 0) {
+        return PROTOCOL_FAULT_AI_PENDING;
+    }
+    if (strcmp(text, "ready") == 0 || strcmp(text, "succeeded") == 0 || strcmp(text, "success") == 0) {
+        return PROTOCOL_FAULT_AI_READY;
+    }
+    if (strcmp(text, "failed") == 0 || strcmp(text, "error") == 0) {
+        return PROTOCOL_FAULT_AI_FAILED;
+    }
+    if (strcmp(text, "disabled") == 0) {
+        return PROTOCOL_FAULT_AI_DISABLED;
+    }
+    if (strcmp(text, "stale") == 0) {
+        return PROTOCOL_FAULT_AI_STALE;
+    }
+    return PROTOCOL_FAULT_AI_NONE;
 }
 
 static void format_err_message(char *buffer, size_t buffer_len, const char *prefix, esp_err_t err)
@@ -1354,6 +1634,162 @@ static esp_err_t post_empty_heartbeat_request(const app_config_snapshot_t *snaps
     return err;
 }
 
+static esp_err_t fetch_fault_summary_request(const app_config_snapshot_t *snapshot)
+{
+    esp_err_t err;
+    char url[384];
+    char response[CLOUD_FAULT_RESPONSE_MAX_LEN];
+    int http_status = 0;
+    protocol_fault_summary_payload_t summary;
+    esp_http_client_handle_t client = NULL;
+    cJSON *root = NULL;
+    const cJSON *items = NULL;
+    int item_count = 0;
+    char encoded_node_id[APP_MAX_NODE_ID_LEN * 3U];
+
+    if (snapshot == NULL || snapshot->device.node_id[0] == '\0') {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!wifi_manager_is_connected() || !s_registered) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (!url_encode_component(snapshot->device.node_id, encoded_node_id, sizeof(encoded_node_id))) {
+        ESP_LOGW(TAG, "fault summary node_id url encode failed len=%u", (unsigned int) strlen(snapshot->device.node_id));
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    snprintf(url,
+             sizeof(url),
+             "http://%s:%u/api/node/faults?node_id=%s&since_rev=%" PRIu32 "&limit=%u&compact=1",
+             snapshot->device.server_host,
+             snapshot->device.server_port,
+             encoded_node_id,
+             s_fault_since_rev,
+             (unsigned int) PROTOCOL_FAULT_SUMMARY_MAX_ITEMS);
+    ESP_LOGI(TAG,
+             "fault summary GET node=%s since_rev=%" PRIu32 " url_len=%u",
+             snapshot->device.node_id,
+             s_fault_since_rev,
+             (unsigned int) strlen(url));
+
+    esp_http_client_config_t cfg = {
+        .url = url,
+        .timeout_ms = 1000,
+        .buffer_size = 1024,
+        .buffer_size_tx = 512,
+        .keep_alive_enable = false,
+    };
+
+    client = esp_http_client_init(&cfg);
+    if (client == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    esp_http_client_set_method(client, HTTP_METHOD_GET);
+    esp_http_client_set_header(client, "Connection", "close");
+    err = esp_http_client_open(client, 0);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "fault summary GET open failed: %s", esp_err_to_name(err));
+        goto cleanup;
+    }
+    err = (esp_err_t) esp_http_client_fetch_headers(client);
+    if (err < 0) {
+        ESP_LOGW(TAG, "fault summary fetch headers failed: %s", esp_err_to_name(err));
+        goto cleanup;
+    }
+    err = ESP_OK;
+
+    err = read_response_body(client, response, sizeof(response), &http_status);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "fault summary read failed: %s", esp_err_to_name(err));
+        goto cleanup;
+    }
+    if (http_status < 200 || http_status >= 300) {
+        ESP_LOGW(TAG, "fault summary HTTP status=%d", http_status);
+        err = ESP_FAIL;
+        goto cleanup;
+    }
+
+    root = cJSON_Parse(response);
+    if (root == NULL || !cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(root, "success"))) {
+        ESP_LOGW(TAG, "fault summary JSON parse/contract failed");
+        err = ESP_FAIL;
+        goto cleanup;
+    }
+
+    memset(&summary, 0, sizeof(summary));
+    summary.latest_rev = json_uint_or_zero(root, "latest_rev");
+    maybe_post_time_sync_from_response(root);
+
+    if (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(root, "not_modified"))) {
+        s_fault_since_rev = summary.latest_rev;
+        ESP_LOGI(TAG, "fault summary not modified rev=%" PRIu32, summary.latest_rev);
+        if (!s_fault_summary_sent_once) {
+            summary.cloud_status = PROTOCOL_FAULT_CLOUD_NOT_MODIFIED;
+            post_fault_summary_event(&summary);
+            s_fault_summary_sent_once = true;
+            s_last_pushed_fault_rev = summary.latest_rev;
+        }
+        err = ESP_OK;
+        goto cleanup;
+    }
+
+    items = cJSON_GetObjectItemCaseSensitive(root, "items");
+    if (cJSON_IsArray(items)) {
+        cJSON *item = NULL;
+        cJSON_ArrayForEach(item, items) {
+            protocol_fault_summary_item_t *dst;
+            const char *title;
+            if (item_count >= (int) PROTOCOL_FAULT_SUMMARY_MAX_ITEMS) {
+                break;
+            }
+            if (!cJSON_IsObject(item)) {
+                continue;
+            }
+            dst = &summary.items[item_count];
+            dst->fault_id = json_uint_or_zero(item, "fault_id");
+            dst->updated_rev = json_uint_or_zero(item, "updated_rev");
+            copy_fixed_string(dst->fault_code, sizeof(dst->fault_code), json_string_or_empty(item, "fault_code"));
+            dst->severity = fault_severity_code(json_string_or_empty(item, "severity"));
+            dst->state = fault_state_code(json_string_or_empty(item, "status"));
+            dst->ai_status = fault_ai_status_code(json_string_or_empty(item, "ai_status"));
+            copy_fixed_string(dst->timestamp, sizeof(dst->timestamp), json_string_or_empty(item, "timestamp"));
+            title = json_string_or_empty(item, "description");
+            if (title[0] == '\0') {
+                title = json_string_or_empty(item, "root_cause");
+            }
+            copy_fixed_string(dst->title, sizeof(dst->title), title);
+            copy_fixed_string(dst->advice, sizeof(dst->advice), json_string_or_empty(item, "advice_short"));
+            ++item_count;
+        }
+    }
+
+    summary.count = (uint8_t) item_count;
+    summary.cloud_status = (item_count > 0) ? PROTOCOL_FAULT_CLOUD_OK : PROTOCOL_FAULT_CLOUD_EMPTY;
+    s_fault_since_rev = summary.latest_rev;
+    ESP_LOGI(TAG,
+             "fault summary parsed rev=%" PRIu32 " count=%u cloud=%u",
+             summary.latest_rev,
+             (unsigned int) summary.count,
+             (unsigned int) summary.cloud_status);
+    if (summary.count > 0 || !s_fault_summary_sent_once || summary.latest_rev != s_last_pushed_fault_rev) {
+        post_fault_summary_event(&summary);
+        s_fault_summary_sent_once = true;
+        s_last_pushed_fault_rev = summary.latest_rev;
+    }
+    err = ESP_OK;
+
+cleanup:
+    if (root != NULL) {
+        cJSON_Delete(root);
+    }
+    if (client != NULL) {
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+    }
+    return err;
+}
+
 static void cloud_task(void *arg)
 {
     cloud_msg_t msg;
@@ -1368,6 +1804,14 @@ static void cloud_task(void *arg)
     for (;;) {
         received = xQueueReceive(s_queue, &msg, pdMS_TO_TICKS(CLOUD_LOOP_POLL_MS));
         if (received != pdTRUE) {
+            int64_t now_us = esp_timer_get_time();
+            if (reporting_enabled &&
+                wifi_connected &&
+                (s_last_fault_sync_us == 0 ||
+                 (now_us - s_last_fault_sync_us) >= ((int64_t) CLOUD_FAULT_SYNC_INTERVAL_MS * 1000LL))) {
+                s_last_fault_sync_us = now_us;
+                (void) fetch_fault_summary_request(&snapshot);
+            }
             if (reporting_enabled &&
                 wifi_connected &&
                 snapshot.comm.heartbeat_ms > 0U &&

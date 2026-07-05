@@ -13,4 +13,4 @@ from app import app, socketio
 # Gunicorn 需要这个变量来启动服务器
 # application 是 Gunicorn 的标准入口点
 # 对于 Flask-SocketIO，直接使用 socketio 对象
-application = socketio
+application = app

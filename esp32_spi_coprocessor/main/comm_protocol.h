@@ -50,7 +50,48 @@ typedef enum {
     PROTOCOL_MSG_TX_ACCEPTED = 0x41,
     PROTOCOL_MSG_TX_RESULT = 0x42,
     PROTOCOL_MSG_NACK = 0x43,
+    PROTOCOL_MSG_FAULT_SUMMARY = 0x44,
+    PROTOCOL_MSG_TIME_SYNC = 0x45,
 } protocol_msg_type_t;
+
+#define PROTOCOL_FAULT_SUMMARY_MAX_ITEMS 10U
+#define PROTOCOL_FAULT_CODE_TEXT_LEN 8U
+#define PROTOCOL_FAULT_TIMESTAMP_TEXT_LEN 20U
+#define PROTOCOL_FAULT_TITLE_TEXT_LEN 32U
+#define PROTOCOL_FAULT_ADVICE_TEXT_LEN 60U
+
+typedef enum {
+    PROTOCOL_FAULT_CLOUD_UNKNOWN = 0,
+    PROTOCOL_FAULT_CLOUD_OK = 1,
+    PROTOCOL_FAULT_CLOUD_EMPTY = 2,
+    PROTOCOL_FAULT_CLOUD_NOT_MODIFIED = 3,
+    PROTOCOL_FAULT_CLOUD_HTTP_ERROR = 4,
+    PROTOCOL_FAULT_CLOUD_PARSE_ERROR = 5,
+} protocol_fault_cloud_status_t;
+
+typedef enum {
+    PROTOCOL_FAULT_SEVERITY_UNKNOWN = 0,
+    PROTOCOL_FAULT_SEVERITY_LOW = 1,
+    PROTOCOL_FAULT_SEVERITY_MEDIUM = 2,
+    PROTOCOL_FAULT_SEVERITY_HIGH = 3,
+} protocol_fault_severity_t;
+
+typedef enum {
+    PROTOCOL_FAULT_STATE_UNKNOWN = 0,
+    PROTOCOL_FAULT_STATE_ACTIVE = 1,
+    PROTOCOL_FAULT_STATE_ACKNOWLEDGED = 2,
+    PROTOCOL_FAULT_STATE_RECOVERED = 3,
+    PROTOCOL_FAULT_STATE_IGNORED = 4,
+} protocol_fault_state_t;
+
+typedef enum {
+    PROTOCOL_FAULT_AI_NONE = 0,
+    PROTOCOL_FAULT_AI_PENDING = 1,
+    PROTOCOL_FAULT_AI_READY = 2,
+    PROTOCOL_FAULT_AI_FAILED = 3,
+    PROTOCOL_FAULT_AI_DISABLED = 4,
+    PROTOCOL_FAULT_AI_STALE = 5,
+} protocol_fault_ai_status_t;
 
 typedef enum {
     PROTOCOL_RESULT_OK = 0,
@@ -199,6 +240,35 @@ typedef struct __attribute__((packed)) {
     int32_t value2;
     char text[64];
 } protocol_event_payload_t;
+
+typedef struct __attribute__((packed)) {
+    uint32_t fault_id;
+    uint32_t updated_rev;
+    char fault_code[PROTOCOL_FAULT_CODE_TEXT_LEN];
+    uint8_t severity;
+    uint8_t state;
+    uint8_t ai_status;
+    uint8_t reserved0;
+    char timestamp[PROTOCOL_FAULT_TIMESTAMP_TEXT_LEN];
+    char title[PROTOCOL_FAULT_TITLE_TEXT_LEN];
+    char advice[PROTOCOL_FAULT_ADVICE_TEXT_LEN];
+} protocol_fault_summary_item_t;
+
+typedef struct __attribute__((packed)) {
+    uint32_t latest_rev;
+    uint8_t count;
+    uint8_t cloud_status;
+    uint16_t reserved0;
+    protocol_fault_summary_item_t items[PROTOCOL_FAULT_SUMMARY_MAX_ITEMS];
+} protocol_fault_summary_payload_t;
+
+typedef struct __attribute__((packed)) {
+    uint32_t unix_utc;
+    int16_t tz_offset_minutes;
+    uint8_t source;
+    uint8_t valid;
+    char iso_local[20];
+} protocol_time_sync_payload_t;
 
 typedef struct __attribute__((packed)) {
     uint32_t ref_seq;

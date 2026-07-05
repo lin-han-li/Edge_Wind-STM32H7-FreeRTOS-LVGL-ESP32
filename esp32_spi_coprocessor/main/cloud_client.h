@@ -7,6 +7,7 @@
 #include "esp_err.h"
 
 #include "app_types.h"
+#include "comm_protocol.h"
 
 typedef enum {
     CLOUD_CLIENT_EVENT_REGISTER_RESULT = 1,
@@ -14,6 +15,8 @@ typedef enum {
     CLOUD_CLIENT_EVENT_SERVER_COMMAND = 3,
     CLOUD_CLIENT_EVENT_ERROR = 4,
     CLOUD_CLIENT_EVENT_HEARTBEAT_RESULT = 5,
+    CLOUD_CLIENT_EVENT_FAULT_SUMMARY = 6,
+    CLOUD_CLIENT_EVENT_TIME_SYNC = 7,
 } cloud_client_event_id_t;
 
 typedef struct {
@@ -36,3 +39,5 @@ esp_err_t cloud_client_submit_frame(report_frame_t *frame);
 esp_err_t cloud_client_notify_wifi_state(bool connected);
 size_t cloud_client_drop_pending_summary_frames(void);
 bool cloud_client_is_registered(void);
+bool cloud_client_get_fault_summary(protocol_fault_summary_payload_t *out_summary);
+bool cloud_client_get_time_sync(protocol_time_sync_payload_t *out_time);

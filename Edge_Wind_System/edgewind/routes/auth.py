@@ -4,7 +4,7 @@
 """
 from urllib.parse import urlparse, urljoin
 
-from flask import Blueprint, render_template, request, redirect, url_for, flash
+from flask import Blueprint, render_template, request, redirect, url_for, flash, current_app
 from flask_login import login_user, logout_user, login_required
 from edgewind.models import User
 from edgewind.extensions import limiter
@@ -48,6 +48,12 @@ def is_safe_redirect_url(target):
 @limiter.limit("5 per minute", methods=["POST"])  # 仅限制登录提交，防暴力破解；GET 页面加载不限流
 def login():
     """登录页面和处理"""
+    if current_app.config.get('EDGEWIND_DISABLE_LOGIN'):
+        next_page = request.args.get('next')
+        if next_page and is_safe_redirect_url(next_page):
+            return redirect(next_page)
+        return redirect(url_for('pages.overview'))
+
     if request.method == 'POST':
         username = request.form.get('username')
         password = request.form.get('password')

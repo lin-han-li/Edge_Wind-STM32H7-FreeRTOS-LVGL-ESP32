@@ -43,6 +43,13 @@ def faults():
     return render_template('faults.html')
 
 
+@pages_bp.route('/fault-monitor')
+@login_required
+def fault_monitor():
+    """轻量故障监测驾驶舱"""
+    return render_template('fault_monitor.html')
+
+
 @pages_bp.route('/settings')
 @login_required
 def settings():

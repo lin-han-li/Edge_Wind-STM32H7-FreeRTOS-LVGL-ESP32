@@ -1,8 +1,8 @@
 # EdgeWind 三端交接 - 监测端 STM32/ESP32
 
-更新日期：2026-06-22
+更新日期：2026-07-05
 
-本文是监测端自己的当前交接文档，用于和 AI 训练端、DAC8568 HIL 播放端、Web/云端对齐。当前正式回退基线仍是 v68 三输入单模型固件；当前上板验收线为 v74 conservative + R_iso aux4 四输入单模型 release candidate。撤回的失败候选不再作为板端、Web、ESP32 或演示部署依据，本项目内相关临时记录已清理。
+本文是监测端自己的当前交接文档，用于和 AI 训练端、DAC8568 HIL 播放端、Web/RK3588S 网关部署对齐。当前正式回退基线仍是 v68 三输入单模型固件；当前上板验收线为 v74 conservative + R_iso aux4 四输入单模型 release candidate。撤回的失败候选不再作为板端、Web、ESP32 或演示部署依据，本项目内相关临时记录已清理。
 
 ## 当前状态
 
@@ -23,6 +23,11 @@
 C:\Users\pengjianzhong\Desktop\MY_Project\EdgeWind_STM32_ESP32
 C:\Users\pengjianzhong\Desktop\MY_Project\EdgeWind_STM32_ESP32\STM32H7+FreeRTOS+LVGL+ESP32
 C:\Users\pengjianzhong\Desktop\MY_Project\EdgeWind_STM32_ESP32\esp32_spi_coprocessor
+```
+
+说明：2026-07-05 起，Web 前端、Flask 后端、DeepSeek、知识图谱、故障监测接口、RK3588S 网关发布包的本地维护入口重新明确为当前项目内的 `Edge_Wind_System`。`RK3588_Manager\EdgeWind_Gateway` 不再作为本项目 Web 代码来源，后续只可作为历史差异参考。
+
+```text
 C:\Users\pengjianzhong\Desktop\MY_Project\EdgeWind_STM32_ESP32\Edge_Wind_System
 ```
 
@@ -42,9 +47,25 @@ C:\Users\pengjianzhong\Desktop\MY_Project\STM32H750XBH6_DAC8568_FreeRTOS_LVGL9.4
 C:\Users\pengjianzhong\Desktop\MY_Project\STM32H750XBH6_DAC8568_FreeRTOS_LVGL9.4.0\V69_AUX4_PLAYBACK_HANDOFF.md
 ```
 
-云端 Web：
+Web/API 维护入口：
 
 ```text
+当前本项目 Web 维护入口：
+C:\Users\pengjianzhong\Desktop\MY_Project\EdgeWind_STM32_ESP32\Edge_Wind_System
+
+历史/差异参考，不作为修改入口：
+C:\Users\pengjianzhong\Desktop\MY_Project\RK3588_Manager\EdgeWind_Gateway\Edge_Wind_System
+```
+
+部署目标：
+
+```text
+RK3588S 网关当前运行路径：
+/opt/edgewind/current
+/opt/edgewind/releases/20260705-1906-svg-toast-icons/Edge_Wind_System
+edgewind-gateway.service
+
+云端服务器旧部署入口：
 /var/www/edge_wind/Edge_Wind_System
 edge_wind.service
 ```
@@ -182,11 +203,30 @@ EdgeWind_AI_ModelVersion() -> dataset_v74_ad7606_sync_riso_public_single
 - 故障快照状态机只用新鲜 ch0-ch3 full waveform 做 before/after 判断
 - DeepSeek 只作为 Web 端异步辅助诊断，不参与 STM32 实时闭环控制
 
-云端注意事项：
+当前 Web 已上线能力：
 
-- 云端代码目录：`/var/www/edge_wind/Edge_Wind_System`
-- systemd 服务：`edge_wind.service`
-- eventlet DNS 规避项：`EVENTLET_NO_GREENDNS=yes`
+- `/api/node/faults?node_id=<id>&since_rev=<rev>&limit=10&compact=1` 已实现，返回本节点故障短摘要和服务器时间。
+- `/fault-monitor` 已实现，用于 Web 端轻量故障监测驾驶舱。
+- `FaultEvent` 已作为 Web 数据模型上线，表示故障事实事件；`WorkOrder` 仍表示运维工单流程。
+- 服务器时间字段固定返回：`server_time_unix`、`server_time_local`、`server_time_utc`、`server_tz_offset_minutes=480`。
+- ESP32 低频请求 `/api/node/faults` 后，可通过 SPI `TIME_SYNC(0x45)` 下发服务器时间给 STM32。
+- `/api/node/faults` 不返回波形、FFT、知识图谱或 DeepSeek 长文本，不进入 `/api/node/full_frame_bin` 上传热路径。
+- Web 通知弹窗已从 emoji / Bootstrap Icons 字体图标切换为内联 SVG 彩色图标，避免 RK3588S 本机浏览器字体缺失时显示方框；RK 仅作为服务器时不影响其它客户端显示。
+
+Web/RK/云端注意事项：
+
+- Web/API 本地维护目录：`C:\Users\pengjianzhong\Desktop\MY_Project\EdgeWind_STM32_ESP32\Edge_Wind_System`
+- `C:\Users\pengjianzhong\Desktop\MY_Project\RK3588_Manager\EdgeWind_Gateway` 不再作为本项目 Web 修改入口。
+- RK3588S 当前部署目录：`/opt/edgewind/releases/20260705-1906-svg-toast-icons/Edge_Wind_System`
+- RK3588S 当前运行软链接：`/opt/edgewind/current`
+- RK3588S systemd 服务：`edgewind-gateway.service`
+- RK3588S 运行方式：`gunicorn + gevent`，配置文件 `/opt/edgewind/edgewind.env`
+- RK3588S 现场免登录：`EDGEWIND_DISABLE_LOGIN=true`
+- 云端服务器旧部署目录：`/var/www/edge_wind/Edge_Wind_System`
+- 云端服务器旧 systemd 服务：`edge_wind.service`
+- 云端 eventlet DNS 规避项：`EVENTLET_NO_GREENDNS=yes`
+- 设备侧只依赖 HTTP/API 地址，不依赖 Windows 本地目录；ESP32/STM32 的服务器参数可指向 PC、本地网关、RK3588S 或云端。
+- 当前 RK3588S 已验证：`/overview`、`/monitor`、`/fault-monitor`、`/api/node/faults` 返回 200，ESP32 仍在正常 POST `/api/node/full_frame_bin`。
 
 ## 编译与下载基线
 

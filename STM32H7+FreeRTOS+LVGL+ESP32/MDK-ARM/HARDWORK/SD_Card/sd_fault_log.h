@@ -12,7 +12,11 @@ typedef struct {
 } FaultEntry_t;
 
 bool SD_Fault_Log(uint8_t level, uint8_t code, const char *msg);
+bool SD_Fault_LogMounted(uint8_t level, uint8_t code, const char *msg);
+const char *SD_Fault_LastError(void);
 bool SD_Fault_GetRecent(FaultEntry_t *entries, uint32_t max, uint32_t *count);
+bool SD_Fault_GetRecentMounted(FaultEntry_t *entries, uint32_t max, uint32_t *count);
 bool SD_Fault_GetByDate(const char *date, FaultEntry_t *entries, uint32_t max, uint32_t *count);
+bool SD_Fault_GetByDateMounted(const char *date, FaultEntry_t *entries, uint32_t max, uint32_t *count);
 
 #endif /* SD_FAULT_LOG_H */

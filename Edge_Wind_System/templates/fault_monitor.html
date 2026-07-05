@@ -1,0 +1,461 @@
+{% extends "base.html" %}
+
+{% block title %}故障监测 - EdgeWind{% endblock %}
+
+{% block extra_css %}
+<style>
+    .fault-monitor-page {
+        padding: 24px;
+        background: #f4f7fb;
+        min-height: calc(100vh - 74px);
+    }
+
+    .fm-summary-grid {
+        display: grid;
+        grid-template-columns: repeat(5, minmax(150px, 1fr));
+        gap: 14px;
+        margin-bottom: 16px;
+    }
+
+    .fm-card,
+    .fm-filter,
+    .fm-list,
+    .fm-detail {
+        background: #fff;
+        border: 1px solid #e5edf6;
+        border-radius: 8px;
+        box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+    }
+
+    .fm-card {
+        padding: 16px;
+        min-width: 0;
+    }
+
+    .fm-card-label {
+        font-size: 12px;
+        color: #64748b;
+        margin-bottom: 8px;
+    }
+
+    .fm-card-value {
+        font-size: 26px;
+        font-weight: 800;
+        color: #0f172a;
+        line-height: 1.1;
+    }
+
+    .fm-card-sub {
+        color: #64748b;
+        font-size: 12px;
+        margin-top: 6px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    .fm-layout {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 360px;
+        gap: 16px;
+        align-items: start;
+    }
+
+    .fm-filter {
+        padding: 14px;
+        display: grid;
+        grid-template-columns: 1fr 1fr 1fr auto;
+        gap: 10px;
+        margin-bottom: 14px;
+    }
+
+    .fm-list {
+        overflow: hidden;
+    }
+
+    .fm-list-header,
+    .fm-detail-header {
+        padding: 14px 16px;
+        border-bottom: 1px solid #e5edf6;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+    }
+
+    .fm-event {
+        padding: 14px 16px;
+        border-bottom: 1px solid #eef3f8;
+        display: grid;
+        grid-template-columns: 110px minmax(0, 1fr) 120px 92px;
+        gap: 12px;
+        cursor: pointer;
+        transition: background 0.16s ease, border-color 0.16s ease;
+    }
+
+    .fm-event:hover,
+    .fm-event.active {
+        background: #f8fbff;
+    }
+
+    .fm-code {
+        font-size: 18px;
+        font-weight: 800;
+        color: #0f172a;
+    }
+
+    .fm-title {
+        font-weight: 700;
+        color: #172033;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    .fm-meta,
+    .fm-advice {
+        font-size: 12px;
+        color: #64748b;
+        min-width: 0;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    .fm-badge {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 3px 8px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 700;
+        white-space: nowrap;
+    }
+
+    .fm-sev-high { background: #fee2e2; color: #b91c1c; }
+    .fm-sev-medium { background: #fef3c7; color: #b45309; }
+    .fm-sev-low { background: #dcfce7; color: #15803d; }
+    .fm-state-active { background: #e0f2fe; color: #0369a1; }
+    .fm-state-acknowledged { background: #e0e7ff; color: #3730a3; }
+    .fm-state-recovered { background: #dcfce7; color: #166534; }
+    .fm-state-ignored { background: #e5e7eb; color: #374151; }
+
+    .fm-detail {
+        position: sticky;
+        top: 96px;
+        min-width: 0;
+    }
+
+    .fm-detail-body {
+        padding: 16px;
+    }
+
+    .fm-detail-row {
+        margin-bottom: 14px;
+    }
+
+    .fm-detail-label {
+        font-size: 12px;
+        color: #64748b;
+        margin-bottom: 4px;
+    }
+
+    .fm-detail-value {
+        font-size: 14px;
+        color: #172033;
+        line-height: 1.5;
+        word-break: break-word;
+    }
+
+    .fm-empty {
+        padding: 44px 16px;
+        text-align: center;
+        color: #64748b;
+    }
+
+    @media (max-width: 1200px) {
+        .fm-summary-grid {
+            grid-template-columns: repeat(2, minmax(150px, 1fr));
+        }
+
+        .fm-layout {
+            grid-template-columns: 1fr;
+        }
+
+        .fm-detail {
+            position: static;
+        }
+    }
+
+    @media (max-width: 760px) {
+        .fault-monitor-page {
+            padding: 14px;
+        }
+
+        .fm-filter,
+        .fm-event {
+            grid-template-columns: 1fr;
+        }
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="fault-monitor-page">
+    <div class="fm-summary-grid">
+        <div class="fm-card">
+            <div class="fm-card-label">活跃故障</div>
+            <div class="fm-card-value" id="fm-active-count">--</div>
+            <div class="fm-card-sub">active + acknowledged</div>
+        </div>
+        <div class="fm-card">
+            <div class="fm-card-label">高风险</div>
+            <div class="fm-card-value text-danger" id="fm-high-count">--</div>
+            <div class="fm-card-sub">需优先复核</div>
+        </div>
+        <div class="fm-card">
+            <div class="fm-card-label">中风险</div>
+            <div class="fm-card-value text-warning" id="fm-medium-count">--</div>
+            <div class="fm-card-sub">需持续观察</div>
+        </div>
+        <div class="fm-card">
+            <div class="fm-card-label">7 日事件</div>
+            <div class="fm-card-value" id="fm-weekly-total">--</div>
+            <div class="fm-card-sub">最近一周新增</div>
+        </div>
+        <div class="fm-card">
+            <div class="fm-card-label">健康度</div>
+            <div class="fm-card-value text-success" id="fm-health-score">--</div>
+            <div class="fm-card-sub" id="fm-updated-at">等待刷新</div>
+        </div>
+    </div>
+
+    <div class="fm-layout">
+        <div>
+            <div class="fm-filter">
+                <select class="form-select" id="fm-status-filter">
+                    <option value="active,acknowledged">活跃/已确认</option>
+                    <option value="active">仅活跃</option>
+                    <option value="acknowledged">已确认</option>
+                    <option value="recovered">已恢复</option>
+                    <option value="ignored">已忽略</option>
+                    <option value="">全部状态</option>
+                </select>
+                <input class="form-control" id="fm-device-filter" placeholder="设备 ID">
+                <select class="form-select" id="fm-code-filter">
+                    <option value="">全部故障码</option>
+                    <option value="E01">E01 交流窜入</option>
+                    <option value="E02">E02 绝缘故障</option>
+                    <option value="E03">E03 电容老化</option>
+                    <option value="E04">E04 IGBT 异常</option>
+                    <option value="E05">E05 直流母线接地</option>
+                    <option value="E06">E06 PWM 异常</option>
+                </select>
+                <button class="btn btn-primary" id="fm-refresh-btn">
+                    <i class="bi bi-arrow-clockwise"></i> 刷新
+                </button>
+            </div>
+
+            <div class="fm-list">
+                <div class="fm-list-header">
+                    <strong>故障事件</strong>
+                    <button class="btn btn-sm btn-outline-secondary" id="fm-load-more">加载更多</button>
+                </div>
+                <div id="fm-event-list">
+                    <div class="fm-empty">正在加载故障事件...</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="fm-detail">
+            <div class="fm-detail-header">
+                <strong>事件详情</strong>
+                <span class="fm-badge fm-state-active" id="fm-detail-state">未选择</span>
+            </div>
+            <div class="fm-detail-body" id="fm-detail-body">
+                <div class="fm-empty">选择左侧事件查看详情。</div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+(function () {
+    const stateText = {
+        active: '活跃',
+        acknowledged: '已确认',
+        recovered: '已恢复',
+        ignored: '已忽略'
+    };
+    const severityText = {
+        high: '高',
+        medium: '中',
+        low: '低',
+        unknown: '未知'
+    };
+    let nextCursor = null;
+    let selectedId = null;
+
+    function csrfToken() {
+        const el = document.querySelector('meta[name="csrf-token"]');
+        return el ? el.getAttribute('content') : '';
+    }
+
+    function esc(value) {
+        return String(value ?? '').replace(/[&<>"']/g, ch => ({
+            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+        }[ch]));
+    }
+
+    function params(resetCursor) {
+        const p = new URLSearchParams();
+        const status = document.getElementById('fm-status-filter').value;
+        const device = document.getElementById('fm-device-filter').value.trim();
+        const code = document.getElementById('fm-code-filter').value;
+        if (status) p.set('status', status);
+        if (device) p.set('device_id', device);
+        if (code) p.set('fault_code', code);
+        p.set('limit', '30');
+        if (!resetCursor && nextCursor) p.set('cursor', nextCursor);
+        return p;
+    }
+
+    async function loadSummary() {
+        const res = await fetch('/api/fault_monitor/summary');
+        const data = await res.json();
+        if (!data.success) return;
+        document.getElementById('fm-active-count').textContent = data.active_count ?? 0;
+        document.getElementById('fm-high-count').textContent = data.severity_counts?.high ?? 0;
+        document.getElementById('fm-medium-count').textContent = data.severity_counts?.medium ?? 0;
+        document.getElementById('fm-weekly-total').textContent = data.weekly_total ?? 0;
+        document.getElementById('fm-health-score').textContent = `${data.health_score ?? 100}`;
+        document.getElementById('fm-updated-at').textContent = data.updated_at || data.server_time_local || '';
+    }
+
+    function renderEvents(items, append) {
+        const list = document.getElementById('fm-event-list');
+        if (!append) list.innerHTML = '';
+        if (!items.length && !append) {
+            list.innerHTML = '<div class="fm-empty">暂无匹配故障事件。</div>';
+            return;
+        }
+        const html = items.map(item => {
+            const sev = item.severity || 'unknown';
+            const st = item.status || item.state || 'active';
+            return `
+                <div class="fm-event ${selectedId === item.id ? 'active' : ''}" data-id="${esc(item.id)}">
+                    <div>
+                        <div class="fm-code">${esc(item.fault_code || '--')}</div>
+                        <span class="fm-badge fm-sev-${esc(sev)}">${esc(severityText[sev] || sev)}</span>
+                    </div>
+                    <div class="min-w-0">
+                        <div class="fm-title">${esc(item.fault_name || item.description || '未知故障')}</div>
+                        <div class="fm-meta">${esc(item.device_id || '--')} · ${esc(item.timestamp || item.detected_at || '--')}</div>
+                        <div class="fm-advice">${esc(item.advice_short || '暂无短建议')}</div>
+                    </div>
+                    <div><span class="fm-badge fm-state-${esc(st)}">${esc(stateText[st] || st)}</span></div>
+                    <div class="fm-meta">AI: ${esc(item.ai_status || 'none')}<br>rev ${esc(item.updated_rev || 0)}</div>
+                </div>`;
+        }).join('');
+        list.insertAdjacentHTML('beforeend', html);
+        list.querySelectorAll('.fm-event').forEach(el => {
+            el.onclick = () => selectEvent(Number(el.dataset.id));
+        });
+    }
+
+    async function loadEvents(resetCursor = true) {
+        if (resetCursor) nextCursor = null;
+        const res = await fetch(`/api/fault_monitor/events?${params(resetCursor).toString()}`);
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || '加载故障事件失败');
+        nextCursor = data.next_cursor || null;
+        document.getElementById('fm-load-more').disabled = !data.has_more;
+        renderEvents(data.items || [], !resetCursor);
+    }
+
+    async function selectEvent(id) {
+        selectedId = id;
+        document.querySelectorAll('.fm-event').forEach(el => {
+            el.classList.toggle('active', Number(el.dataset.id) === id);
+        });
+        const res = await fetch(`/api/fault_events/${id}`);
+        const data = await res.json();
+        if (!data.success) return;
+        const event = data.event;
+        const st = event.status || event.state || 'active';
+        const stateEl = document.getElementById('fm-detail-state');
+        stateEl.className = `fm-badge fm-state-${st}`;
+        stateEl.textContent = stateText[st] || st;
+        document.getElementById('fm-detail-body').innerHTML = `
+            <div class="fm-detail-row">
+                <div class="fm-detail-label">设备 / 故障</div>
+                <div class="fm-detail-value"><strong>${esc(event.device_id)}</strong> · ${esc(event.fault_code)} ${esc(event.fault_name || event.description || '')}</div>
+            </div>
+            <div class="fm-detail-row">
+                <div class="fm-detail-label">发生 / 恢复</div>
+                <div class="fm-detail-value">${esc(event.detected_at || '--')} / ${esc(event.recovered_at || '未恢复')}</div>
+            </div>
+            <div class="fm-detail-row">
+                <div class="fm-detail-label">根因摘要</div>
+                <div class="fm-detail-value">${esc(event.root_cause || event.description || '暂无')}</div>
+            </div>
+            <div class="fm-detail-row">
+                <div class="fm-detail-label">短建议</div>
+                <div class="fm-detail-value">${esc(event.advice_short || '暂无')}</div>
+            </div>
+            <div class="fm-detail-row">
+                <div class="fm-detail-label">AI / 工单</div>
+                <div class="fm-detail-value">AI: ${esc(event.ai_status || 'none')} · 工单: ${esc(event.work_order_id || '未关联')}</div>
+            </div>
+            <div class="d-flex gap-2">
+                <button class="btn btn-sm btn-outline-primary" id="fm-ack-btn">确认</button>
+                <button class="btn btn-sm btn-outline-secondary" id="fm-ignore-btn">忽略</button>
+                ${event.work_order_id ? `<a class="btn btn-sm btn-outline-success" href="/faults">查看工单</a>` : ''}
+            </div>`;
+        document.getElementById('fm-ack-btn').onclick = () => updateState(id, 'ack');
+        document.getElementById('fm-ignore-btn').onclick = () => updateState(id, 'ignore');
+    }
+
+    async function updateState(id, action) {
+        const res = await fetch(`/api/fault_events/${id}/${action}`, {
+            method: 'POST',
+            headers: {'X-CSRFToken': csrfToken()}
+        });
+        const data = await res.json();
+        if (!data.success) {
+            window.showToast?.(data.error || '状态更新失败', 'error');
+            return;
+        }
+        await Promise.all([loadSummary(), loadEvents(true)]);
+        await selectEvent(id);
+    }
+
+    async function refreshAll() {
+        try {
+            await Promise.all([loadSummary(), loadEvents(true)]);
+        } catch (err) {
+            document.getElementById('fm-event-list').innerHTML = `<div class="fm-empty">${esc(err.message || err)}</div>`;
+        }
+    }
+
+    document.getElementById('fm-refresh-btn').onclick = refreshAll;
+    document.getElementById('fm-load-more').onclick = () => loadEvents(false);
+    ['fm-status-filter', 'fm-code-filter'].forEach(id => {
+        document.getElementById(id).onchange = refreshAll;
+    });
+    document.getElementById('fm-device-filter').addEventListener('keydown', event => {
+        if (event.key === 'Enter') refreshAll();
+    });
+
+    if (window.io) {
+        const socket = window.io();
+        socket.on('fault_delta', () => refreshAll());
+    }
+
+    refreshAll();
+})();
+</script>
+{% endblock %}

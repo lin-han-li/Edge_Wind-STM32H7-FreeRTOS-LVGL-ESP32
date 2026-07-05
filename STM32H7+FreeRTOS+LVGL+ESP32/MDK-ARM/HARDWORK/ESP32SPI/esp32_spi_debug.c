@@ -12,6 +12,7 @@
 #include "FreeRTOS.h"
 #include "semphr.h"
 #include "task.h"
+#include "../SD_Card/sd_time.h"
 
 extern void ESP_UI_Internal_OnLog(const char *line);
 
@@ -81,6 +82,8 @@ typedef enum {
     ESP32_MSG_TX_RESULT = 0x42,
     ESP32_MSG_EVENT = 0x40,
     ESP32_MSG_NACK = 0x43,
+    ESP32_MSG_FAULT_SUMMARY = 0x44,
+    ESP32_MSG_TIME_SYNC = 0x45,
 } esp32_msg_type_t;
 
 typedef enum {
@@ -338,6 +341,10 @@ static uint8_t s_pending_server_fft_enabled = 1U;
 static char s_last_server_cmd_key[65];
 static uint32_t s_last_server_cmd_value = 0U;
 static uint32_t s_last_server_cmd_tick = 0U;
+static esp32_spi_fault_summary_t s_fault_summary;
+static uint8_t s_fault_summary_valid = 0U;
+static esp32_spi_time_sync_t s_time_sync;
+static uint8_t s_time_sync_valid = 0U;
 static uint32_t s_spi_nack_total = 0U;
 static uint32_t s_spi_retryable_nack_total = 0U;
 static uint32_t s_spi_nack_reason_counts[9];
@@ -428,6 +435,8 @@ static const char *msg_name(uint8_t msg_type)
     case ESP32_MSG_TX_RESULT: return "TX_RESULT";
     case ESP32_MSG_EVENT: return "EVENT";
     case ESP32_MSG_NACK: return "NACK";
+    case ESP32_MSG_FAULT_SUMMARY: return "FAULT_SUMMARY";
+    case ESP32_MSG_TIME_SYNC: return "TIME_SYNC";
     default: return "UNKNOWN";
     }
 }
@@ -603,6 +612,65 @@ static void copy_fixed_text(char *dst, size_t dst_size, const char *src, size_t 
         n++;
     }
     dst[n] = '\0';
+}
+
+static void fault_summary_terminate_strings(esp32_spi_fault_summary_t *summary)
+{
+    uint8_t count;
+
+    if (summary == NULL) {
+        return;
+    }
+    if (summary->count > ESP32_SPI_FAULT_SUMMARY_MAX_ITEMS) {
+        summary->count = ESP32_SPI_FAULT_SUMMARY_MAX_ITEMS;
+    }
+    count = summary->count;
+    for (uint8_t i = 0U; i < count; ++i) {
+        esp32_spi_fault_item_t *item = &summary->items[i];
+        item->fault_code[ESP32_SPI_FAULT_CODE_TEXT_LEN - 1U] = '\0';
+        item->timestamp[ESP32_SPI_FAULT_TIMESTAMP_TEXT_LEN - 1U] = '\0';
+        item->title[ESP32_SPI_FAULT_TITLE_TEXT_LEN - 1U] = '\0';
+        item->advice[ESP32_SPI_FAULT_ADVICE_TEXT_LEN - 1U] = '\0';
+    }
+}
+
+static void update_fault_summary_from_payload(const uint8_t *payload, uint16_t payload_len)
+{
+    if (payload == NULL || payload_len < sizeof(esp32_spi_fault_summary_t)) {
+        return;
+    }
+    memcpy(&s_fault_summary, payload, sizeof(s_fault_summary));
+    fault_summary_terminate_strings(&s_fault_summary);
+    s_fault_summary_valid = 1U;
+    printf("[ESP32SPI] FAULT_SUMMARY rev=%lu count=%u cloud=%u\r\n",
+           (unsigned long)s_fault_summary.latest_rev,
+           (unsigned int)s_fault_summary.count,
+           (unsigned int)s_fault_summary.cloud_status);
+}
+
+static void update_time_sync_from_payload(const uint8_t *payload, uint16_t payload_len)
+{
+    bool rtc_ok;
+
+    if (payload == NULL || payload_len < sizeof(esp32_spi_time_sync_t)) {
+        return;
+    }
+    memcpy(&s_time_sync, payload, sizeof(s_time_sync));
+    s_time_sync.iso_local[ESP32_SPI_TIME_SYNC_ISO_TEXT_LEN - 1U] = '\0';
+    if (s_time_sync.valid == 0U || s_time_sync.unix_utc < 946684800UL) {
+        printf("[ESP32SPI] TIME_SYNC ignored unix=%lu valid=%u\r\n",
+               (unsigned long)s_time_sync.unix_utc,
+               (unsigned int)s_time_sync.valid);
+        return;
+    }
+
+    rtc_ok = SD_Time_SetUnixWithOffset(s_time_sync.unix_utc, s_time_sync.tz_offset_minutes);
+    s_time_sync_valid = rtc_ok ? 1U : 0U;
+    printf("[ESP32SPI] TIME_SYNC unix=%lu offset=%d local=%s rtc=%s\r\n",
+           (unsigned long)s_time_sync.unix_utc,
+           (int)s_time_sync.tz_offset_minutes,
+           s_time_sync.iso_local,
+           rtc_ok ? "ok" : "fail");
 }
 
 static bool accept_server_command_event(const char *key, uint32_t value)
@@ -1169,6 +1237,12 @@ static bool handle_rx_packet(const esp32_spi_packet_t *packet)
                    (long)result->result_code);
         }
         break;
+    case ESP32_MSG_FAULT_SUMMARY:
+        update_fault_summary_from_payload(packet->payload, packet->header.payload_len);
+        break;
+    case ESP32_MSG_TIME_SYNC:
+        update_time_sync_from_payload(packet->payload, packet->header.payload_len);
+        break;
     case ESP32_MSG_NACK:
         if (packet->header.payload_len >= sizeof(esp32_nack_payload_t)) {
             const esp32_nack_payload_t *nack = (const esp32_nack_payload_t *)packet->payload;
@@ -1581,6 +1655,26 @@ bool ESP32_SPI_QueryStatus(esp32_spi_status_t *out_status, uint32_t timeout_ms)
 const esp32_spi_status_t *ESP32_SPI_GetStatus(void)
 {
     return &s_status;
+}
+
+bool ESP32_SPI_GetFaultSummary(esp32_spi_fault_summary_t *out_summary)
+{
+    if (out_summary == NULL || s_fault_summary_valid == 0U) {
+        return false;
+    }
+    *out_summary = s_fault_summary;
+    fault_summary_terminate_strings(out_summary);
+    return true;
+}
+
+bool ESP32_SPI_GetTimeSync(esp32_spi_time_sync_t *out_time)
+{
+    if (out_time == NULL || s_time_sync_valid == 0U) {
+        return false;
+    }
+    *out_time = s_time_sync;
+    out_time->iso_local[ESP32_SPI_TIME_SYNC_ISO_TEXT_LEN - 1U] = '\0';
+    return true;
 }
 
 bool ESP32_SPI_PollEvents(uint32_t timeout_ms)

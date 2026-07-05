@@ -187,6 +187,10 @@ const char *protocol_msg_type_name(protocol_msg_type_t msg_type)
         return "TX_RESULT";
     case PROTOCOL_MSG_NACK:
         return "NACK";
+    case PROTOCOL_MSG_FAULT_SUMMARY:
+        return "FAULT_SUMMARY";
+    case PROTOCOL_MSG_TIME_SYNC:
+        return "TIME_SYNC";
     default:
         return "UNKNOWN";
     }

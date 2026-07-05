@@ -5,7 +5,7 @@ API路由蓝图
 from flask import Blueprint, request, jsonify
 from flask_login import login_required
 from datetime import datetime, timedelta
-from edgewind.models import db, Device, DataPoint, WorkOrder, SystemConfig, FaultSnapshot, HistoryData, NodePendingCommand, AIAnalysisTask
+from edgewind.models import db, Device, DataPoint, WorkOrder, SystemConfig, FaultSnapshot, HistoryData, NodePendingCommand, AIAnalysisTask, FaultEvent
 from edgewind.full_frame_binary import FullFrameBinaryError, decode_full_frame_binary
 from edgewind.knowledge_graph import FAULT_KNOWLEDGE_GRAPH, FAULT_CODE_MAP, generate_ai_report, get_fault_knowledge_graph, build_reasoning_graph
 from edgewind.utils import (
@@ -24,6 +24,7 @@ from io import BytesIO
 import base64
 from urllib.parse import quote
 import re
+from sqlalchemy import func
 try:
     import orjson  # type: ignore[import-not-found]
 except Exception:
@@ -614,6 +615,164 @@ def _auto_enqueue_fault_graph_reasoning(work_order_id: int | None) -> None:
         )
     except Exception as exc:
         logger.info("[AI] auto fault graph skipped work_order_id=%s reason=%s", work_order_id, exc)
+
+
+def _server_time_fields():
+    now_utc = datetime.utcnow().replace(microsecond=0)
+    now_local = now_utc + timedelta(hours=8)
+    return {
+        'server_time_unix': int(time.time()),
+        'server_time_local': now_local.strftime('%Y-%m-%d %H:%M:%S'),
+        'server_time_utc': now_utc.isoformat() + 'Z',
+        'server_tz_offset_minutes': 480,
+    }
+
+
+def _fault_info(fault_code: str | None) -> dict:
+    code = (fault_code or 'E00').strip() or 'E00'
+    return FAULT_KNOWLEDGE_GRAPH.get(code) or FAULT_KNOWLEDGE_GRAPH.get(FAULT_CODE_MAP.get(code, '') or '') or {}
+
+
+def _fault_name(fault_code: str | None) -> str:
+    code = (fault_code or 'E00').strip() or 'E00'
+    if code == 'E00':
+        return '正常'
+    info = _fault_info(code)
+    return (info.get('name') or FAULT_CODE_MAP.get(code) or code)
+
+
+def _fault_severity(fault_code: str | None) -> str:
+    code = (fault_code or 'E00').strip() or 'E00'
+    if code == 'E00':
+        return 'low'
+    if code in ('E01', 'E02', 'E05'):
+        return 'high'
+    if code in ('E03', 'E04', 'E06'):
+        return 'medium'
+    return 'medium'
+
+
+def _short_text(value, limit=80):
+    text = str(value or '').strip()
+    text = re.sub(r'\s+', ' ', text)
+    if len(text) <= limit:
+        return text
+    return text[:max(0, limit - 1)].rstrip() + '…'
+
+
+def _fault_default_advice(fault_code: str | None) -> str:
+    code = (fault_code or 'E00').strip() or 'E00'
+    advice = {
+        'E01': '检查交流窜入来源，确认整流/隔离链路和保护动作。',
+        'E02': '复核绝缘电阻、柜内湿度和接地支路，必要时分段排查。',
+        'E03': '检查电容温升、纹波和老化状态，安排停机复核。',
+        'E04': '检查 IGBT 驱动、开关状态和过温保护记录。',
+        'E05': '复核直流母线接地支路、漏电流和绝缘监测结果。',
+        'E06': '检查 PWM 调制、驱动通信和控制参数一致性。',
+    }.get(code)
+    return advice or '保持监测，结合现场状态人工复核。'
+
+
+def _next_fault_rev() -> int:
+    current = int(db.session.query(func.max(FaultEvent.updated_rev)).scalar() or 0)
+    now_sec = int(time.time())
+    # Older prototype data used millisecond revisions. ESP32 expects uint32,
+    # so ignore oversized legacy values and continue from server seconds.
+    if current <= 0 or current >= 4294967295:
+        current = now_sec - 1
+    base = max(current + 1, now_sec)
+    # uint32, avoid zero because ESP32 uses 0 as first-sync cursor.
+    return max(1, min(base, 4294967294))
+
+
+def _emit_fault_delta(event: FaultEvent | None, action: str):
+    if not event or not socketio_instance:
+        return
+    try:
+        socketio_instance.emit('fault_delta', {
+            'action': action,
+            'event': event.to_dict(),
+            'summary_hint': True,
+            **_server_time_fields(),
+        }, namespace='/')
+    except Exception as exc:
+        logger.debug("fault_delta emit skipped: %s", exc)
+
+
+def _sync_fault_event(device_id: str,
+                      fault_code: str,
+                      state: str,
+                      *,
+                      location: str | None = None,
+                      work_order: WorkOrder | None = None,
+                      event_time: datetime | None = None) -> FaultEvent | None:
+    """Create/update lightweight FaultEvent. Caller owns commit/rollback."""
+    if not device_id:
+        return None
+    now_utc = event_time if isinstance(event_time, datetime) else datetime.utcnow()
+    code = (fault_code or 'E00').strip() or 'E00'
+
+    if code == 'E00' or state == 'recovered':
+        active_event = FaultEvent.query.filter(
+            FaultEvent.device_id == device_id,
+            FaultEvent.state.in_(('active', 'acknowledged')),
+            FaultEvent.recovered_at.is_(None),
+        ).order_by(FaultEvent.detected_at.desc()).first()
+        if not active_event:
+            return None
+        active_event.state = 'recovered'
+        active_event.recovered_at = now_utc
+        active_event.updated_at = now_utc
+        active_event.updated_rev = _next_fault_rev()
+        _emit_fault_delta(active_event, 'recovered')
+        return active_event
+
+    active_same = FaultEvent.query.filter(
+        FaultEvent.device_id == device_id,
+        FaultEvent.fault_code == code,
+        FaultEvent.state.in_(('active', 'acknowledged')),
+        FaultEvent.recovered_at.is_(None),
+    ).order_by(FaultEvent.detected_at.desc()).first()
+    if active_same:
+        if work_order and not active_same.work_order_id:
+            active_same.work_order_id = work_order.id
+        active_same.updated_at = now_utc
+        active_same.updated_rev = _next_fault_rev()
+        _emit_fault_delta(active_same, 'updated')
+        return active_same
+
+    description = _fault_name(code)
+    ai_status = 'ready' if work_order and getattr(work_order, 'ai_recommendation', None) else 'none'
+    recommendation = _short_text(getattr(work_order, 'ai_recommendation', None), 60) if work_order else ''
+    event_key = f'{device_id}|{code}|{now_utc.strftime("%Y%m%d%H%M%S%f")}'
+    event = FaultEvent(
+        event_key=event_key,
+        device_id=device_id,
+        fault_code=code,
+        severity=_fault_severity(code),
+        state='active',
+        description=description,
+        root_cause=description,
+        advice_short=recommendation or _fault_default_advice(code),
+        ai_status=ai_status,
+        work_order_id=getattr(work_order, 'id', None),
+        updated_rev=_next_fault_rev(),
+        detected_at=now_utc,
+        updated_at=now_utc,
+    )
+    db.session.add(event)
+    db.session.flush()
+    _emit_fault_delta(event, 'created')
+    return event
+
+
+def _fault_event_public_dict(event: FaultEvent) -> dict:
+    item = event.to_dict()
+    item['location'] = getattr(event.device, 'location', None)
+    item['fault_name'] = item.get('description') or _fault_name(event.fault_code)
+    item['root_cause'] = _short_text(item.get('root_cause') or item.get('fault_name'), 80)
+    item['advice_short'] = _short_text(item.get('advice_short') or _fault_default_advice(event.fault_code), 60)
+    return item
 
 
 def _get_report_mode(node_id: str | None) -> str:
@@ -1215,6 +1374,171 @@ def _device_auth_or_401():
 
 # ==================== 设备注册API ====================
 
+@api_bp.route('/node/faults', methods=['GET'])
+def get_node_fault_summary():
+    """Device-side lightweight fault summary and server time sync."""
+    auth_resp = _device_auth_or_401()
+    if auth_resp:
+        return auth_resp
+
+    node_id = _normalize_node_id(request.args.get('node_id') or request.args.get('device_id'))
+    if not node_id:
+        return jsonify({'success': False, 'error': 'Missing node_id', **_server_time_fields()}), 400
+    try:
+        since_rev = int(request.args.get('since_rev') or 0)
+    except Exception:
+        since_rev = 0
+    try:
+        limit = int(request.args.get('limit') or 10)
+    except Exception:
+        limit = 10
+    limit = max(1, min(limit, 10))
+
+    latest_rev = db.session.query(func.max(FaultEvent.updated_rev)).filter(
+        FaultEvent.device_id == node_id
+    ).scalar() or 0
+
+    base = {
+        'success': True,
+        'node_id': node_id,
+        'latest_rev': int(latest_rev or 0),
+        **_server_time_fields(),
+    }
+    if since_rev >= int(latest_rev or 0):
+        return jsonify({**base, 'not_modified': True, 'items': []}), 200
+
+    query = FaultEvent.query.filter(FaultEvent.device_id == node_id)
+    if since_rev > 0:
+        query = query.filter(FaultEvent.updated_rev > since_rev)
+    events = query.order_by(FaultEvent.updated_rev.desc()).limit(limit).all()
+    return jsonify({
+        **base,
+        'not_modified': False,
+        'items': [_fault_event_public_dict(event) for event in events],
+    }), 200
+
+
+@api_bp.route('/fault_monitor/summary', methods=['GET'])
+@login_required
+def fault_monitor_summary():
+    now = datetime.utcnow()
+    week_start = now - timedelta(days=7)
+    active_states = ('active', 'acknowledged')
+    active_events = FaultEvent.query.filter(FaultEvent.state.in_(active_states)).all()
+    weekly_total = FaultEvent.query.filter(FaultEvent.detected_at >= week_start).count()
+    severity_counts = {'high': 0, 'medium': 0, 'low': 0, 'unknown': 0}
+    state_counts = {'active': 0, 'acknowledged': 0, 'recovered': 0, 'ignored': 0}
+    for event in active_events:
+        severity_counts[event.severity if event.severity in severity_counts else 'unknown'] += 1
+    for state, count in db.session.query(FaultEvent.state, func.count(FaultEvent.id)).group_by(FaultEvent.state).all():
+        if state in state_counts:
+            state_counts[state] = int(count or 0)
+    health_score = max(
+        0,
+        min(100, 100 - severity_counts['high'] * 18 - severity_counts['medium'] * 8 - severity_counts['low'] * 3),
+    )
+    return jsonify({
+        'success': True,
+        'active_count': len(active_events),
+        'weekly_total': weekly_total,
+        'severity_counts': severity_counts,
+        'state_counts': state_counts,
+        'health_score': health_score,
+        'updated_at': fmt_beijing(now),
+        **_server_time_fields(),
+    }), 200
+
+
+@api_bp.route('/fault_monitor/events', methods=['GET'])
+@login_required
+def fault_monitor_events():
+    try:
+        limit = int(request.args.get('limit') or 30)
+    except Exception:
+        limit = 30
+    limit = max(1, min(limit, 100))
+    try:
+        cursor = int(request.args.get('cursor') or 0)
+    except Exception:
+        cursor = 0
+
+    query = FaultEvent.query
+    status_filter = (request.args.get('status') or '').strip()
+    if status_filter:
+        states = [item.strip() for item in status_filter.split(',') if item.strip()]
+        if states:
+            query = query.filter(FaultEvent.state.in_(states))
+    device_id = _normalize_node_id(request.args.get('device_id'))
+    if device_id:
+        query = query.filter(FaultEvent.device_id == device_id)
+    fault_code = (request.args.get('fault_code') or '').strip()
+    if fault_code:
+        query = query.filter(FaultEvent.fault_code == fault_code)
+    if cursor > 0:
+        query = query.filter(FaultEvent.updated_rev < cursor)
+
+    events = query.order_by(FaultEvent.updated_rev.desc()).limit(limit + 1).all()
+    has_more = len(events) > limit
+    events = events[:limit]
+    next_cursor = int(events[-1].updated_rev) if has_more and events else None
+    return jsonify({
+        'success': True,
+        'items': [_fault_event_public_dict(event) for event in events],
+        'has_more': has_more,
+        'next_cursor': next_cursor,
+        **_server_time_fields(),
+    }), 200
+
+
+@api_bp.route('/fault_events/<int:event_id>', methods=['GET'])
+@login_required
+def get_fault_event(event_id):
+    event = FaultEvent.query.get(event_id)
+    if not event:
+        return jsonify({'success': False, 'error': 'Fault event not found'}), 404
+    data = _fault_event_public_dict(event)
+    if event.work_order:
+        data['work_order'] = {
+            'id': event.work_order.id,
+            'status': event.work_order.status,
+            'fault_time': fmt_beijing(event.work_order.fault_time) if event.work_order.fault_time else None,
+            'ai_recommendation': _short_text(event.work_order.ai_recommendation, 240),
+        }
+    return jsonify({'success': True, 'event': data, **_server_time_fields()}), 200
+
+
+def _update_fault_event_state(event_id, target_state):
+    event = FaultEvent.query.get(event_id)
+    if not event:
+        return jsonify({'success': False, 'error': 'Fault event not found'}), 404
+    now_utc = datetime.utcnow()
+    if target_state == 'acknowledged':
+        event.state = 'acknowledged'
+        event.ack_at = event.ack_at or now_utc
+    elif target_state == 'ignored':
+        event.state = 'ignored'
+        event.ignored_at = event.ignored_at or now_utc
+    else:
+        return jsonify({'success': False, 'error': 'Unsupported state'}), 400
+    event.updated_at = now_utc
+    event.updated_rev = _next_fault_rev()
+    db.session.commit()
+    _emit_fault_delta(event, target_state)
+    return jsonify({'success': True, 'event': _fault_event_public_dict(event), **_server_time_fields()}), 200
+
+
+@api_bp.route('/fault_events/<int:event_id>/ack', methods=['POST'])
+@login_required
+def ack_fault_event(event_id):
+    return _update_fault_event_state(event_id, 'acknowledged')
+
+
+@api_bp.route('/fault_events/<int:event_id>/ignore', methods=['POST'])
+@login_required
+def ignore_fault_event(event_id):
+    return _update_fault_event_state(event_id, 'ignored')
+
+
 @api_bp.route('/register', methods=['POST'])
 def register_device():
     """设备注册API"""
@@ -1454,6 +1778,7 @@ def upload_data():
         prev_fault = node_fault_states.get(device_id, 'E00')
         curr_fault = fault_code or 'E00'
         created_work_order_id = None
+        work_order = None
 
         if prev_fault == 'E00' and curr_fault != 'E00':
             # 2秒内去重（防止网络重发/并发导致同秒两条）
@@ -1472,6 +1797,24 @@ def upload_data():
             if not (recent and expected_fault_name and (recent.fault_type == expected_fault_name or expected_fault_name in (recent.fault_type or ''))):
                 work_order = create_work_order_from_fault(db, device_id, curr_fault, device.location, fault_time=now_utc)
                 created_work_order_id = getattr(work_order, "id", None)
+            else:
+                work_order = recent
+            _sync_fault_event(
+                device_id,
+                curr_fault,
+                'active',
+                location=device.location,
+                work_order=work_order,
+                event_time=now_utc,
+            )
+        elif prev_fault != 'E00' and curr_fault == 'E00':
+            _sync_fault_event(
+                device_id,
+                prev_fault,
+                'recovered',
+                location=device.location,
+                event_time=datetime.utcnow(),
+            )
 
         # 更新故障状态机（用于事件判定）
         node_fault_states[device_id] = curr_fault
@@ -1960,6 +2303,8 @@ def _process_node_report(data: dict,
 
     elif previous_fault != 'E00' and current_fault == 'E00':
         logger.info(f'[fault] recovered: {node_id} {previous_fault} -> E00')
+        if db_executor:
+            db_executor.submit(_handle_fault_recovery_database_operation, node_id, previous_fault, data)
 
     node_fault_states[node_id] = current_fault
 
@@ -2195,17 +2540,57 @@ def _handle_fault_database_operation(node_id, fault_code, data):
             ).order_by(WorkOrder.fault_time.desc()).first()
 
             if recent and expected_fault_name and (recent.fault_type == expected_fault_name or expected_fault_name in (recent.fault_type or '')):
+                _sync_fault_event(
+                    node_id,
+                    fault_code,
+                    'active',
+                    location=device.location,
+                    work_order=recent,
+                    event_time=now_utc,
+                )
+                db.session.commit()
                 logger.info(f"⏭️ 跳过去重：{node_id} 在2秒内已创建同类故障工单 ({fault_code})")
                 return
 
             work_order = create_work_order_from_fault(db, node_id, fault_code, device.location, fault_time=now_utc)
             created_work_order_id = getattr(work_order, "id", None)
+            _sync_fault_event(
+                node_id,
+                fault_code,
+                'active',
+                location=device.location,
+                work_order=work_order,
+                event_time=now_utc,
+            )
             db.session.commit()
             _auto_enqueue_fault_graph_reasoning(created_work_order_id)
             logger.info(f"✅ WorkOrder已创建: {node_id}")
         except Exception as e:
             db.session.rollback()
             logger.error(f"❌ 数据库操作失败: {node_id} - {str(e)}")
+
+
+def _handle_fault_recovery_database_operation(node_id, previous_fault, data):
+    """Background update for E0X -> E00 recovery; never blocks upload response."""
+    with app_instance.app_context():
+        try:
+            device = Device.query.filter_by(device_id=node_id).first()
+            location = getattr(device, 'location', None) or (data or {}).get('location')
+            event = _sync_fault_event(
+                node_id,
+                previous_fault,
+                'recovered',
+                location=location,
+                event_time=datetime.utcnow(),
+            )
+            if event:
+                db.session.commit()
+                logger.info("[fault_event] recovered node=%s fault=%s event_id=%s", node_id, previous_fault, event.id)
+            else:
+                db.session.rollback()
+        except Exception as e:
+            db.session.rollback()
+            logger.error("[fault_event] recovery update failed node=%s fault=%s err=%s", node_id, previous_fault, e)
 
 
 # ==================== 节点管理API ====================

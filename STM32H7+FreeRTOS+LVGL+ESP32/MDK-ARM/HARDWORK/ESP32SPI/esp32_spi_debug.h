@@ -45,6 +45,44 @@ typedef struct {
     int32_t current_value_scaled;
 } esp32_spi_report_channel_t;
 
+#define ESP32_SPI_FAULT_SUMMARY_MAX_ITEMS 10U
+#define ESP32_SPI_FAULT_CODE_TEXT_LEN 8U
+#define ESP32_SPI_FAULT_TIMESTAMP_TEXT_LEN 20U
+#define ESP32_SPI_FAULT_TITLE_TEXT_LEN 32U
+#define ESP32_SPI_FAULT_ADVICE_TEXT_LEN 60U
+#define ESP32_SPI_TIME_SYNC_ISO_TEXT_LEN 20U
+
+#pragma pack(push, 1)
+typedef struct {
+    uint32_t fault_id;
+    uint32_t updated_rev;
+    char fault_code[ESP32_SPI_FAULT_CODE_TEXT_LEN];
+    uint8_t severity;
+    uint8_t state;
+    uint8_t ai_status;
+    uint8_t reserved0;
+    char timestamp[ESP32_SPI_FAULT_TIMESTAMP_TEXT_LEN];
+    char title[ESP32_SPI_FAULT_TITLE_TEXT_LEN];
+    char advice[ESP32_SPI_FAULT_ADVICE_TEXT_LEN];
+} esp32_spi_fault_item_t;
+
+typedef struct {
+    uint32_t latest_rev;
+    uint8_t count;
+    uint8_t cloud_status;
+    uint16_t reserved0;
+    esp32_spi_fault_item_t items[ESP32_SPI_FAULT_SUMMARY_MAX_ITEMS];
+} esp32_spi_fault_summary_t;
+
+typedef struct {
+    uint32_t unix_utc;
+    int16_t tz_offset_minutes;
+    uint8_t source;
+    uint8_t valid;
+    char iso_local[ESP32_SPI_TIME_SYNC_ISO_TEXT_LEN];
+} esp32_spi_time_sync_t;
+#pragma pack(pop)
+
 void ESP32_SPI_DebugRunPing(void);
 
 bool ESP32_SPI_EnsureReady(uint32_t timeout_ms);
@@ -71,6 +109,8 @@ bool ESP32_SPI_StartReport(uint8_t report_mode, uint32_t timeout_ms);
 bool ESP32_SPI_StopReport(uint32_t timeout_ms);
 bool ESP32_SPI_QueryStatus(esp32_spi_status_t *out_status, uint32_t timeout_ms);
 const esp32_spi_status_t *ESP32_SPI_GetStatus(void);
+bool ESP32_SPI_GetFaultSummary(esp32_spi_fault_summary_t *out_summary);
+bool ESP32_SPI_GetTimeSync(esp32_spi_time_sync_t *out_time);
 bool ESP32_SPI_PollEvents(uint32_t timeout_ms);
 uint32_t ESP32_SPI_GetLastTxSeq(void);
 uint32_t ESP32_SPI_GetLastFullEndRefSeq(void);

@@ -5,10 +5,16 @@
 
 #include "scr_aurora.h"
 #include <stdbool.h>
+#include <stdint.h>
 #include <stddef.h>
+#include <stdio.h>
+#include <string.h>
 #include "../generated/events_init.h"
 #include "../../gui_assets.h"
+#include "../../gui_assets_sync.h"
 #include "../../../EdgeComm/edge_comm.h"
+#include "../../../SD_Card/sd_fault_log.h"
+#include "../../../SD_Card/sd_time.h"
 #include "edgewind_buzzer.h"
 
 /**********************
@@ -83,6 +89,37 @@ static lv_obj_t * s_lbl_wifi = NULL;
 static lv_obj_t * s_lbl_tcp = NULL;
 static lv_obj_t * s_lbl_reg = NULL;
 static lv_obj_t * s_lbl_rep = NULL;
+static lv_timer_t * s_fault_monitor_timer = NULL;
+
+#define FAULT_MONITOR_EVENT_ROWS 4U
+static lv_obj_t *s_fault_metric_value[4];
+static lv_obj_t *s_fault_metric_sub[4];
+static lv_obj_t *s_fault_event_main[FAULT_MONITOR_EVENT_ROWS];
+static lv_obj_t *s_fault_event_sub[FAULT_MONITOR_EVENT_ROWS];
+static lv_obj_t *s_fault_detail_title = NULL;
+static lv_obj_t *s_fault_detail_status = NULL;
+static lv_obj_t *s_fault_detail_root = NULL;
+static lv_obj_t *s_fault_detail_advice = NULL;
+static lv_obj_t *s_fault_detail_time = NULL;
+
+#define HISTORY_RECORD_ROWS 5U
+#define HISTORY_RECORD_MAX 16U
+static FaultEntry_t s_history_entries[HISTORY_RECORD_MAX];
+static uint32_t s_history_count = 0U;
+static uint8_t s_history_selected = 0U;
+static uint8_t s_history_recent_mode = 1U;
+static char s_history_date[16] = "---- -- --";
+static lv_obj_t *s_history_row[HISTORY_RECORD_ROWS];
+static lv_obj_t *s_history_row_main[HISTORY_RECORD_ROWS];
+static lv_obj_t *s_history_row_sub[HISTORY_RECORD_ROWS];
+static lv_obj_t *s_history_status = NULL;
+static lv_obj_t *s_history_detail_title = NULL;
+static lv_obj_t *s_history_detail_status = NULL;
+static lv_obj_t *s_history_detail_msg = NULL;
+static lv_obj_t *s_history_detail_src = NULL;
+
+static void fault_monitor_refresh(lv_ui *ui);
+static void history_record_refresh(lv_ui *ui);
 
 typedef enum {
     AURORA_NAV_NONE = 0,
@@ -91,6 +128,8 @@ typedef enum {
     AURORA_NAV_WIFI,
     AURORA_NAV_SERVER,
     AURORA_NAV_DEVICE,
+    AURORA_NAV_FAULT_MONITOR,
+    AURORA_NAV_HISTORY,
     AURORA_NAV_ABOUT
 } aurora_nav_target_t;
 
@@ -104,6 +143,8 @@ static aurora_nav_ctx_t nav_server;
 static aurora_nav_ctx_t nav_device;
 static aurora_nav_ctx_t nav_param;
 static aurora_nav_ctx_t nav_realtime;
+static aurora_nav_ctx_t nav_fault_monitor;
+static aurora_nav_ctx_t nav_history;
 static aurora_nav_ctx_t nav_about;
 
 /**********************
@@ -331,6 +372,14 @@ static void aurora_nav_event_cb(lv_event_t * e)
         ui_load_scr_animation(ctx->ui, &ctx->ui->DeviceConnect, ctx->ui->DeviceConnect_del, &ctx->ui->Main_1_del,
                               setup_scr_DeviceConnect, LV_SCR_LOAD_ANIM_FADE_ON, 200, 20, false, false);
         break;
+    case AURORA_NAV_FAULT_MONITOR:
+        ui_load_scr_animation(ctx->ui, &ctx->ui->FaultMonitor, ctx->ui->FaultMonitor_del, &ctx->ui->Main_1_del,
+                              setup_scr_FaultMonitor, LV_SCR_LOAD_ANIM_FADE_ON, 200, 20, false, false);
+        break;
+    case AURORA_NAV_HISTORY:
+        ui_load_scr_animation(ctx->ui, &ctx->ui->HistoryRecord, ctx->ui->HistoryRecord_del, &ctx->ui->Main_1_del,
+                              setup_scr_HistoryRecord, LV_SCR_LOAD_ANIM_FADE_ON, 200, 20, false, false);
+        break;
     case AURORA_NAV_ABOUT:
         ui_load_scr_animation(ctx->ui, &ctx->ui->About, ctx->ui->About_del, &ctx->ui->Main_1_del,
                               setup_scr_About, LV_SCR_LOAD_ANIM_FADE_ON, 200, 20, false, false);
@@ -408,6 +457,758 @@ static lv_obj_t * create_grid_page(lv_obj_t * parent)
     return page;
 }
 
+static void fault_monitor_back_cb(lv_event_t * e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) {
+        return;
+    }
+    lv_ui *ui = (lv_ui *)lv_event_get_user_data(e);
+    if (!ui) {
+        return;
+    }
+    lv_indev_wait_release(lv_indev_active());
+    EdgeWind_Buzzer_Play(EDGEWIND_BUZZER_EVT_UI_CLICK);
+    ui_load_scr_animation(ui, &ui->Main_1, ui->Main_1_del, &ui->FaultMonitor_del,
+                          setup_scr_Aurora, LV_SCR_LOAD_ANIM_FADE_ON, 200, 20, false, false);
+}
+
+static lv_obj_t * fault_monitor_create_panel(lv_obj_t *parent, int32_t x, int32_t y,
+                                             int32_t w, int32_t h, lv_color_t accent,
+                                             const char *title)
+{
+    lv_obj_t *panel = lv_obj_create(parent);
+    lv_obj_remove_style_all(panel);
+    lv_obj_set_pos(panel, x, y);
+    lv_obj_set_size(panel, w, h);
+    lv_obj_clear_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_radius(panel, 16, 0);
+    lv_obj_set_style_bg_color(panel, COL_CARD, 0);
+    lv_obj_set_style_bg_opa(panel, 255, 0);
+    lv_obj_set_style_border_width(panel, 1, 0);
+    lv_obj_set_style_border_color(panel, COL_DIV, 0);
+
+    lv_obj_t *strip = lv_obj_create(panel);
+    lv_obj_remove_style_all(strip);
+    lv_obj_set_pos(strip, 0, 0);
+    lv_obj_set_size(strip, 5, h);
+    lv_obj_set_style_bg_color(strip, accent, 0);
+    lv_obj_set_style_bg_opa(strip, 255, 0);
+    lv_obj_clear_flag(strip, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *lbl = lv_label_create(panel);
+    lv_label_set_text(lbl, title ? title : "");
+    lv_obj_set_style_text_color(lbl, COL_TEXT, 0);
+    lv_obj_set_style_text_font(lbl, gui_assets_get_font_20(), 0);
+    lv_label_set_long_mode(lbl, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(lbl, (lv_coord_t)(w - 32));
+    lv_obj_set_pos(lbl, 18, 12);
+    return panel;
+}
+
+static lv_obj_t * fault_monitor_create_label(lv_obj_t *parent, const char *text,
+                                             int32_t x, int32_t y, int32_t w,
+                                             lv_color_t color, const lv_font_t *font)
+{
+    lv_obj_t *lbl = lv_label_create(parent);
+    lv_label_set_text(lbl, text ? text : "");
+    lv_obj_set_style_text_color(lbl, color, 0);
+    lv_obj_set_style_text_font(lbl, font, 0);
+    lv_label_set_long_mode(lbl, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(lbl, (lv_coord_t)w);
+    lv_obj_set_pos(lbl, x, y);
+    return lbl;
+}
+
+static lv_obj_t * fault_monitor_create_metric(lv_obj_t *parent, int32_t x,
+                                              lv_color_t accent,
+                                              const char *title,
+                                              lv_obj_t **value_out,
+                                              lv_obj_t **sub_out)
+{
+    lv_obj_t *card = fault_monitor_create_panel(parent, x, 74, 176, 86, accent, title);
+    lv_obj_t *value = fault_monitor_create_label(card, "--", 18, 34, 140, accent, gui_assets_get_font_20());
+    lv_obj_t *sub = fault_monitor_create_label(card, "--", 18, 60, 140, COL_TEXT_DIM, gui_assets_get_font_12());
+    if (value_out) {
+        *value_out = value;
+    }
+    if (sub_out) {
+        *sub_out = sub;
+    }
+    return card;
+}
+
+static lv_obj_t * fault_monitor_create_button(lv_obj_t *parent, int32_t x, const char *text,
+                                              lv_color_t color, lv_event_cb_t cb, lv_ui *ui)
+{
+    lv_obj_t *btn = lv_button_create(parent);
+    lv_obj_set_pos(btn, x, 424);
+    lv_obj_set_size(btn, 112, 42);
+    lv_obj_set_style_bg_color(btn, color, 0);
+    lv_obj_set_style_bg_opa(btn, 235, 0);
+    lv_obj_set_style_radius(btn, 22, 0);
+    lv_obj_set_style_border_width(btn, 0, 0);
+    lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, ui);
+
+    lv_obj_t *lbl = lv_label_create(btn);
+    lv_label_set_text(lbl, text ? text : "");
+    lv_obj_set_style_text_color(lbl, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_text_font(lbl, gui_assets_get_font_20(), 0);
+    lv_obj_center(lbl);
+    return lbl;
+}
+
+static void fault_monitor_set_label(lv_obj_t *lbl, const char *text, lv_color_t color)
+{
+    if (lbl == NULL) {
+        return;
+    }
+    lv_label_set_text(lbl, text ? text : "--");
+    lv_obj_set_style_text_color(lbl, color, 0);
+}
+
+static void fault_monitor_refresh(lv_ui *ui)
+{
+    const char *node;
+    const char *fault_code;
+    const char *fault_name;
+    const char *fault_level;
+    const char *fault_advice;
+    const char *sd_status;
+    bool cloud_ok;
+    bool local_fault_active;
+    bool sd_error;
+    char line[160];
+
+    if (ui == NULL || ui->FaultMonitor == NULL) {
+        return;
+    }
+
+    node = ESP_UI_NodeId();
+    cloud_ok = ESP_UI_IsWiFiOk() && ESP_UI_IsTcpOk() && ESP_UI_IsRegOk();
+    fault_code = ESP_UI_FaultCode();
+    fault_name = ESP_UI_FaultName();
+    fault_level = ESP_UI_FaultLevelText();
+    fault_advice = ESP_UI_FaultAdvice();
+    sd_status = ESP_UI_FaultLogStatus();
+    local_fault_active = (fault_code != NULL && strncmp(fault_code, "E00", 3) != 0);
+    sd_error = (sd_status != NULL &&
+                (strstr(sd_status, "失败") != NULL ||
+                 strstr(sd_status, "未就绪") != NULL ||
+                 strstr(sd_status, "丢弃") != NULL));
+
+    lv_label_set_text_fmt(ui->FaultMonitor_lbl_status,
+                          "NODE:%s  云端:%s  上报:%s",
+                          node ? node : "--",
+                          cloud_ok ? "OK" : "--",
+                          ESP_UI_IsReporting() ? "ON" : "OFF");
+
+    fault_monitor_set_label(s_fault_metric_value[0], fault_code ? fault_code : "E00",
+                            local_fault_active ? COL_RED : COL_GREEN);
+    fault_monitor_set_label(s_fault_metric_sub[0], local_fault_active ? fault_name : "本机正常", COL_TEXT_DIM);
+    fault_monitor_set_label(s_fault_metric_value[1], fault_level, local_fault_active ? COL_AMBER : COL_GREEN);
+    fault_monitor_set_label(s_fault_metric_sub[1], "边缘判定", COL_TEXT_DIM);
+    fault_monitor_set_label(s_fault_metric_value[2], cloud_ok ? "OK" : "--", cloud_ok ? COL_GREEN : COL_RED);
+    fault_monitor_set_label(s_fault_metric_sub[2], ESP_UI_IsReporting() ? "上报中" : "未上报", COL_TEXT_DIM);
+    fault_monitor_set_label(s_fault_metric_value[3], sd_error ? "ERR" : (ESP_UI_FaultLogSdOk() ? "OK" : "WAIT"),
+                            sd_error ? COL_RED : (ESP_UI_FaultLogSdOk() ? COL_GREEN : COL_AMBER));
+    fault_monitor_set_label(s_fault_metric_sub[3], "SD记录", COL_TEXT_DIM);
+
+    snprintf(line, sizeof(line), "%s  %s", fault_code ? fault_code : "E00", fault_name ? fault_name : "--");
+    fault_monitor_set_label(s_fault_detail_title, line, local_fault_active ? COL_RED : COL_GREEN);
+    fault_monitor_set_label(s_fault_detail_status,
+                            local_fault_active ? "状态：本机检测到故障，按现场规程复核" : "状态：当前未检测到本机故障",
+                            local_fault_active ? COL_RED : COL_GREEN);
+    snprintf(line, sizeof(line), "等级：%s  来源：STM32边缘AI/阈值判定", fault_level ? fault_level : "--");
+    fault_monitor_set_label(s_fault_detail_root, line, COL_TEXT);
+    snprintf(line, sizeof(line), "建议：%s", fault_advice ? fault_advice : "--");
+    fault_monitor_set_label(s_fault_detail_advice, line, COL_TEXT);
+    snprintf(line, sizeof(line), "SD：%s", sd_status ? sd_status : "--");
+    fault_monitor_set_label(s_fault_detail_time, line, sd_error ? COL_RED : (ESP_UI_FaultLogSdOk() ? COL_GREEN : COL_AMBER));
+
+    snprintf(line, sizeof(line), "云端连接：%s", cloud_ok ? "正常" : "异常/未注册");
+    fault_monitor_set_label(s_fault_event_main[0], line, cloud_ok ? COL_GREEN : COL_RED);
+    snprintf(line, sizeof(line), "上报状态：%s  节点：%s",
+             ESP_UI_IsReporting() ? "正在上报" : "未开启",
+             node ? node : "--");
+    fault_monitor_set_label(s_fault_event_sub[0], line, COL_TEXT_DIM);
+    fault_monitor_set_label(s_fault_event_main[1], "本机历史：写入SD卡，历史记录页查询", COL_TEXT);
+    fault_monitor_set_label(s_fault_event_sub[1], "仅记录 E00/E0X 变化，持续同码不重复写入", COL_TEXT_DIM);
+    fault_monitor_set_label(s_fault_event_main[2], "云端工单：由Web端处理", COL_TEXT);
+    fault_monitor_set_label(s_fault_event_sub[2], "本页不展示最近列表，避免信息重叠", COL_TEXT_DIM);
+    fault_monitor_set_label(s_fault_event_main[3], local_fault_active ? "处置提示：先人工确认，再执行控制动作" : "处置提示：持续监测",
+                            local_fault_active ? COL_AMBER : COL_GREEN);
+    fault_monitor_set_label(s_fault_event_sub[3], "DeepSeek只作为Web端辅助解释，不进入控制闭环", COL_TEXT_DIM);
+}
+
+static void fault_monitor_timer_cb(lv_timer_t *timer)
+{
+    lv_ui *ui = (lv_ui *)lv_timer_get_user_data(timer);
+    if (ui == NULL || ui->FaultMonitor == NULL || !lv_obj_is_valid(ui->FaultMonitor)) {
+        lv_timer_delete(timer);
+        if (s_fault_monitor_timer == timer) {
+            s_fault_monitor_timer = NULL;
+        }
+        return;
+    }
+    fault_monitor_refresh(ui);
+}
+
+static void fault_monitor_refresh_cb(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) {
+        return;
+    }
+    lv_ui *ui = (lv_ui *)lv_event_get_user_data(e);
+    EdgeWind_Buzzer_Play(EDGEWIND_BUZZER_EVT_UI_CLICK);
+    fault_monitor_refresh(ui);
+}
+
+static void fault_monitor_history_cb(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) {
+        return;
+    }
+    lv_ui *ui = (lv_ui *)lv_event_get_user_data(e);
+    if (ui == NULL) {
+        return;
+    }
+    if (s_fault_monitor_timer != NULL) {
+        lv_timer_delete(s_fault_monitor_timer);
+        s_fault_monitor_timer = NULL;
+    }
+    lv_indev_wait_release(lv_indev_active());
+    EdgeWind_Buzzer_Play(EDGEWIND_BUZZER_EVT_UI_CLICK);
+    ui_load_scr_animation(ui, &ui->HistoryRecord, ui->HistoryRecord_del, &ui->FaultMonitor_del,
+                          setup_scr_HistoryRecord, LV_SCR_LOAD_ANIM_FADE_ON, 200, 20, false, false);
+}
+
+void setup_scr_FaultMonitor(lv_ui *ui)
+{
+    if (!ui) {
+        return;
+    }
+    if (s_fault_monitor_timer != NULL) {
+        lv_timer_delete(s_fault_monitor_timer);
+        s_fault_monitor_timer = NULL;
+    }
+
+    ui->FaultMonitor = lv_obj_create(NULL);
+    lv_obj_remove_style_all(ui->FaultMonitor);
+    lv_obj_set_size(ui->FaultMonitor, AURORA_SCREEN_W, AURORA_SCREEN_H);
+    lv_obj_clear_flag(ui->FaultMonitor, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollbar_mode(ui->FaultMonitor, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_set_style_bg_color(ui->FaultMonitor, COL_BG, 0);
+    lv_obj_set_style_bg_grad_color(ui->FaultMonitor, COL_BG_BOT, 0);
+    lv_obj_set_style_bg_grad_dir(ui->FaultMonitor, LV_GRAD_DIR_VER, 0);
+    lv_obj_set_style_bg_opa(ui->FaultMonitor, 255, 0);
+
+    memset(s_fault_metric_value, 0, sizeof(s_fault_metric_value));
+    memset(s_fault_metric_sub, 0, sizeof(s_fault_metric_sub));
+    memset(s_fault_event_main, 0, sizeof(s_fault_event_main));
+    memset(s_fault_event_sub, 0, sizeof(s_fault_event_sub));
+    s_fault_detail_title = NULL;
+    s_fault_detail_status = NULL;
+    s_fault_detail_root = NULL;
+    s_fault_detail_advice = NULL;
+    s_fault_detail_time = NULL;
+
+    lv_obj_t *header = lv_obj_create(ui->FaultMonitor);
+    lv_obj_remove_style_all(header);
+    lv_obj_set_pos(header, 0, 0);
+    lv_obj_set_size(header, AURORA_SCREEN_W, AURORA_HEADER_H);
+    lv_obj_set_style_bg_color(header, COL_PANEL, 0);
+    lv_obj_set_style_bg_opa(header, 255, 0);
+    lv_obj_clear_flag(header, LV_OBJ_FLAG_SCROLLABLE);
+
+    ui->FaultMonitor_lbl_title = lv_label_create(header);
+    lv_label_set_text(ui->FaultMonitor_lbl_title, "故障监测");
+    lv_obj_set_style_text_color(ui->FaultMonitor_lbl_title, COL_TITLE_HL, 0);
+    lv_obj_set_style_text_font(ui->FaultMonitor_lbl_title, gui_assets_get_font_30(), 0);
+    lv_obj_align(ui->FaultMonitor_lbl_title, LV_ALIGN_LEFT_MID, 28, 0);
+
+    const char *node = ESP_UI_NodeId();
+    ui->FaultMonitor_lbl_status = lv_label_create(header);
+    lv_label_set_text_fmt(ui->FaultMonitor_lbl_status, "NODE:%s  云端:%s  上报:%s",
+                          node ? node : "--",
+                          (ESP_UI_IsTcpOk() && ESP_UI_IsRegOk()) ? "OK" : "--",
+                          ESP_UI_IsReporting() ? "ON" : "OFF");
+    lv_obj_set_style_text_color(ui->FaultMonitor_lbl_status, COL_TEXT_DIM, 0);
+    lv_obj_set_style_text_font(ui->FaultMonitor_lbl_status, gui_assets_get_font_16(), 0);
+    lv_label_set_long_mode(ui->FaultMonitor_lbl_status, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(ui->FaultMonitor_lbl_status, 500);
+    lv_obj_align(ui->FaultMonitor_lbl_status, LV_ALIGN_RIGHT_MID, -24, 0);
+
+    fault_monitor_create_metric(ui->FaultMonitor, 24, COL_RED, "本机故障码",
+                                &s_fault_metric_value[0], &s_fault_metric_sub[0]);
+    fault_monitor_create_metric(ui->FaultMonitor, 216, COL_BLUE, "云同步",
+                                &s_fault_metric_value[1], &s_fault_metric_sub[1]);
+    fault_monitor_create_metric(ui->FaultMonitor, 408, COL_AMBER, "云端/上报",
+                                &s_fault_metric_value[2], &s_fault_metric_sub[2]);
+    fault_monitor_create_metric(ui->FaultMonitor, 600, COL_GREEN, "SD记录",
+                                &s_fault_metric_value[3], &s_fault_metric_sub[3]);
+
+    lv_obj_t *current = fault_monitor_create_panel(ui->FaultMonitor, 24, 176, 360, 234, COL_RED, "当前本机状态");
+    s_fault_detail_title = fault_monitor_create_label(current, "--", 18, 46, 320, COL_TEXT, gui_assets_get_font_20());
+    s_fault_detail_status = fault_monitor_create_label(current, "--", 18, 82, 320, COL_TEXT_DIM, gui_assets_get_font_16());
+    s_fault_detail_root = fault_monitor_create_label(current, "--", 18, 116, 320, COL_TEXT, gui_assets_get_font_14());
+    s_fault_detail_advice = fault_monitor_create_label(current, "--", 18, 150, 320, COL_TEXT, gui_assets_get_font_14());
+    s_fault_detail_time = fault_monitor_create_label(current, "--", 18, 190, 320, COL_TEXT_DIM, gui_assets_get_font_12());
+    ui->FaultMonitor_lbl_current = s_fault_detail_title;
+    ui->FaultMonitor_lbl_sync = s_fault_detail_status;
+
+    lv_obj_t *status = fault_monitor_create_panel(ui->FaultMonitor, 408, 176, 368, 234, COL_BLUE, "记录与同步");
+    for (uint8_t i = 0U; i < FAULT_MONITOR_EVENT_ROWS; ++i) {
+        s_fault_event_main[i] = fault_monitor_create_label(status, "--", 18, (int32_t)(44 + i * 44), 332,
+                                                           COL_TEXT, gui_assets_get_font_14());
+        s_fault_event_sub[i] = fault_monitor_create_label(status, "--", 18, (int32_t)(64 + i * 44), 332,
+                                                          COL_TEXT_DIM, gui_assets_get_font_12());
+    }
+    ui->FaultMonitor_lbl_events[0] = s_fault_event_main[0];
+    ui->FaultMonitor_lbl_events[1] = s_fault_event_main[1];
+    ui->FaultMonitor_lbl_events[2] = s_fault_event_main[2];
+    ui->FaultMonitor_lbl_events[3] = s_fault_event_main[3];
+    ui->FaultMonitor_lbl_events[4] = s_fault_event_sub[0];
+
+    fault_monitor_create_button(ui->FaultMonitor, 400, "刷新", COL_GREEN, fault_monitor_refresh_cb, ui);
+    fault_monitor_create_button(ui->FaultMonitor, 524, "查看历史", COL_AMBER, fault_monitor_history_cb, ui);
+    ui->FaultMonitor_lbl_back = fault_monitor_create_button(ui->FaultMonitor, 648, "返回", COL_BLUE, fault_monitor_back_cb, ui);
+    ui->FaultMonitor_btn_back = lv_obj_get_parent(ui->FaultMonitor_lbl_back);
+
+    lv_obj_update_layout(ui->FaultMonitor);
+    fault_monitor_refresh(ui);
+    s_fault_monitor_timer = lv_timer_create(fault_monitor_timer_cb, 1000, ui);
+}
+
+static const char *history_record_level_text(uint8_t level)
+{
+    switch (level) {
+    case 0U: return "恢复";
+    case 1U: return "低";
+    case 2U: return "中";
+    case 3U: return "高";
+    default: return "--";
+    }
+}
+
+static lv_color_t history_record_level_color(uint8_t level)
+{
+    switch (level) {
+    case 0U: return COL_GREEN;
+    case 1U: return COL_CYAN;
+    case 2U: return COL_AMBER;
+    case 3U: return COL_RED;
+    default: return COL_TEXT_DIM;
+    }
+}
+
+static void history_record_code_text(uint8_t code, char *buf, size_t len)
+{
+    if (buf == NULL || len == 0U) {
+        return;
+    }
+    (void)snprintf(buf, len, "E%02u", (unsigned int)code);
+}
+
+static void history_record_time_text(uint32_t timestamp, char *buf, size_t len)
+{
+    uint32_t sec;
+    if (buf == NULL || len == 0U) {
+        return;
+    }
+    if (timestamp == 0U) {
+        (void)snprintf(buf, len, "--:--:--");
+        return;
+    }
+    sec = timestamp % 86400U;
+    (void)snprintf(buf, len, "%02lu:%02lu:%02lu",
+                   (unsigned long)(sec / 3600U),
+                   (unsigned long)((sec / 60U) % 60U),
+                   (unsigned long)(sec % 60U));
+}
+
+static bool history_record_parse_date(const char *date, int *year, int *month, int *day)
+{
+    if (date == NULL || year == NULL || month == NULL || day == NULL) {
+        return false;
+    }
+    return (sscanf(date, "%d-%d-%d", year, month, day) == 3 &&
+            *year >= 2000 && *month >= 1 && *month <= 12 && *day >= 1 && *day <= 31);
+}
+
+static bool history_record_is_leap(int year)
+{
+    return (((year % 4) == 0 && (year % 100) != 0) || ((year % 400) == 0));
+}
+
+static int history_record_days_in_month(int year, int month)
+{
+    static const int days[12] = {
+        31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31
+    };
+    if (month < 1 || month > 12) {
+        return 30;
+    }
+    if (month == 2 && history_record_is_leap(year)) {
+        return 29;
+    }
+    return days[month - 1];
+}
+
+static void history_record_set_today(void)
+{
+    if (!SD_Time_GetDate(s_history_date, sizeof(s_history_date))) {
+        (void)snprintf(s_history_date, sizeof(s_history_date), "2026-01-01");
+    }
+}
+
+static void history_record_shift_date(int delta)
+{
+    int y, m, d;
+    if (!history_record_parse_date(s_history_date, &y, &m, &d)) {
+        history_record_set_today();
+        (void)history_record_parse_date(s_history_date, &y, &m, &d);
+    }
+    d += delta;
+    while (d < 1) {
+        m--;
+        if (m < 1) {
+            m = 12;
+            y--;
+        }
+        d += history_record_days_in_month(y, m);
+    }
+    while (d > history_record_days_in_month(y, m)) {
+        d -= history_record_days_in_month(y, m);
+        m++;
+        if (m > 12) {
+            m = 1;
+            y++;
+        }
+    }
+    (void)snprintf(s_history_date, sizeof(s_history_date), "%04d-%02d-%02d", y, m, d);
+}
+
+static bool history_record_load(char *status, size_t status_len)
+{
+    bool ok = false;
+    uint32_t count = 0U;
+    if (status != NULL && status_len > 0U) {
+        status[0] = '\0';
+    }
+
+    if (!EdgeWind_SD_Lock(800U)) {
+        if (status != NULL) {
+            (void)snprintf(status, status_len, "SD忙，稍后刷新");
+        }
+        s_history_count = 0U;
+        return false;
+    }
+    if (s_history_recent_mode != 0U) {
+        ok = SD_Fault_GetRecent(s_history_entries, HISTORY_RECORD_MAX, &count);
+    } else {
+        ok = SD_Fault_GetByDate(s_history_date, s_history_entries, HISTORY_RECORD_MAX, &count);
+    }
+    EdgeWind_SD_Unlock();
+
+    s_history_count = ok ? count : 0U;
+    if (s_history_selected >= s_history_count) {
+        s_history_selected = 0U;
+    }
+    if (status != NULL) {
+        if (!ok) {
+            if (s_history_recent_mode != 0U) {
+                (void)snprintf(status, status_len, "SD不可用或本月无记录");
+            } else {
+                (void)snprintf(status, status_len, "%s 无fault.log", s_history_date);
+            }
+        } else if (count == 0U) {
+            if (s_history_recent_mode != 0U) {
+                (void)snprintf(status, status_len, "最近暂无故障记录");
+            } else {
+                (void)snprintf(status, status_len, "%s 暂无记录", s_history_date);
+            }
+        } else if (s_history_recent_mode != 0U) {
+            (void)snprintf(status, status_len, "最近记录 %lu 条", (unsigned long)count);
+        } else {
+            (void)snprintf(status, status_len, "%s 记录 %lu 条", s_history_date, (unsigned long)count);
+        }
+    }
+    return ok;
+}
+
+static void history_record_show_detail(void)
+{
+    char code[8];
+    char time_txt[16];
+    char line[180];
+    const FaultEntry_t *entry;
+
+    if (s_history_detail_title == NULL) {
+        return;
+    }
+    if (s_history_count == 0U) {
+        fault_monitor_set_label(s_history_detail_title, "暂无故障记录", COL_TEXT_DIM);
+        fault_monitor_set_label(s_history_detail_status, "请选择最近/今天或切换日期查询", COL_TEXT_DIM);
+        fault_monitor_set_label(s_history_detail_msg, "SD卡无记录、未插卡或当天文件不存在时会显示为空状态。", COL_TEXT_DIM);
+        fault_monitor_set_label(s_history_detail_src, "来源：0:/data/YYYY-MM-DD/fault.log / 0:/logs/event_YYYY-MM.log", COL_TEXT_DIM);
+        return;
+    }
+
+    entry = &s_history_entries[s_history_selected];
+    history_record_code_text(entry->code, code, sizeof(code));
+    history_record_time_text(entry->timestamp, time_txt, sizeof(time_txt));
+    (void)snprintf(line, sizeof(line), "%s  %s", code, history_record_level_text(entry->level));
+    fault_monitor_set_label(s_history_detail_title, line, history_record_level_color(entry->level));
+    (void)snprintf(line, sizeof(line), "时间：%s  ts:%lu",
+                   time_txt, (unsigned long)entry->timestamp);
+    fault_monitor_set_label(s_history_detail_status, line, COL_TEXT_DIM);
+    fault_monitor_set_label(s_history_detail_msg, entry->message[0] ? entry->message : "记录无详细消息", COL_TEXT);
+    (void)snprintf(line, sizeof(line), "来源：%s",
+                   s_history_recent_mode ? "0:/logs/event_YYYY-MM.log" : "0:/data/YYYY-MM-DD/fault.log");
+    fault_monitor_set_label(s_history_detail_src, line, COL_TEXT_DIM);
+}
+
+static void history_record_refresh(lv_ui *ui)
+{
+    char status[96];
+    char code[8];
+    char time_txt[16];
+    char line[160];
+    (void)ui;
+
+    (void)history_record_load(status, sizeof(status));
+    if (s_history_status != NULL) {
+        fault_monitor_set_label(s_history_status, status, s_history_count > 0U ? COL_GREEN : COL_AMBER);
+    }
+    for (uint8_t i = 0U; i < HISTORY_RECORD_ROWS; ++i) {
+        bool active = (i < s_history_count);
+        bool selected = (active && i == s_history_selected);
+        if (s_history_row[i] != NULL) {
+            lv_obj_set_style_bg_color(s_history_row[i],
+                                      selected ? lv_color_hex(0xE0F2FE) : lv_color_hex(0xF8FAFC), 0);
+            lv_obj_set_style_border_color(s_history_row[i], selected ? COL_BLUE : COL_DIV, 0);
+            lv_obj_set_style_border_width(s_history_row[i], selected ? 2 : 1, 0);
+        }
+        if (active) {
+            const FaultEntry_t *entry = &s_history_entries[i];
+            history_record_code_text(entry->code, code, sizeof(code));
+            history_record_time_text(entry->timestamp, time_txt, sizeof(time_txt));
+            (void)snprintf(line, sizeof(line), "%s  %s  %s",
+                           time_txt, code, history_record_level_text(entry->level));
+            fault_monitor_set_label(s_history_row_main[i], line, history_record_level_color(entry->level));
+            fault_monitor_set_label(s_history_row_sub[i], entry->message[0] ? entry->message : "--", COL_TEXT_DIM);
+        } else {
+            fault_monitor_set_label(s_history_row_main[i], i == 0U ? "无记录" : "--", COL_TEXT_DIM);
+            fault_monitor_set_label(s_history_row_sub[i], i == 0U ? "切换日期或等待故障变化写入SD" : "", COL_TEXT_DIM);
+        }
+    }
+    history_record_show_detail();
+}
+
+static void history_record_row_cb(lv_event_t *e)
+{
+    uint8_t index;
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) {
+        return;
+    }
+    index = (uint8_t)(uintptr_t)lv_event_get_user_data(e);
+    if (index >= s_history_count) {
+        return;
+    }
+    s_history_selected = index;
+    EdgeWind_Buzzer_Play(EDGEWIND_BUZZER_EVT_UI_CLICK);
+    history_record_show_detail();
+    for (uint8_t i = 0U; i < HISTORY_RECORD_ROWS; ++i) {
+        if (s_history_row[i] != NULL) {
+            bool selected = (i == s_history_selected && i < s_history_count);
+            lv_obj_set_style_bg_color(s_history_row[i],
+                                      selected ? lv_color_hex(0xE0F2FE) : lv_color_hex(0xF8FAFC), 0);
+            lv_obj_set_style_border_color(s_history_row[i], selected ? COL_BLUE : COL_DIV, 0);
+            lv_obj_set_style_border_width(s_history_row[i], selected ? 2 : 1, 0);
+        }
+    }
+}
+
+static void history_record_recent_cb(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) {
+        return;
+    }
+    s_history_recent_mode = 1U;
+    s_history_selected = 0U;
+    EdgeWind_Buzzer_Play(EDGEWIND_BUZZER_EVT_UI_CLICK);
+    history_record_refresh((lv_ui *)lv_event_get_user_data(e));
+}
+
+static void history_record_today_cb(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) {
+        return;
+    }
+    history_record_set_today();
+    s_history_recent_mode = 0U;
+    s_history_selected = 0U;
+    EdgeWind_Buzzer_Play(EDGEWIND_BUZZER_EVT_UI_CLICK);
+    history_record_refresh((lv_ui *)lv_event_get_user_data(e));
+}
+
+static void history_record_prev_cb(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) {
+        return;
+    }
+    if (s_history_recent_mode != 0U) {
+        history_record_set_today();
+    }
+    s_history_recent_mode = 0U;
+    s_history_selected = 0U;
+    history_record_shift_date(-1);
+    EdgeWind_Buzzer_Play(EDGEWIND_BUZZER_EVT_UI_CLICK);
+    history_record_refresh((lv_ui *)lv_event_get_user_data(e));
+}
+
+static void history_record_next_cb(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) {
+        return;
+    }
+    if (s_history_recent_mode != 0U) {
+        history_record_set_today();
+    }
+    s_history_recent_mode = 0U;
+    s_history_selected = 0U;
+    history_record_shift_date(1);
+    EdgeWind_Buzzer_Play(EDGEWIND_BUZZER_EVT_UI_CLICK);
+    history_record_refresh((lv_ui *)lv_event_get_user_data(e));
+}
+
+static void history_record_refresh_cb(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) {
+        return;
+    }
+    EdgeWind_Buzzer_Play(EDGEWIND_BUZZER_EVT_UI_CLICK);
+    history_record_refresh((lv_ui *)lv_event_get_user_data(e));
+}
+
+static void history_record_back_cb(lv_event_t *e)
+{
+    lv_ui *ui;
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) {
+        return;
+    }
+    ui = (lv_ui *)lv_event_get_user_data(e);
+    if (ui == NULL) {
+        return;
+    }
+    lv_indev_wait_release(lv_indev_active());
+    EdgeWind_Buzzer_Play(EDGEWIND_BUZZER_EVT_UI_CLICK);
+    ui_load_scr_animation(ui, &ui->Main_1, ui->Main_1_del, &ui->HistoryRecord_del,
+                          setup_scr_Aurora, LV_SCR_LOAD_ANIM_FADE_ON, 200, 20, false, false);
+}
+
+void setup_scr_HistoryRecord(lv_ui *ui)
+{
+    lv_obj_t *header;
+    lv_obj_t *list;
+    lv_obj_t *detail;
+    if (ui == NULL) {
+        return;
+    }
+
+    ui->HistoryRecord = lv_obj_create(NULL);
+    lv_obj_remove_style_all(ui->HistoryRecord);
+    lv_obj_set_size(ui->HistoryRecord, AURORA_SCREEN_W, AURORA_SCREEN_H);
+    lv_obj_clear_flag(ui->HistoryRecord, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollbar_mode(ui->HistoryRecord, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_set_style_bg_color(ui->HistoryRecord, COL_BG, 0);
+    lv_obj_set_style_bg_grad_color(ui->HistoryRecord, COL_BG_BOT, 0);
+    lv_obj_set_style_bg_grad_dir(ui->HistoryRecord, LV_GRAD_DIR_VER, 0);
+    lv_obj_set_style_bg_opa(ui->HistoryRecord, 255, 0);
+
+    memset(s_history_row, 0, sizeof(s_history_row));
+    memset(s_history_row_main, 0, sizeof(s_history_row_main));
+    memset(s_history_row_sub, 0, sizeof(s_history_row_sub));
+    s_history_status = NULL;
+    s_history_detail_title = NULL;
+    s_history_detail_status = NULL;
+    s_history_detail_msg = NULL;
+    s_history_detail_src = NULL;
+    s_history_recent_mode = 1U;
+    s_history_selected = 0U;
+    if (s_history_date[0] == '-' || s_history_date[0] == '\0') {
+        history_record_set_today();
+    }
+
+    header = lv_obj_create(ui->HistoryRecord);
+    lv_obj_remove_style_all(header);
+    lv_obj_set_pos(header, 0, 0);
+    lv_obj_set_size(header, AURORA_SCREEN_W, AURORA_HEADER_H);
+    lv_obj_set_style_bg_color(header, COL_PANEL, 0);
+    lv_obj_set_style_bg_opa(header, 255, 0);
+    lv_obj_clear_flag(header, LV_OBJ_FLAG_SCROLLABLE);
+
+    ui->HistoryRecord_lbl_title = lv_label_create(header);
+    lv_label_set_text(ui->HistoryRecord_lbl_title, "历史记录");
+    lv_obj_set_style_text_color(ui->HistoryRecord_lbl_title, COL_TITLE_HL, 0);
+    lv_obj_set_style_text_font(ui->HistoryRecord_lbl_title, gui_assets_get_font_30(), 0);
+    lv_obj_align(ui->HistoryRecord_lbl_title, LV_ALIGN_LEFT_MID, 28, 0);
+
+    ui->HistoryRecord_lbl_status = lv_label_create(header);
+    lv_label_set_text(ui->HistoryRecord_lbl_status, "SD故障档案");
+    lv_obj_set_style_text_color(ui->HistoryRecord_lbl_status, COL_TEXT_DIM, 0);
+    lv_obj_set_style_text_font(ui->HistoryRecord_lbl_status, gui_assets_get_font_16(), 0);
+    lv_label_set_long_mode(ui->HistoryRecord_lbl_status, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(ui->HistoryRecord_lbl_status, 420);
+    lv_obj_align(ui->HistoryRecord_lbl_status, LV_ALIGN_RIGHT_MID, -24, 0);
+    s_history_status = ui->HistoryRecord_lbl_status;
+
+    list = fault_monitor_create_panel(ui->HistoryRecord, 24, 82, 430, 328, COL_GREEN, "本机故障档案");
+    for (uint8_t i = 0U; i < HISTORY_RECORD_ROWS; ++i) {
+        s_history_row[i] = lv_obj_create(list);
+        lv_obj_remove_style_all(s_history_row[i]);
+        lv_obj_set_pos(s_history_row[i], 16, (lv_coord_t)(42 + i * 54));
+        lv_obj_set_size(s_history_row[i], 398, 48);
+        lv_obj_set_style_radius(s_history_row[i], 10, 0);
+        lv_obj_set_style_bg_color(s_history_row[i], lv_color_hex(0xF8FAFC), 0);
+        lv_obj_set_style_bg_opa(s_history_row[i], 255, 0);
+        lv_obj_set_style_border_width(s_history_row[i], 1, 0);
+        lv_obj_set_style_border_color(s_history_row[i], COL_DIV, 0);
+        lv_obj_add_flag(s_history_row[i], LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_clear_flag(s_history_row[i], LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_event_cb(s_history_row[i], history_record_row_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)i);
+        s_history_row_main[i] = fault_monitor_create_label(s_history_row[i], "--", 12, 5, 374, COL_TEXT,
+                                                           gui_assets_get_font_16());
+        s_history_row_sub[i] = fault_monitor_create_label(s_history_row[i], "--", 12, 26, 374, COL_TEXT_DIM,
+                                                          gui_assets_get_font_12());
+    }
+    ui->HistoryRecord_lbl_rows[0] = s_history_row_main[0];
+    ui->HistoryRecord_lbl_rows[1] = s_history_row_main[1];
+    ui->HistoryRecord_lbl_rows[2] = s_history_row_main[2];
+    ui->HistoryRecord_lbl_rows[3] = s_history_row_main[3];
+    ui->HistoryRecord_lbl_rows[4] = s_history_row_main[4];
+
+    detail = fault_monitor_create_panel(ui->HistoryRecord, 470, 82, 306, 328, COL_BLUE, "记录详情");
+    s_history_detail_title = fault_monitor_create_label(detail, "--", 18, 46, 270, COL_TEXT, gui_assets_get_font_20());
+    s_history_detail_status = fault_monitor_create_label(detail, "--", 18, 84, 270, COL_TEXT_DIM, gui_assets_get_font_14());
+    s_history_detail_msg = fault_monitor_create_label(detail, "--", 18, 122, 270, COL_TEXT, gui_assets_get_font_14());
+    lv_label_set_long_mode(s_history_detail_msg, LV_LABEL_LONG_WRAP);
+    lv_obj_set_height(s_history_detail_msg, 96);
+    s_history_detail_src = fault_monitor_create_label(detail, "--", 18, 242, 270, COL_TEXT_DIM, gui_assets_get_font_12());
+    ui->HistoryRecord_lbl_detail = s_history_detail_msg;
+
+    fault_monitor_create_button(ui->HistoryRecord, 24, "最近", COL_GREEN, history_record_recent_cb, ui);
+    fault_monitor_create_button(ui->HistoryRecord, 148, "今天", COL_BLUE, history_record_today_cb, ui);
+    fault_monitor_create_button(ui->HistoryRecord, 272, "前一天", COL_AMBER, history_record_prev_cb, ui);
+    fault_monitor_create_button(ui->HistoryRecord, 396, "后一天", COL_AMBER, history_record_next_cb, ui);
+    fault_monitor_create_button(ui->HistoryRecord, 520, "刷新", COL_GREEN, history_record_refresh_cb, ui);
+    ui->HistoryRecord_lbl_back = fault_monitor_create_button(ui->HistoryRecord, 644, "返回", COL_BLUE, history_record_back_cb, ui);
+    ui->HistoryRecord_btn_back = lv_obj_get_parent(ui->HistoryRecord_lbl_back);
+
+    lv_obj_update_layout(ui->HistoryRecord);
+    history_record_refresh(ui);
+}
+
 /**********************
  * PUBLIC FUNCTION
  **********************/
@@ -429,6 +1230,10 @@ void setup_scr_Aurora(lv_ui * ui)
     nav_param.target = AURORA_NAV_PARAM;
     nav_realtime.ui = ui;
     nav_realtime.target = AURORA_NAV_REALTIME;
+    nav_fault_monitor.ui = ui;
+    nav_fault_monitor.target = AURORA_NAV_FAULT_MONITOR;
+    nav_history.ui = ui;
+    nav_history.target = AURORA_NAV_HISTORY;
     nav_about.ui = ui;
     nav_about.target = AURORA_NAV_ABOUT;
 
@@ -541,9 +1346,9 @@ void setup_scr_Aurora(lv_ui * ui)
 
     lv_obj_t * p1 = create_grid_page(ui_Carousel);
     create_app_card(p1, "实时监控", 0, COL_BLUE, &nav_realtime);
-    create_app_card(p1, "故障监测", 1, COL_RED, NULL);
+    create_app_card(p1, "故障监测", 1, COL_RED, &nav_fault_monitor);
     create_app_card(p1, "数据分析", 2, COL_PURPLE, NULL);
-    create_app_card(p1, "历史记录", 3, COL_GREEN, NULL);
+    create_app_card(p1, "历史记录", 3, COL_GREEN, &nav_history);
     create_app_card(p1, "日志查看", 4, COL_CYAN, NULL);
     create_app_card(p1, "报警设置", 5, COL_ORANGE, NULL);
 

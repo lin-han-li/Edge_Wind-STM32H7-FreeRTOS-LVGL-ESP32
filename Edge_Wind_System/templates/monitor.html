@@ -126,7 +126,7 @@
                         <h3 class="fw-bold text-primary mb-0" id="val-voltage">--</h3>
                         <small class="text-muted">V</small>
                         <div class="select-badge text-primary mt-2">
-                            <i class="bi bi-check-circle-fill me-1"></i>已选中
+                            已选中
                         </div>
                 </div>
             </div>
@@ -142,7 +142,7 @@
                         <h3 class="fw-bold text-danger mb-0" id="val-voltage-neg">--</h3>
                         <small class="text-muted">V</small>
                         <div class="select-badge text-danger mt-2">
-                            <i class="bi bi-check-circle-fill me-1"></i>已选中
+                            已选中
                     </div>
                 </div>
             </div>
@@ -156,7 +156,7 @@
                         <h3 class="fw-bold mb-0" id="val-current" style="color:#2ca02c;">--</h3>
                         <small class="text-muted">A</small>
                         <div class="select-badge mt-2" style="color:#2ca02c;">
-                            <i class="bi bi-check-circle-fill me-1"></i>已选中
+                            已选中
                     </div>
                 </div>
             </div>
@@ -172,7 +172,7 @@
                         <h3 class="fw-bold mb-0" id="val-leakage" style="color:#9467bd;">--</h3>
                         <small class="text-muted">mA</small>
                         <div class="select-badge mt-2" style="color:#9467bd;">
-                            <i class="bi bi-check-circle-fill me-1"></i>已选中
+                            已选中
                     </div>
                 </div>
             </div>
@@ -1322,9 +1322,9 @@
             if (NODE_CONFIGS[nodeId]) {
                 selectNode(nodeId);
                 pendingNodeSelection = null;  // 清除待选择标记
-                console.log(`✅ 已自动选择边缘节点: ${nodeId}`);
+                console.log(`[OK] 已自动选择边缘节点: ${nodeId}`);
             } else {
-                console.warn(`⚠️ 边缘节点 ${nodeId} 不存在或未在线`);
+                console.warn(`[WARN] 边缘节点 ${nodeId} 不存在或未在线`);
                 pendingNodeSelection = null;  // 清除无效的待选择标记
             }
         }
@@ -1540,9 +1540,9 @@
             alarmState.voltageHighPos = voltageHighPos;
             if (typeof window.publishSystemEvent === 'function') {
                 if (voltageHighPos) {
-                    window.publishSystemEvent(`⚠️ 直流母线(+)电压超限：${voltage.toFixed(2)}V > 阈值${alarmThresholds.voltageMax}V`, 'warning');
+                    window.publishSystemEvent(`直流母线(+)电压超限：${voltage.toFixed(2)}V > 阈值${alarmThresholds.voltageMax}V`, 'warning');
                 } else {
-                    window.publishSystemEvent(`✅ 直流母线(+)电压已恢复：${voltage.toFixed(2)}V`, 'success');
+                    window.publishSystemEvent(`直流母线(+)电压已恢复：${voltage.toFixed(2)}V`, 'success');
                 }
             }
         }
@@ -1551,9 +1551,9 @@
             alarmState.voltageHighNeg = voltageHighNeg;
             if (typeof window.publishSystemEvent === 'function') {
                 if (voltageHighNeg) {
-                    window.publishSystemEvent(`⚠️ 直流母线(-)电压超限：${voltageNeg.toFixed(2)}V（幅值>${alarmThresholds.voltageMax}V）`, 'warning');
+                    window.publishSystemEvent(`直流母线(-)电压超限：${voltageNeg.toFixed(2)}V（幅值>${alarmThresholds.voltageMax}V）`, 'warning');
                 } else {
-                    window.publishSystemEvent(`✅ 直流母线(-)电压已恢复：${voltageNeg.toFixed(2)}V`, 'success');
+                    window.publishSystemEvent(`直流母线(-)电压已恢复：${voltageNeg.toFixed(2)}V`, 'success');
                 }
             }
         }
@@ -1562,9 +1562,9 @@
             alarmState.leakageHigh = leakageHigh;
             if (typeof window.publishSystemEvent === 'function') {
                 if (leakageHigh) {
-                    window.publishSystemEvent(`⚠️ 漏电流超限：${leakage.toFixed(3)}mA > 阈值${alarmThresholds.leakageThreshold}mA`, 'warning');
+                    window.publishSystemEvent(`漏电流超限：${leakage.toFixed(3)}mA > 阈值${alarmThresholds.leakageThreshold}mA`, 'warning');
                 } else {
-                    window.publishSystemEvent(`✅ 漏电流已恢复：${leakage.toFixed(3)}mA`, 'success');
+                    window.publishSystemEvent(`漏电流已恢复：${leakage.toFixed(3)}mA`, 'success');
                 }
             }
         }
@@ -1941,12 +1941,12 @@
                 }
             }, 300);
             
-            console.log(`✅ 已自动聚焦到边缘节点: ${targetNodeId}`);
+            console.log(`[OK] 已自动聚焦到边缘节点: ${targetNodeId}`);
         } else if (focusType && !targetNodeId) {
             // 如果指定了focus但没有找到匹配的边缘节点，标记为已处理，避免重复尝试
             autoFocusHandled = true;
             window.history.replaceState({}, document.title, '/monitor');
-            console.log(`⚠️ 未找到匹配的边缘节点 (focus: ${focusType})`);
+            console.log(`[WARN] 未找到匹配的边缘节点 (focus: ${focusType})`);
         }
     }
 
@@ -2039,20 +2039,17 @@
             const isFault = (faultCode && faultCode !== 'E00') || status === 'fault' || status === 'faulty';
             
             // 确定状态徽章样式（单一徽章：离线 / 正常 / 故障码）
-            let badgeClass, badgeText, badgeIcon;
+            let badgeClass, badgeText;
             if (isFault) {
                 badgeClass = 'bg-danger';
                 badgeText = faultCode;
-                badgeIcon = '⚠';
             } else if (status === 'online') {
                 badgeClass = 'bg-success';
                 // 统一显示“正常”，避免“在线/正常”来回切换造成观感跳动
                 badgeText = '正常';
-                badgeIcon = '●';
-                } else {
+            } else {
                 badgeClass = 'bg-secondary';
                 badgeText = '离线';
-                badgeIcon = '○';
             }
             
             // 查找现有元素
@@ -2074,7 +2071,7 @@
                             <div class="fw-bold">${escapeHtml(nodeId)}</div>
                         </div>
                         <span id="${bid}" class="badge rounded-pill ${badgeClass}">
-                            ${badgeIcon} ${badgeText}
+                            ${badgeText}
                         </span>
                 </div>
             `;
@@ -2105,7 +2102,7 @@
                     const currentBadgeClass = badge.classList.contains('bg-danger') ? 'bg-danger' :
                                              badge.classList.contains('bg-success') ? 'bg-success' : 'bg-secondary';
                     const currentBadgeText = badge.textContent.trim();
-                    const targetBadgeText = `${badgeIcon} ${badgeText}`;
+                    const targetBadgeText = badgeText;
                     
                     // 只在状态变化时更新badge（避免不必要的DOM操作）
                     if (currentBadgeClass !== badgeClass || currentBadgeText !== targetBadgeText) {
@@ -2275,7 +2272,7 @@
                                 if (cardBody && !cardBody.querySelector('.text-primary')) {
                                     const selectedDiv = document.createElement('div');
                                     selectedDiv.className = 'mt-2';
-                                    selectedDiv.innerHTML = '<small class="text-primary"><i class="bi bi-check-circle"></i> 已选中</small>';
+                                    selectedDiv.innerHTML = '<small class="text-primary">已选中</small>';
                                     cardBody.appendChild(selectedDiv);
                                 }
                             } else {
@@ -2764,7 +2761,7 @@
     // ========== WebSocket 实时推送系统 ==========
     function initWebSocket() {
         if (typeof io === 'undefined') {
-            console.error('❌ Socket.IO未加载，回退到HTTP轮询模式');
+        console.error('[ERROR] Socket.IO未加载，回退到HTTP轮询模式');
             // 回退到轮询模式
             startPollingFallback();
             return;
@@ -2840,12 +2837,12 @@
         });
         
         socket.on('disconnect', () => {
-            console.warn('⚠️ [WebSocket] 连接断开，回退到HTTP轮询模式');
+                console.warn('[WARN] [WebSocket] 连接断开，回退到HTTP轮询模式');
             startPollingFallback();
         });
         
         socket.on('connect_error', (error) => {
-            console.error('❌ [WebSocket] 连接错误:', error);
+            console.error('[ERROR] [WebSocket] 连接错误:', error);
             console.log('🔄 [WebSocket] 回退到HTTP轮询模式');
             startPollingFallback();
         });
@@ -3040,22 +3037,19 @@
                     const faultCode = msg.fault_code || 'E00';
                     const isFault = (faultCode && faultCode !== 'E00') || status === 'fault' || status === 'faulty';
                     
-                    let badgeClass, badgeText, badgeIcon;
+                    let badgeClass, badgeText;
                     if (isFault) {
                         badgeClass = 'bg-danger';
                         badgeText = faultCode;
-                        badgeIcon = '⚠';
                     } else if (status === 'online') {
                         badgeClass = 'bg-success';
                         badgeText = '正常';
-                        badgeIcon = '●';
                     } else {
                         badgeClass = 'bg-secondary';
                         badgeText = '离线';
-                        badgeIcon = '○';
                     }
                     
-                    const targetText = `${badgeIcon} ${badgeText}`;
+                    const targetText = badgeText;
                     const currentText = badge.textContent.trim();
                     const currentClass = badge.classList.contains('bg-danger') ? 'bg-danger' :
                                          badge.classList.contains('bg-success') ? 'bg-success' : 'bg-secondary';
@@ -3161,7 +3155,7 @@
                             // 立即显示弹窗
                             requestAnimationFrame(() => {
                                 window.publishSystemEvent(
-                                    `⚠️ 边缘节点 ${msg.node_id} 检测到故障: ${faultTypeName} (${currentCode})`,
+                                    `边缘节点 ${msg.node_id} 检测到故障: ${faultTypeName} (${currentCode})`,
                                     'error'
                                 );
                             });
@@ -3180,7 +3174,7 @@
                             // 立即显示恢复通知
                             requestAnimationFrame(() => {
                                 window.publishSystemEvent(
-                                    `✅ 边缘节点 ${msg.node_id} 故障已清除，恢复正常状态`,
+                                    `边缘节点 ${msg.node_id} 故障已清除，恢复正常状态`,
                                     'success'
                                 );
                             });
@@ -3415,19 +3409,16 @@
             const isFault = status === 'fault' || status === 'faulty';
             
             // 确定状态徽章样式
-            let badgeClass, badgeText, badgeIcon;
+            let badgeClass, badgeText;
             if (isFault) {
                 badgeClass = 'bg-danger';
                 badgeText = faultCode;
-                badgeIcon = '⚠';
             } else if (status === 'online') {
                 badgeClass = 'bg-success';
                 badgeText = '在线';
-                badgeIcon = '●';
             } else {
                 badgeClass = 'bg-secondary';
                 badgeText = '离线';
-                badgeIcon = '○';
             }
             
             // 只更新badge（最小化DOM操作）
@@ -3435,7 +3426,7 @@
             if (badge) {
                 const currentBadgeClass = badge.classList.contains('bg-danger') ? 'bg-danger' :
                                          badge.classList.contains('bg-success') ? 'bg-success' : 'bg-secondary';
-                const targetBadgeText = `${badgeIcon} ${badgeText}`;
+                const targetBadgeText = badgeText;
                 
                 if (currentBadgeClass !== badgeClass) {
                     badge.classList.remove('bg-danger', 'bg-success', 'bg-secondary');
@@ -3630,7 +3621,7 @@
         if (!data || (!data.waveform && !data.fft_spectrum)) {
             debugLog(`[updateCharts] 警告：边缘节点 ${currentNodeId} 通道 ${currentChannelIndex} (ID: ${channelId}) 没有波形/频谱数据`);
         } else {
-            debugLog(`[updateCharts] ✅ 边缘节点: ${currentNodeId}, 通道索引: ${currentChannelIndex}, 通道ID: ${channelId}, 波形点数: ${data.waveform?.length || 0}, FFT点数: ${data.fft_spectrum?.length || 0}`);
+            debugLog(`[updateCharts] OK 边缘节点: ${currentNodeId}, 通道索引: ${currentChannelIndex}, 通道ID: ${channelId}, 波形点数: ${data.waveform?.length || 0}, FFT点数: ${data.fft_spectrum?.length || 0}`);
         }
         
         // 只更新当前激活的标签页图表（性能优化）
@@ -4947,23 +4938,31 @@
         
         // 类型映射
         const typeConfig = {
-            'success': { icon: '✅', color: 'success' },
-            'warning': { icon: '⚠️', color: 'warning' },
-            'error': { icon: '❌', color: 'error' },
-            'info': { icon: 'ℹ️', color: 'info' }
+            'success': { color: 'success' },
+            'warning': { color: 'warning' },
+            'error': { color: 'error' },
+            'info': { color: 'info' }
         };
         
         const config = typeConfig[type] || typeConfig['info'];
+        const normalizeToastMessage = window.normalizeNotificationText || (value => String(value ?? '')
+            .replace(/[\u2705\u274c\u26a0\u2139]/g, '')
+            .replace(/\ufe0f/g, '')
+            .replace(/^\s+/, ''));
+        const toastIconHtml = typeof window.getToastIconHtml === 'function'
+            ? window.getToastIconHtml(type)
+            : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round"><path d="M12 10v7"/><path d="M12 7h.01"/><circle cx="12" cy="12" r="9"/></svg>';
+        const safeMessage = escapeHtml(normalizeToastMessage(message));
         
         // 创建 Toast 元素
         const toast = document.createElement('div');
         toast.className = `custom-toast ${config.color}`;
         toast.innerHTML = `
-            <span class="custom-toast-icon">${config.icon}</span>
+            <span class="custom-toast-icon" aria-hidden="true">${toastIconHtml}</span>
             <div class="custom-toast-content">
-                <div class="custom-toast-message">${escapeHtml(message)}</div>
+                <div class="custom-toast-message">${safeMessage}</div>
             </div>
-            <span class="custom-toast-close" onclick="this.parentElement.remove()">×</span>
+            <span class="custom-toast-close" onclick="this.parentElement.remove()">x</span>
         `;
         
         // 添加到容器

@@ -9,6 +9,22 @@
 #include <stdlib.h>
 #include <string.h>
 
+static char s_fault_log_last_error[64] = "OK";
+
+static void sd_fault_set_error(const char *stage, int code)
+{
+	if (!stage) {
+		stage = "unknown";
+	}
+	(void)snprintf(s_fault_log_last_error, sizeof(s_fault_log_last_error),
+	               "%s:%d", stage, code);
+}
+
+const char *SD_Fault_LastError(void)
+{
+	return s_fault_log_last_error;
+}
+
 static void sd_sanitize_str(char *dst, size_t dst_len, const char *src)
 {
 	if (!dst || dst_len == 0) {
@@ -95,11 +111,13 @@ static bool sd_json_get_string(const char *json, const char *key, char *out, siz
 static bool sd_append_line(const char *path, const char *line)
 {
 	if (!path || !line) {
+		sd_fault_set_error("append_arg", -1);
 		return false;
 	}
 	FIL fil;
 	FRESULT res = f_open(&fil, path, FA_OPEN_ALWAYS | FA_WRITE);
 	if (res != FR_OK) {
+		sd_fault_set_error("open", (int)res);
 		return false;
 	}
 	(void)f_lseek(&fil, f_size(&fil));
@@ -107,6 +125,11 @@ static bool sd_append_line(const char *path, const char *line)
 	res = f_write(&fil, line, (UINT)strlen(line), &bw);
 	(void)f_sync(&fil);
 	(void)f_close(&fil);
+	if (res != FR_OK) {
+		sd_fault_set_error("write", (int)res);
+	} else if (bw != (UINT)strlen(line)) {
+		sd_fault_set_error("short_write", (int)bw);
+	}
 	return (res == FR_OK && bw == (UINT)strlen(line));
 }
 
@@ -147,30 +170,51 @@ static void sd_reverse_faults(FaultEntry_t *arr, uint32_t start, uint32_t end)
 
 bool SD_Fault_Log(uint8_t level, uint8_t code, const char *msg)
 {
-	if (SD_Init() != FR_OK) {
+	sd_fault_set_error("OK", 0);
+	FRESULT res = SD_Init();
+	if (res != FR_OK) {
+		sd_fault_set_error("init", (int)res);
 		return false;
 	}
+	return SD_Fault_LogMounted(level, code, msg);
+}
+
+bool SD_Fault_LogMounted(uint8_t level, uint8_t code, const char *msg)
+{
+	sd_fault_set_error("OK", 0);
+	FRESULT res;
 	char date[16];
 	char month[16];
-	if (!SD_Time_GetDate(date, sizeof(date)) || !SD_Time_GetMonthTag(month, sizeof(month))) {
-		return false;
+	if (!SD_Time_GetDate(date, sizeof(date))) {
+		(void)snprintf(date, sizeof(date), "2000-01-01");
+		sd_fault_set_error("date_fallback", -1);
+	}
+	if (!SD_Time_GetMonthTag(month, sizeof(month))) {
+		(void)snprintf(month, sizeof(month), "2000-01");
+		sd_fault_set_error("month_fallback", -1);
 	}
 	char date_dir[64];
 	if (snprintf(date_dir, sizeof(date_dir), "0:/data/%s", date) <= 0) {
+		sd_fault_set_error("date_dir", -1);
 		return false;
 	}
-	if (SD_MkdirRecursive(date_dir) != FR_OK) {
+	res = SD_MkdirRecursive(date_dir);
+	if (res != FR_OK) {
+		sd_fault_set_error("mkdir_date", (int)res);
 		return false;
 	}
 
 	char daily_path[96];
 	char month_path[96];
 	if (snprintf(daily_path, sizeof(daily_path), "%s/fault.log", date_dir) <= 0) {
+		sd_fault_set_error("daily_path", -1);
 		return false;
 	}
 	if (snprintf(month_path, sizeof(month_path), "0:/logs/event_%s.log", month) <= 0) {
+		sd_fault_set_error("month_path", -1);
 		return false;
 	}
+	(void)SD_MkdirRecursive("0:/logs");
 
 	char msg_buf[128];
 	sd_sanitize_str(msg_buf, sizeof(msg_buf), msg);
@@ -180,6 +224,7 @@ bool SD_Fault_Log(uint8_t level, uint8_t code, const char *msg)
 	                 "{\"ts\":%lu,\"level\":%u,\"code\":%u,\"msg\":\"%s\"}\r\n",
 	                 (unsigned long)ts, (unsigned)level, (unsigned)code, msg_buf);
 	if (n <= 0 || (size_t)n >= sizeof(line)) {
+		sd_fault_set_error("line", n);
 		return false;
 	}
 
@@ -187,6 +232,7 @@ bool SD_Fault_Log(uint8_t level, uint8_t code, const char *msg)
 		return false;
 	}
 	(void)sd_append_line(month_path, line);
+	sd_fault_set_error("OK", 0);
 	return true;
 }
 
@@ -199,6 +245,15 @@ bool SD_Fault_GetByDate(const char *date, FaultEntry_t *entries, uint32_t max, u
 	if (SD_Init() != FR_OK) {
 		return false;
 	}
+	return SD_Fault_GetByDateMounted(date, entries, max, count);
+}
+
+bool SD_Fault_GetByDateMounted(const char *date, FaultEntry_t *entries, uint32_t max, uint32_t *count)
+{
+	if (!date || !entries || max == 0 || !count) {
+		return false;
+	}
+	*count = 0;
 	char path[96];
 	if (snprintf(path, sizeof(path), "0:/data/%s/fault.log", date) <= 0) {
 		return false;
@@ -206,6 +261,9 @@ bool SD_Fault_GetByDate(const char *date, FaultEntry_t *entries, uint32_t max, u
 	FIL fil;
 	FRESULT res = f_open(&fil, path, FA_READ);
 	if (res != FR_OK) {
+		if (res == FR_NO_FILE || res == FR_NO_PATH) {
+			return true;
+		}
 		return false;
 	}
 	char line[256];
@@ -229,9 +287,18 @@ bool SD_Fault_GetRecent(FaultEntry_t *entries, uint32_t max, uint32_t *count)
 	if (SD_Init() != FR_OK) {
 		return false;
 	}
+	return SD_Fault_GetRecentMounted(entries, max, count);
+}
+
+bool SD_Fault_GetRecentMounted(FaultEntry_t *entries, uint32_t max, uint32_t *count)
+{
+	if (!entries || max == 0 || !count) {
+		return false;
+	}
+	*count = 0;
 	char month[16];
 	if (!SD_Time_GetMonthTag(month, sizeof(month))) {
-		return false;
+		(void)snprintf(month, sizeof(month), "2000-01");
 	}
 	char path[96];
 	if (snprintf(path, sizeof(path), "0:/logs/event_%s.log", month) <= 0) {
@@ -240,6 +307,9 @@ bool SD_Fault_GetRecent(FaultEntry_t *entries, uint32_t max, uint32_t *count)
 	FIL fil;
 	FRESULT res = f_open(&fil, path, FA_READ);
 	if (res != FR_OK) {
+		if (res == FR_NO_FILE || res == FR_NO_PATH) {
+			return true;
+		}
 		return false;
 	}
 	char line[256];

@@ -28,6 +28,8 @@
 #include "diskio.h"
 #include "bsp_driver_sd.h"
 #include "../GUI-Guider_Runtime/gui_assets_sync.h"
+#include "../SD_Card/sd_fault_log.h"
+#include "../SD_Card/sd_time.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -265,6 +267,13 @@ static inline int ESP_Appendf(char **pp, const char *end, const char *fmt, ...)
 static void ESP_Log(const char *format, ...);
 static UART_HandleTypeDef *ESP_GetLogUart(void);
 static void ESP_SetFaultCode(const char *code);
+static void ESP_FaultLog_OnCodeChange(const char *old_code, const char *new_code, const char *source);
+static void ESP_FaultLog_Poll(void);
+static bool ESP_FaultLog_PrepareMounted(uint32_t wait_ms,
+                                        FRESULT *mount_res,
+                                        FRESULT *stat_res,
+                                        DSTATUS *disk_status_out,
+                                        uint8_t *card_state_out);
 static void ESP_Console_HandleLine(char *line);
 static void ESP_AI_GoldenSelfTest(void);
 static void StrTrimInPlace(char *s);
@@ -310,8 +319,310 @@ static void ESP_SPI_ServiceDeferredSync(void);
 // 当前上报的故障码（默认正常 E00），可通过串口控制台动态修改
 static char g_fault_code[4] = "E00";
 
+typedef struct {
+    uint8_t level;
+    uint8_t code;
+    uint8_t attempts;
+    char msg[96];
+} esp_fault_log_event_t;
+
+static osMessageQueueId_t g_fault_log_q = NULL;
+static char g_fault_log_last_status[80] = "等待故障变化";
+static uint8_t g_fault_log_sd_ok = 0U;
+static uint32_t g_fault_log_next_retry_tick = 0U;
+
+static void ESP_FaultLog_EnsureQueue(void)
+{
+    if (g_fault_log_q == NULL && xTaskGetSchedulerState() != taskSCHEDULER_NOT_STARTED) {
+        g_fault_log_q = osMessageQueueNew(8, sizeof(esp_fault_log_event_t), NULL);
+        if (g_fault_log_q != NULL) {
+            strncpy(g_fault_log_last_status, "等待故障变化", sizeof(g_fault_log_last_status) - 1U);
+            g_fault_log_last_status[sizeof(g_fault_log_last_status) - 1U] = '\0';
+        }
+    }
+}
+
 static uint8_t g_ai_reported_class = 0U;
 static uint8_t g_ai_fault_code_initialized = 0U;
+
+static uint8_t ESP_FaultCodeToIndex(const char *code)
+{
+    if (code == NULL || code[0] != 'E' || code[1] < '0' || code[1] > '9' ||
+        code[2] < '0' || code[2] > '9') {
+        return 0U;
+    }
+    return (uint8_t)(((uint8_t)(code[1] - '0') * 10U) + (uint8_t)(code[2] - '0'));
+}
+
+static const char *ESP_FaultNameFromCode(const char *code)
+{
+    uint8_t idx = ESP_FaultCodeToIndex(code);
+    switch (idx) {
+    case 0U: return "正常运行";
+    case 1U: return "交流窜入";
+    case 2U: return "绝缘故障";
+    case 3U: return "电容老化";
+    case 4U: return "IGBT开路";
+    case 5U: return "直流母线接地";
+    case 6U: return "PWM异常";
+    default: return "未知故障";
+    }
+}
+
+static uint8_t ESP_FaultLevelFromCode(const char *code)
+{
+    uint8_t idx = ESP_FaultCodeToIndex(code);
+    switch (idx) {
+    case 4U:
+    case 5U:
+        return 3U;
+    case 1U:
+    case 2U:
+    case 6U:
+        return 2U;
+    case 3U:
+        return 1U;
+    default:
+        return 0U;
+    }
+}
+
+static const char *ESP_FaultLevelTextFromCode(const char *code)
+{
+    switch (ESP_FaultLevelFromCode(code)) {
+    case 3U: return "高";
+    case 2U: return "中";
+    case 1U: return "低";
+    default: return "正常";
+    }
+}
+
+static const char *ESP_FaultAdviceFromCode(const char *code)
+{
+    uint8_t idx = ESP_FaultCodeToIndex(code);
+    switch (idx) {
+    case 0U:
+        return "持续监测，保持上传链路正常。";
+    case 1U:
+        return "检查交流侧隔离与整流输入，确认是否有交流分量窜入直流母线。";
+    case 2U:
+        return "复核绝缘电阻与泄漏电流，优先排查电缆、端子和潮湿污染点。";
+    case 3U:
+        return "关注纹波和温升，安排电容容量、ESR与外观检查。";
+    case 4U:
+        return "停机前按规程复核驱动、栅极信号和模块开路风险。";
+    case 5U:
+        return "立即检查接地支路、母线绝缘和保护动作记录，必要时人工隔离确认。";
+    case 6U:
+        return "复核PWM驱动、控制线缆和功率模块响应，观察是否重复出现。";
+    default:
+        return "保持监测，等待更多本机数据。";
+    }
+}
+
+static void ESP_FaultLog_Enqueue(uint8_t level, uint8_t code, const char *msg)
+{
+    esp_fault_log_event_t ev;
+    memset(&ev, 0, sizeof(ev));
+    ev.level = level;
+    ev.code = code;
+    if (msg != NULL) {
+        strncpy(ev.msg, msg, sizeof(ev.msg) - 1U);
+        ev.msg[sizeof(ev.msg) - 1U] = '\0';
+    }
+
+    ESP_FaultLog_EnsureQueue();
+    if (g_fault_log_q == NULL) {
+        strncpy(g_fault_log_last_status, "SD记录队列未就绪", sizeof(g_fault_log_last_status) - 1U);
+        g_fault_log_last_status[sizeof(g_fault_log_last_status) - 1U] = '\0';
+        g_fault_log_sd_ok = 0U;
+        return;
+    }
+
+    if (osMessageQueuePut(g_fault_log_q, &ev, 0U, 0U) != osOK) {
+        strncpy(g_fault_log_last_status, "SD记录队列满，已丢弃", sizeof(g_fault_log_last_status) - 1U);
+        g_fault_log_last_status[sizeof(g_fault_log_last_status) - 1U] = '\0';
+        g_fault_log_sd_ok = 0U;
+        ESP_Log("[FaultSD] queue full, drop code=E%02u\r\n", (unsigned int)code);
+    }
+}
+
+static void ESP_FaultLog_OnCodeChange(const char *old_code, const char *new_code, const char *source)
+{
+    char msg[96];
+    const char *src = (source != NULL) ? source : "local";
+    if (old_code == NULL || new_code == NULL || strncmp(old_code, new_code, 3U) == 0) {
+        return;
+    }
+
+    if (strncmp(old_code, "E00", 3U) != 0 && strncmp(new_code, "E00", 3U) == 0) {
+        uint8_t old_idx = ESP_FaultCodeToIndex(old_code);
+        snprintf(msg, sizeof(msg), "故障恢复 %s %s 来源:%s", old_code, ESP_FaultNameFromCode(old_code), src);
+        ESP_FaultLog_Enqueue(0U, old_idx, msg);
+    } else if (strncmp(old_code, "E00", 3U) == 0 && strncmp(new_code, "E00", 3U) != 0) {
+        uint8_t new_idx = ESP_FaultCodeToIndex(new_code);
+        snprintf(msg, sizeof(msg), "故障发生 %s %s 等级:%s 来源:%s",
+                 new_code, ESP_FaultNameFromCode(new_code), ESP_FaultLevelTextFromCode(new_code), src);
+        ESP_FaultLog_Enqueue(ESP_FaultLevelFromCode(new_code), new_idx, msg);
+    } else {
+        uint8_t old_idx = ESP_FaultCodeToIndex(old_code);
+        uint8_t new_idx = ESP_FaultCodeToIndex(new_code);
+        snprintf(msg, sizeof(msg), "故障恢复 %s %s 来源:%s", old_code, ESP_FaultNameFromCode(old_code), src);
+        ESP_FaultLog_Enqueue(0U, old_idx, msg);
+        snprintf(msg, sizeof(msg), "故障发生 %s %s 等级:%s 来源:%s",
+                 new_code, ESP_FaultNameFromCode(new_code), ESP_FaultLevelTextFromCode(new_code), src);
+        ESP_FaultLog_Enqueue(ESP_FaultLevelFromCode(new_code), new_idx, msg);
+    }
+}
+
+static bool ESP_FaultLog_PrepareMounted(uint32_t wait_ms,
+                                        FRESULT *mount_res,
+                                        FRESULT *stat_res,
+                                        DSTATUS *disk_status_out,
+                                        uint8_t *card_state_out)
+{
+    FRESULT mres;
+    FRESULT sres;
+    DSTATUS dstat;
+    uint8_t cstate;
+
+    if (SDPath[0] == '\0') {
+        MX_FATFS_Init();
+    }
+
+    dstat = disk_initialize(0);
+    uint32_t t0 = HAL_GetTick();
+    do {
+        cstate = BSP_SD_GetCardState();
+        if (cstate == SD_TRANSFER_OK) {
+            break;
+        }
+        osDelay(5);
+    } while ((HAL_GetTick() - t0) < wait_ms);
+
+    mres = f_mount(&SDFatFS, (TCHAR const *)SDPath, 1);
+    DIR root_dir;
+    sres = (mres == FR_OK) ? f_opendir(&root_dir, "0:/") : mres;
+    if (sres == FR_OK) {
+        (void)f_closedir(&root_dir);
+    }
+
+    if (mount_res != NULL) {
+        *mount_res = mres;
+    }
+    if (stat_res != NULL) {
+        *stat_res = sres;
+    }
+    if (disk_status_out != NULL) {
+        *disk_status_out = dstat;
+    }
+    if (card_state_out != NULL) {
+        *card_state_out = cstate;
+    }
+    return (mres == FR_OK && sres == FR_OK);
+}
+
+static void ESP_FaultLog_Poll(void)
+{
+    esp_fault_log_event_t ev;
+    bool ok = false;
+    bool locked = false;
+    bool prepared = false;
+    FRESULT mount_res = FR_INT_ERR;
+    FRESULT stat_res = FR_INT_ERR;
+    DSTATUS disk_st = STA_NOINIT;
+    uint8_t card_state = 0xFFU;
+    uint32_t now = HAL_GetTick();
+
+    ESP_FaultLog_EnsureQueue();
+    if (g_fault_log_q == NULL) {
+        return;
+    }
+    if (g_fault_log_next_retry_tick != 0U &&
+        (int32_t)(now - g_fault_log_next_retry_tick) < 0) {
+        return;
+    }
+    if (osMessageQueueGet(g_fault_log_q, &ev, NULL, 0U) != osOK) {
+        return;
+    }
+
+    if (!EdgeWind_SD_WaitIdle(1200U)) {
+        g_fault_log_sd_ok = 0U;
+        snprintf(g_fault_log_last_status, sizeof(g_fault_log_last_status),
+                 "SD资源忙，待重试 E%02u", (unsigned int)ev.code);
+        ESP_Log("[FaultSD] qspi/sd busy, retry code=E%02u\r\n", (unsigned int)ev.code);
+        (void)osMessageQueuePut(g_fault_log_q, &ev, 0U, 0U);
+        g_fault_log_next_retry_tick = now + 1000U;
+        return;
+    }
+
+    locked = EdgeWind_SD_Lock(1800U);
+    if (locked) {
+        prepared = ESP_FaultLog_PrepareMounted(600U, &mount_res, &stat_res, &disk_st, &card_state);
+        if (prepared) {
+            ok = SD_Fault_LogMounted(ev.level, ev.code, ev.msg);
+        }
+        EdgeWind_SD_Unlock();
+    } else {
+        g_fault_log_sd_ok = 0U;
+        snprintf(g_fault_log_last_status, sizeof(g_fault_log_last_status),
+                 "SD锁忙，待重试 E%02u", (unsigned int)ev.code);
+        ESP_Log("[FaultSD] lock busy, retry code=E%02u\r\n", (unsigned int)ev.code);
+        (void)osMessageQueuePut(g_fault_log_q, &ev, 0U, 0U);
+        g_fault_log_next_retry_tick = now + 1000U;
+        return;
+    }
+
+    if (!prepared) {
+        g_fault_log_sd_ok = 0U;
+        ev.attempts++;
+        snprintf(g_fault_log_last_status, sizeof(g_fault_log_last_status),
+                 "SD挂载失败 m%d s%d", (int)mount_res, (int)stat_res);
+        ESP_Log("[FaultSD] mount/stat failed retry=%u code=E%02u disk=0x%02X state=%u mount=%d stat=%d\r\n",
+                (unsigned int)ev.attempts,
+                (unsigned int)ev.code,
+                (unsigned int)disk_st,
+                (unsigned int)card_state,
+                (int)mount_res,
+                (int)stat_res);
+        if (ev.attempts < 3U) {
+            (void)osMessageQueuePut(g_fault_log_q, &ev, 0U, 0U);
+            g_fault_log_next_retry_tick = now + 1000U;
+        }
+        return;
+    }
+
+    if (ok) {
+        g_fault_log_sd_ok = 1U;
+        snprintf(g_fault_log_last_status, sizeof(g_fault_log_last_status),
+                 "SD已记录 E%02u", (unsigned int)ev.code);
+        ESP_Log("[FaultSD] write ok level=%u code=E%02u msg=%s\r\n",
+                (unsigned int)ev.level, (unsigned int)ev.code, ev.msg);
+    } else {
+        g_fault_log_sd_ok = 0U;
+        ev.attempts++;
+        if (ev.attempts < 3U) {
+            snprintf(g_fault_log_last_status, sizeof(g_fault_log_last_status),
+                     "SD写失败:%s 重试%u", SD_Fault_LastError(), (unsigned int)ev.attempts);
+            ESP_Log("[FaultSD] write failed retry=%u level=%u code=E%02u err=%s msg=%s\r\n",
+                    (unsigned int)ev.attempts,
+                    (unsigned int)ev.level,
+                    (unsigned int)ev.code,
+                    SD_Fault_LastError(),
+                    ev.msg);
+            (void)osMessageQueuePut(g_fault_log_q, &ev, 0U, 0U);
+            g_fault_log_next_retry_tick = now + 1000U;
+            return;
+        }
+        snprintf(g_fault_log_last_status, sizeof(g_fault_log_last_status),
+                 "SD写失败:%s E%02u", SD_Fault_LastError(), (unsigned int)ev.code);
+        ESP_Log("[FaultSD] write failed final level=%u code=E%02u err=%s msg=%s\r\n",
+                (unsigned int)ev.level,
+                (unsigned int)ev.code,
+                SD_Fault_LastError(),
+                ev.msg);
+    }
+}
 
 static uint8_t ESP_AI_SelectReportedClass(const EdgeWind_AI_Result_t *result)
 {
@@ -424,10 +735,14 @@ static void ESP_AI_UpdateFaultCode(const float analog_v[4][AD_ACQ_POINTS],
     {
         if ((g_ai_fault_code_initialized == 0U) || (strncmp(g_fault_code, "E00", 3U) != 0))
         {
+            char old_code[4];
+            strncpy(old_code, g_fault_code, sizeof(old_code) - 1U);
+            old_code[sizeof(old_code) - 1U] = '\0';
             strncpy(g_fault_code, "E00", sizeof(g_fault_code) - 1U);
             g_fault_code[sizeof(g_fault_code) - 1U] = '\0';
             g_ai_reported_class = 0U;
             g_ai_fault_code_initialized = 1U;
+            ESP_FaultLog_OnCodeChange(old_code, g_fault_code, "AI");
             ESP_Log("[AI] runtime error ret=%d; fallback report=E00\r\n", ret);
         }
         if ((uint32_t)(now_tick - last_ai_log_tick) >= EDGEWIND_AI_STATS_LOG_MS)
@@ -446,8 +761,12 @@ static void ESP_AI_UpdateFaultCode(const float analog_v[4][AD_ACQ_POINTS],
     reported_code = EdgeWind_AI_ClassCode(reported_class);
     if ((g_ai_fault_code_initialized == 0U) || (strncmp(g_fault_code, reported_code, 3U) != 0))
     {
+        char old_code[4];
+        strncpy(old_code, g_fault_code, sizeof(old_code) - 1U);
+        old_code[sizeof(old_code) - 1U] = '\0';
         strncpy(g_fault_code, reported_code, sizeof(g_fault_code) - 1U);
         g_fault_code[sizeof(g_fault_code) - 1U] = '\0';
+        ESP_FaultLog_OnCodeChange(old_code, g_fault_code, "AI");
         ESP_Log("[AI] fault_code updated: %s\r\n", g_fault_code);
         g_ai_fault_code_initialized = 1U;
     }
@@ -2397,6 +2716,7 @@ static void ESP_SetFaultCode(const char *code)
 {
     if (!code)
         return;
+    char old_code[4];
     char c0 = code[0];
     char c1 = code[1];
     char c2 = code[2];
@@ -2408,11 +2728,176 @@ static void ESP_SetFaultCode(const char *code)
         return;
     if (c2 < '0' || c2 > '9')
         return;
+    strncpy(old_code, g_fault_code, sizeof(old_code) - 1U);
+    old_code[sizeof(old_code) - 1U] = '\0';
     g_fault_code[0] = 'E';
     g_fault_code[1] = c1;
     g_fault_code[2] = c2;
     g_fault_code[3] = 0;
+    ESP_FaultLog_OnCodeChange(old_code, g_fault_code, "console");
     ESP_Log("[控制台] 故障码已切换为: %s（下一次上报生效）\r\n", g_fault_code);
+}
+
+static void ESP_Console_PrintFaultStatus(void)
+{
+    ESP_FaultLog_EnsureQueue();
+    ESP_Log("[Fault] code=%s name=%s level=%s sd_ok=%u sd_status=%s q=%lu\r\n",
+            g_fault_code,
+            ESP_FaultNameFromCode(g_fault_code),
+            ESP_FaultLevelTextFromCode(g_fault_code),
+            (unsigned int)g_fault_log_sd_ok,
+            g_fault_log_last_status,
+            (unsigned long)((g_fault_log_q != NULL) ? osMessageQueueGetCount(g_fault_log_q) : 0U));
+}
+
+static void ESP_Console_PrintTimeStatus(void)
+{
+    char ts[24] = {0};
+    uint32_t unix_local = SD_Time_GetUnix();
+    esp32_spi_time_sync_t sync;
+
+    if (!SD_Time_GetTimestamp(ts, sizeof(ts))) {
+        strncpy(ts, "RTC_READ_FAIL", sizeof(ts) - 1U);
+        ts[sizeof(ts) - 1U] = '\0';
+    }
+
+    if (ESP32_SPI_GetTimeSync(&sync)) {
+        ESP_Log("[Time] rtc=%s unix_local=%lu server_unix=%lu offset=%d local=%s source=%u\r\n",
+                ts,
+                (unsigned long)unix_local,
+                (unsigned long)sync.unix_utc,
+                (int)sync.tz_offset_minutes,
+                sync.iso_local,
+                (unsigned int)sync.source);
+    } else {
+        ESP_Log("[Time] rtc=%s unix_local=%lu server_sync=none\r\n",
+                ts,
+                (unsigned long)unix_local);
+    }
+}
+
+static void ESP_Console_SDStat(void)
+{
+    if (!EdgeWind_SD_WaitIdle(1200U)) {
+        ESP_Log("[SDSTAT] qspi/sd sync busy\r\n");
+        return;
+    }
+    if (!EdgeWind_SD_Lock(1800U)) {
+        ESP_Log("[SDSTAT] lock busy\r\n");
+        return;
+    }
+
+    FRESULT mount_res = FR_INT_ERR;
+    FRESULT stat_res = FR_INT_ERR;
+    DSTATUS disk_st = STA_NOINIT;
+    uint8_t card_state = 0xFFU;
+    uint8_t detected = BSP_SD_IsDetected();
+    bool ok = ESP_FaultLog_PrepareMounted(700U, &mount_res, &stat_res, &disk_st, &card_state);
+    DWORD free_clusters = 0U;
+    FATFS *fs = NULL;
+    FRESULT free_res = ok ? f_getfree("0:/", &free_clusters, &fs) : mount_res;
+
+    ESP_Log("[SDSTAT] detected=%u disk=0x%02X card_state=%u mount=%d stat=%d free=%d clusters=%lu ok=%u\r\n",
+            (unsigned int)detected,
+            (unsigned int)disk_st,
+            (unsigned int)card_state,
+            (int)mount_res,
+            (int)stat_res,
+            (int)free_res,
+            (unsigned long)free_clusters,
+            ok ? 1U : 0U);
+    EdgeWind_SD_Unlock();
+}
+
+static void ESP_Console_FaultSDTest(void)
+{
+    if (!EdgeWind_SD_WaitIdle(1200U)) {
+        ESP_Log("[FaultSD] direct test skipped: qspi/sd sync busy\r\n");
+        return;
+    }
+    if (!EdgeWind_SD_Lock(1800U)) {
+        ESP_Log("[FaultSD] direct test skipped: lock busy\r\n");
+        return;
+    }
+
+    FRESULT mount_res = FR_INT_ERR;
+    FRESULT stat_res = FR_INT_ERR;
+    DSTATUS disk_st = STA_NOINIT;
+    uint8_t card_state = 0xFFU;
+    bool prepared = ESP_FaultLog_PrepareMounted(700U, &mount_res, &stat_res, &disk_st, &card_state);
+    bool ok = false;
+    if (prepared) {
+        ok = SD_Fault_LogMounted(2U, 2U, "串口faultsd测试");
+    }
+    EdgeWind_SD_Unlock();
+
+    if (ok) {
+        g_fault_log_sd_ok = 1U;
+        snprintf(g_fault_log_last_status, sizeof(g_fault_log_last_status), "SD自测已记录 E02");
+        ESP_Log("[FaultSD] direct test write ok\r\n");
+    } else {
+        g_fault_log_sd_ok = 0U;
+        if (!prepared) {
+            snprintf(g_fault_log_last_status, sizeof(g_fault_log_last_status),
+                     "SD自测挂载失败 m%d s%d", (int)mount_res, (int)stat_res);
+            ESP_Log("[FaultSD] direct test mount failed disk=0x%02X state=%u mount=%d stat=%d\r\n",
+                    (unsigned int)disk_st,
+                    (unsigned int)card_state,
+                    (int)mount_res,
+                    (int)stat_res);
+        } else {
+            snprintf(g_fault_log_last_status, sizeof(g_fault_log_last_status),
+                     "SD自测写失败:%s", SD_Fault_LastError());
+            ESP_Log("[FaultSD] direct test write failed err=%s\r\n", SD_Fault_LastError());
+        }
+    }
+}
+
+static void ESP_Console_FaultLogRecent(void)
+{
+    if (!EdgeWind_SD_WaitIdle(1200U)) {
+        ESP_Log("[FaultLog] qspi/sd sync busy\r\n");
+        return;
+    }
+    if (!EdgeWind_SD_Lock(1800U)) {
+        ESP_Log("[FaultLog] lock busy\r\n");
+        return;
+    }
+
+    FRESULT mount_res = FR_INT_ERR;
+    FRESULT stat_res = FR_INT_ERR;
+    DSTATUS disk_st = STA_NOINIT;
+    uint8_t card_state = 0xFFU;
+    bool prepared = ESP_FaultLog_PrepareMounted(700U, &mount_res, &stat_res, &disk_st, &card_state);
+    FaultEntry_t entries[5];
+    uint32_t count = 0U;
+    bool ok = false;
+    if (prepared) {
+        ok = SD_Fault_GetRecentMounted(entries, 5U, &count);
+    }
+    EdgeWind_SD_Unlock();
+
+    if (!prepared) {
+        ESP_Log("[FaultLog] mount failed disk=0x%02X state=%u mount=%d stat=%d\r\n",
+                (unsigned int)disk_st,
+                (unsigned int)card_state,
+                (int)mount_res,
+                (int)stat_res);
+        return;
+    }
+    if (!ok) {
+        ESP_Log("[FaultLog] read recent failed\r\n");
+        return;
+    }
+    ESP_Log("[FaultLog] recent count=%lu\r\n", (unsigned long)count);
+    for (uint32_t i = 0U; i < count; ++i) {
+        ESP_Log("[FaultLog] #%lu ts=%lu level=%u code=E%02u msg=%s\r\n",
+                (unsigned long)i,
+                (unsigned long)entries[i].timestamp,
+                (unsigned int)entries[i].level,
+                (unsigned int)entries[i].code,
+                entries[i].message);
+    }
 }
 
 static void ESP_Console_HandleLine(char *line)
@@ -2500,12 +2985,44 @@ static void ESP_Console_HandleLine(char *line)
         return;
     }
 
+    if (strcmp(line, "fault?") == 0 || strcmp(line, "FAULT?") == 0)
+    {
+        ESP_Console_PrintFaultStatus();
+        return;
+    }
+
+    if (strcmp(line, "time?") == 0 || strcmp(line, "TIME?") == 0)
+    {
+        ESP_Console_PrintTimeStatus();
+        return;
+    }
+
+    if (strcmp(line, "sdstat") == 0 || strcmp(line, "SDSTAT") == 0)
+    {
+        ESP_Console_SDStat();
+        return;
+    }
+
+    if (strcmp(line, "faultsd") == 0 || strcmp(line, "FAULTSD") == 0)
+    {
+        ESP_Console_FaultSDTest();
+        return;
+    }
+
+    if (strcmp(line, "faultlog") == 0 || strcmp(line, "FAULTLOG") == 0)
+    {
+        ESP_Console_FaultLogRecent();
+        return;
+    }
+
     if (strcmp(line, "help") == 0 || strcmp(line, "?") == 0)
     {
         ESP_Log("[控制台] 可用命令：\r\n");
         ESP_Log("  - auto/wifi/tcp/reg/report : SPI cloud upload control\r\n");
         ESP_Log("  - spiping/fullstat/full1/full10/fullon/fulloff : SPI diagnostics\r\n");
         ESP_Log("  - aigolden : run SD AI golden-vector alignment when compiled in\r\n");
+        ESP_Log("  - fault?/sdstat/faultsd/faultlog : SD fault-log diagnostics\r\n");
+        ESP_Log("  - time? : RTC/server time sync diagnostics\r\n");
         ESP_Log("  - E00/E01/E02... ：切换上报故障码\r\n");
         ESP_Log("  - help 或 ?      ：显示帮助\r\n");
         return;
@@ -4061,9 +4578,10 @@ static void esp_ui_step_done(esp_ui_cmd_t step, bool ok)
 
 void ESP_UI_TaskInit(void)
 {
-    if (g_esp_ui_q)
-        return;
-    g_esp_ui_q = osMessageQueueNew(8, sizeof(uint8_t), NULL);
+    if (g_esp_ui_q == NULL) {
+        g_esp_ui_q = osMessageQueueNew(8, sizeof(uint8_t), NULL);
+    }
+    ESP_FaultLog_EnsureQueue();
 
 }
 
@@ -4108,6 +4626,36 @@ const char *ESP_UI_NodeId(void)
         return cfg->node_id;
     }
     return "--";
+}
+
+const char *ESP_UI_FaultCode(void)
+{
+    return g_fault_code;
+}
+
+const char *ESP_UI_FaultName(void)
+{
+    return ESP_FaultNameFromCode(g_fault_code);
+}
+
+const char *ESP_UI_FaultLevelText(void)
+{
+    return ESP_FaultLevelTextFromCode(g_fault_code);
+}
+
+const char *ESP_UI_FaultAdvice(void)
+{
+    return ESP_FaultAdviceFromCode(g_fault_code);
+}
+
+bool ESP_UI_FaultLogSdOk(void)
+{
+    return (g_fault_log_sd_ok != 0U);
+}
+
+const char *ESP_UI_FaultLogStatus(void)
+{
+    return g_fault_log_last_status;
 }
 
 void ESP_UI_InvalidateReg(void)
@@ -4693,6 +5241,8 @@ void ESP_UI_TaskPoll(void)
 {
     if (!g_esp_ui_q)
         return;
+
+    ESP_FaultLog_Poll();
 
     uint8_t c = 0xFF;
     /* 保持 FIFO：不要丢弃前置 WiFi/TCP/REG 等控制命令。按钮侧已做禁用/节流。 */

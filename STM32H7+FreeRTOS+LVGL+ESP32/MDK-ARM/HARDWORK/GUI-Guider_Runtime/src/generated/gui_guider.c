@@ -116,6 +116,8 @@ void init_scr_del_flag(lv_ui *ui)
 
     ui->Main_1_del = true;
     ui->RealtimeMonitor_del = true;
+    ui->FaultMonitor_del = true;
+    ui->HistoryRecord_del = true;
     ui->Main_2_del = true;
     ui->Main_3_del = true;
     ui->WifiConfig_del = true;

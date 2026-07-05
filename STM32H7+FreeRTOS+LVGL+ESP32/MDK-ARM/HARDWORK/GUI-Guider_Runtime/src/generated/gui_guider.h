@@ -52,6 +52,27 @@ typedef struct
 	lv_obj_t *RealtimeMonitor_btn_back;
 	lv_obj_t *RealtimeMonitor_lbl_back;
 
+	// FaultMonitor Screen Objects
+	lv_obj_t *FaultMonitor;
+	bool FaultMonitor_del;
+	lv_obj_t *FaultMonitor_lbl_title;
+	lv_obj_t *FaultMonitor_lbl_status;
+	lv_obj_t *FaultMonitor_lbl_current;
+	lv_obj_t *FaultMonitor_lbl_sync;
+	lv_obj_t *FaultMonitor_lbl_events[5];
+	lv_obj_t *FaultMonitor_btn_back;
+	lv_obj_t *FaultMonitor_lbl_back;
+
+	// HistoryRecord Screen Objects
+	lv_obj_t *HistoryRecord;
+	bool HistoryRecord_del;
+	lv_obj_t *HistoryRecord_lbl_title;
+	lv_obj_t *HistoryRecord_lbl_status;
+	lv_obj_t *HistoryRecord_lbl_rows[5];
+	lv_obj_t *HistoryRecord_lbl_detail;
+	lv_obj_t *HistoryRecord_btn_back;
+	lv_obj_t *HistoryRecord_lbl_back;
+
 	// === Screen 2 (Config) ===
 	lv_obj_t *Main_2;
 	bool Main_2_del;
@@ -242,6 +263,8 @@ void setup_scr_Main_3(lv_ui *ui);
 /* 运行时主界面由 custom/scr_aurora.c 的 setup_scr_Aurora() 创建（装入 ui->Main_1）。 */
 void setup_scr_Aurora(lv_ui *ui);
 void setup_scr_RealtimeMonitor(lv_ui *ui);
+void setup_scr_FaultMonitor(lv_ui *ui);
+void setup_scr_HistoryRecord(lv_ui *ui);
 void setup_scr_WifiConfig(lv_ui *ui);
 void setup_scr_ServerConfig(lv_ui *ui);
 void setup_scr_ParamConfig(lv_ui *ui);
