@@ -103,12 +103,15 @@ static lv_obj_t *s_fault_detail_advice = NULL;
 static lv_obj_t *s_fault_detail_time = NULL;
 
 #define HISTORY_RECORD_ROWS 5U
-#define HISTORY_RECORD_MAX 16U
+#define HISTORY_RECORD_MAX 30U
 static FaultEntry_t s_history_entries[HISTORY_RECORD_MAX];
 static uint32_t s_history_count = 0U;
-static uint8_t s_history_selected = 0U;
+static uint32_t s_history_selected = 0U;
+static uint32_t s_history_page = 0U;
+static uint32_t s_history_last_gesture_tick = 0U;
 static uint8_t s_history_recent_mode = 1U;
 static char s_history_date[16] = "---- -- --";
+static char s_history_status_text[96];
 static lv_obj_t *s_history_row[HISTORY_RECORD_ROWS];
 static lv_obj_t *s_history_row_main[HISTORY_RECORD_ROWS];
 static lv_obj_t *s_history_row_sub[HISTORY_RECORD_ROWS];
@@ -888,6 +891,29 @@ static void history_record_shift_date(int delta)
     (void)snprintf(s_history_date, sizeof(s_history_date), "%04d-%02d-%02d", y, m, d);
 }
 
+static uint32_t history_record_page_count(void)
+{
+    uint32_t pages = (s_history_count + HISTORY_RECORD_ROWS - 1U) / HISTORY_RECORD_ROWS;
+    return pages == 0U ? 1U : pages;
+}
+
+static void history_record_reverse_loaded(void)
+{
+    uint32_t left = 0U;
+    uint32_t right = s_history_count;
+    if (right == 0U) {
+        return;
+    }
+    right--;
+    while (left < right) {
+        FaultEntry_t tmp = s_history_entries[left];
+        s_history_entries[left] = s_history_entries[right];
+        s_history_entries[right] = tmp;
+        left++;
+        right--;
+    }
+}
+
 static bool history_record_load(char *status, size_t status_len)
 {
     bool ok = false;
@@ -911,8 +937,14 @@ static bool history_record_load(char *status, size_t status_len)
     EdgeWind_SD_Unlock();
 
     s_history_count = ok ? count : 0U;
+    if (s_history_count > 1U) {
+        history_record_reverse_loaded();
+    }
+    if (s_history_page >= history_record_page_count()) {
+        s_history_page = 0U;
+    }
     if (s_history_selected >= s_history_count) {
-        s_history_selected = 0U;
+        s_history_selected = s_history_count > 0U ? (s_history_page * HISTORY_RECORD_ROWS) : 0U;
     }
     if (status != NULL) {
         if (!ok) {
@@ -968,21 +1000,32 @@ static void history_record_show_detail(void)
     fault_monitor_set_label(s_history_detail_src, line, COL_TEXT_DIM);
 }
 
-static void history_record_refresh(lv_ui *ui)
+static void history_record_render(lv_ui *ui)
 {
-    char status[96];
     char code[8];
     char time_txt[16];
     char line[160];
+    char status_line[128];
+    uint32_t page_count;
+    uint32_t page_base;
     (void)ui;
 
-    (void)history_record_load(status, sizeof(status));
+    page_count = history_record_page_count();
+    if (s_history_page >= page_count) {
+        s_history_page = 0U;
+    }
+    page_base = s_history_page * HISTORY_RECORD_ROWS;
     if (s_history_status != NULL) {
-        fault_monitor_set_label(s_history_status, status, s_history_count > 0U ? COL_GREEN : COL_AMBER);
+        (void)snprintf(status_line, sizeof(status_line), "%s  P%lu/%lu",
+                       s_history_status_text,
+                       (unsigned long)(s_history_page + 1U),
+                       (unsigned long)page_count);
+        fault_monitor_set_label(s_history_status, status_line, s_history_count > 0U ? COL_GREEN : COL_AMBER);
     }
     for (uint8_t i = 0U; i < HISTORY_RECORD_ROWS; ++i) {
-        bool active = (i < s_history_count);
-        bool selected = (active && i == s_history_selected);
+        uint32_t entry_index = page_base + i;
+        bool active = (entry_index < s_history_count);
+        bool selected = (active && entry_index == s_history_selected);
         if (s_history_row[i] != NULL) {
             lv_obj_set_style_bg_color(s_history_row[i],
                                       selected ? lv_color_hex(0xE0F2FE) : lv_color_hex(0xF8FAFC), 0);
@@ -990,10 +1033,11 @@ static void history_record_refresh(lv_ui *ui)
             lv_obj_set_style_border_width(s_history_row[i], selected ? 2 : 1, 0);
         }
         if (active) {
-            const FaultEntry_t *entry = &s_history_entries[i];
+            const FaultEntry_t *entry = &s_history_entries[entry_index];
             history_record_code_text(entry->code, code, sizeof(code));
             history_record_time_text(entry->timestamp, time_txt, sizeof(time_txt));
-            (void)snprintf(line, sizeof(line), "%s  %s  %s",
+            (void)snprintf(line, sizeof(line), "%02lu  %s  %s  %s",
+                           (unsigned long)(entry_index + 1U),
                            time_txt, code, history_record_level_text(entry->level));
             fault_monitor_set_label(s_history_row_main[i], line, history_record_level_color(entry->level));
             fault_monitor_set_label(s_history_row_sub[i], entry->message[0] ? entry->message : "--", COL_TEXT_DIM);
@@ -1005,22 +1049,83 @@ static void history_record_refresh(lv_ui *ui)
     history_record_show_detail();
 }
 
+static void history_record_refresh(lv_ui *ui)
+{
+    char status[96];
+
+    (void)history_record_load(status, sizeof(status));
+    (void)snprintf(s_history_status_text, sizeof(s_history_status_text), "%s", status);
+    history_record_render(ui);
+}
+
+static void history_record_change_page(lv_ui *ui, int delta)
+{
+    uint32_t page_count = history_record_page_count();
+    if (delta < 0) {
+        if (s_history_page == 0U) {
+            return;
+        }
+        s_history_page--;
+    } else if (delta > 0) {
+        if ((s_history_page + 1U) >= page_count) {
+            return;
+        }
+        s_history_page++;
+    } else {
+        return;
+    }
+    s_history_selected = s_history_page * HISTORY_RECORD_ROWS;
+    if (s_history_selected >= s_history_count && s_history_count > 0U) {
+        s_history_selected = s_history_count - 1U;
+    }
+    EdgeWind_Buzzer_Play(EDGEWIND_BUZZER_EVT_UI_CLICK);
+    history_record_render(ui);
+}
+
+static void history_record_gesture_cb(lv_event_t *e)
+{
+    lv_indev_t *indev;
+    lv_dir_t dir;
+    uint32_t now;
+    if (lv_event_get_code(e) != LV_EVENT_GESTURE) {
+        return;
+    }
+    indev = lv_indev_active();
+    if (indev == NULL) {
+        return;
+    }
+    now = lv_tick_get();
+    if ((now - s_history_last_gesture_tick) < 250U) {
+        return;
+    }
+    s_history_last_gesture_tick = now;
+    dir = lv_indev_get_gesture_dir(indev);
+    if (dir == LV_DIR_TOP) {
+        history_record_change_page((lv_ui *)lv_event_get_user_data(e), 1);
+    } else if (dir == LV_DIR_BOTTOM) {
+        history_record_change_page((lv_ui *)lv_event_get_user_data(e), -1);
+    }
+}
+
 static void history_record_row_cb(lv_event_t *e)
 {
     uint8_t index;
+    uint32_t global_index;
     if (lv_event_get_code(e) != LV_EVENT_CLICKED) {
         return;
     }
     index = (uint8_t)(uintptr_t)lv_event_get_user_data(e);
-    if (index >= s_history_count) {
+    global_index = (s_history_page * HISTORY_RECORD_ROWS) + index;
+    if (global_index >= s_history_count) {
         return;
     }
-    s_history_selected = index;
+    s_history_selected = global_index;
     EdgeWind_Buzzer_Play(EDGEWIND_BUZZER_EVT_UI_CLICK);
     history_record_show_detail();
     for (uint8_t i = 0U; i < HISTORY_RECORD_ROWS; ++i) {
         if (s_history_row[i] != NULL) {
-            bool selected = (i == s_history_selected && i < s_history_count);
+            uint32_t row_index = (s_history_page * HISTORY_RECORD_ROWS) + i;
+            bool selected = (row_index == s_history_selected && row_index < s_history_count);
             lv_obj_set_style_bg_color(s_history_row[i],
                                       selected ? lv_color_hex(0xE0F2FE) : lv_color_hex(0xF8FAFC), 0);
             lv_obj_set_style_border_color(s_history_row[i], selected ? COL_BLUE : COL_DIV, 0);
@@ -1036,6 +1141,7 @@ static void history_record_recent_cb(lv_event_t *e)
     }
     s_history_recent_mode = 1U;
     s_history_selected = 0U;
+    s_history_page = 0U;
     EdgeWind_Buzzer_Play(EDGEWIND_BUZZER_EVT_UI_CLICK);
     history_record_refresh((lv_ui *)lv_event_get_user_data(e));
 }
@@ -1048,6 +1154,7 @@ static void history_record_today_cb(lv_event_t *e)
     history_record_set_today();
     s_history_recent_mode = 0U;
     s_history_selected = 0U;
+    s_history_page = 0U;
     EdgeWind_Buzzer_Play(EDGEWIND_BUZZER_EVT_UI_CLICK);
     history_record_refresh((lv_ui *)lv_event_get_user_data(e));
 }
@@ -1062,6 +1169,7 @@ static void history_record_prev_cb(lv_event_t *e)
     }
     s_history_recent_mode = 0U;
     s_history_selected = 0U;
+    s_history_page = 0U;
     history_record_shift_date(-1);
     EdgeWind_Buzzer_Play(EDGEWIND_BUZZER_EVT_UI_CLICK);
     history_record_refresh((lv_ui *)lv_event_get_user_data(e));
@@ -1077,6 +1185,7 @@ static void history_record_next_cb(lv_event_t *e)
     }
     s_history_recent_mode = 0U;
     s_history_selected = 0U;
+    s_history_page = 0U;
     history_record_shift_date(1);
     EdgeWind_Buzzer_Play(EDGEWIND_BUZZER_EVT_UI_CLICK);
     history_record_refresh((lv_ui *)lv_event_get_user_data(e));
@@ -1088,6 +1197,8 @@ static void history_record_refresh_cb(lv_event_t *e)
         return;
     }
     EdgeWind_Buzzer_Play(EDGEWIND_BUZZER_EVT_UI_CLICK);
+    s_history_page = 0U;
+    s_history_selected = 0U;
     history_record_refresh((lv_ui *)lv_event_get_user_data(e));
 }
 
@@ -1125,6 +1236,7 @@ void setup_scr_HistoryRecord(lv_ui *ui)
     lv_obj_set_style_bg_grad_color(ui->HistoryRecord, COL_BG_BOT, 0);
     lv_obj_set_style_bg_grad_dir(ui->HistoryRecord, LV_GRAD_DIR_VER, 0);
     lv_obj_set_style_bg_opa(ui->HistoryRecord, 255, 0);
+    lv_obj_add_event_cb(ui->HistoryRecord, history_record_gesture_cb, LV_EVENT_GESTURE, ui);
 
     memset(s_history_row, 0, sizeof(s_history_row));
     memset(s_history_row_main, 0, sizeof(s_history_row_main));
@@ -1136,6 +1248,9 @@ void setup_scr_HistoryRecord(lv_ui *ui)
     s_history_detail_src = NULL;
     s_history_recent_mode = 1U;
     s_history_selected = 0U;
+    s_history_page = 0U;
+    s_history_last_gesture_tick = 0U;
+    s_history_status_text[0] = '\0';
     if (s_history_date[0] == '-' || s_history_date[0] == '\0') {
         history_record_set_today();
     }
@@ -1164,6 +1279,8 @@ void setup_scr_HistoryRecord(lv_ui *ui)
     s_history_status = ui->HistoryRecord_lbl_status;
 
     list = fault_monitor_create_panel(ui->HistoryRecord, 24, 82, 430, 328, COL_GREEN, "本机故障档案");
+    lv_obj_add_flag(list, LV_OBJ_FLAG_GESTURE_BUBBLE);
+    lv_obj_add_event_cb(list, history_record_gesture_cb, LV_EVENT_GESTURE, ui);
     for (uint8_t i = 0U; i < HISTORY_RECORD_ROWS; ++i) {
         s_history_row[i] = lv_obj_create(list);
         lv_obj_remove_style_all(s_history_row[i]);
@@ -1175,6 +1292,7 @@ void setup_scr_HistoryRecord(lv_ui *ui)
         lv_obj_set_style_border_width(s_history_row[i], 1, 0);
         lv_obj_set_style_border_color(s_history_row[i], COL_DIV, 0);
         lv_obj_add_flag(s_history_row[i], LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_flag(s_history_row[i], LV_OBJ_FLAG_GESTURE_BUBBLE);
         lv_obj_clear_flag(s_history_row[i], LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_event_cb(s_history_row[i], history_record_row_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)i);
         s_history_row_main[i] = fault_monitor_create_label(s_history_row[i], "--", 12, 5, 374, COL_TEXT,
