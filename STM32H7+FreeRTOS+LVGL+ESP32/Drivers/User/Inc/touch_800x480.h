@@ -17,6 +17,17 @@ typedef struct
 	uint16_t y[TOUCH_MAX];	//	y坐标
 }TouchStructure;
 
+typedef struct
+{
+	uint32_t raw_reads;
+	uint32_t read_fail;
+	uint32_t not_ready;
+	uint32_t bad_count;
+	uint32_t out_of_bounds;
+	uint32_t accepted_raw;
+	uint32_t clear_fail;
+} TouchDiagStats;
+
 extern volatile TouchStructure touchInfo;	// 触摸数据结构体声明	
 
 /*------------------------------------ 寄存定义 -----------------------------------*/  		
@@ -32,6 +43,8 @@ extern volatile TouchStructure touchInfo;	// 触摸数据结构体声明
 
 uint8_t 	Touch_Init(void);		// 触摸屏初始化
 void 		Touch_Scan(void);		// 触摸扫描
+void 		Touch_GetDiagStats(TouchDiagStats *out);
+void 		Touch_ResetDiagStats(void);
 void  	GT9XX_Reset(void);	// 执行复位操作
 void 		GT9XX_SendCfg(void);	// 发送GT911配置参数
 void 		GT9XX_ReadCfg(void);	// 读取GT911配置参数

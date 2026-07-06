@@ -38,6 +38,9 @@ static const char *TAG = "cloud_client";
 #define CLOUD_LOOP_POLL_MS 200
 #define CLOUD_FAULT_SYNC_INTERVAL_MS 2000U
 #define CLOUD_TIME_SYNC_PUSH_INTERVAL_MS 60000U
+#define CLOUD_TIME_SYNC_BURST_INTERVAL_MS 5000U
+#define CLOUD_TIME_SYNC_BURST_COUNT 12U
+#define CLOUD_TIME_SYNC_MIN_UNIX 1704067200U
 #define CLOUD_SUBMIT_QUEUE_TIMEOUT_MS 20
 #define CLOUD_SUMMARY_COALESCE_THRESHOLD 4
 #define CLOUD_FULL_HTTP_TIMEOUT_MIN_MS 2500U
@@ -100,6 +103,7 @@ static protocol_time_sync_payload_t s_latest_time_sync;
 static bool s_latest_time_sync_valid;
 static portMUX_TYPE s_time_sync_mux = portMUX_INITIALIZER_UNLOCKED;
 static int64_t s_last_time_sync_push_us;
+static uint8_t s_time_sync_push_count;
 static int s_full_raw_sock = -1;
 static char s_full_raw_host[96];
 static uint16_t s_full_raw_port;
@@ -305,6 +309,7 @@ static void maybe_post_time_sync_from_response(const cJSON *root)
 {
     protocol_time_sync_payload_t time_sync;
     uint32_t unix_utc;
+    uint32_t interval_ms;
     int offset_minutes;
     int64_t now_us;
 
@@ -313,14 +318,16 @@ static void maybe_post_time_sync_from_response(const cJSON *root)
     }
 
     unix_utc = json_uint_or_zero(root, "server_time_unix");
-    if (unix_utc < 946684800U) {
+    if (unix_utc < CLOUD_TIME_SYNC_MIN_UNIX) {
         return;
     }
 
     now_us = esp_timer_get_time();
-    if (s_latest_time_sync_valid &&
-        s_last_time_sync_push_us != 0 &&
-        (now_us - s_last_time_sync_push_us) < ((int64_t) CLOUD_TIME_SYNC_PUSH_INTERVAL_MS * 1000LL)) {
+    interval_ms = (s_time_sync_push_count < CLOUD_TIME_SYNC_BURST_COUNT)
+                      ? CLOUD_TIME_SYNC_BURST_INTERVAL_MS
+                      : CLOUD_TIME_SYNC_PUSH_INTERVAL_MS;
+    if (s_last_time_sync_push_us != 0 &&
+        (now_us - s_last_time_sync_push_us) < ((int64_t) interval_ms * 1000LL)) {
         return;
     }
 
@@ -337,6 +344,9 @@ static void maybe_post_time_sync_from_response(const cJSON *root)
     copy_fixed_string(time_sync.iso_local, sizeof(time_sync.iso_local), json_string_or_empty(root, "server_time_local"));
     post_time_sync_event(&time_sync);
     s_last_time_sync_push_us = now_us;
+    if (s_time_sync_push_count < 0xFFU) {
+        s_time_sync_push_count++;
+    }
 }
 
 static uint8_t fault_severity_code(const char *text)

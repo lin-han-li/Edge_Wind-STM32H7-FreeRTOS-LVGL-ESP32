@@ -41,7 +41,7 @@ void Touch_IIC_GPIO_Config (void)
 	
 	GPIO_InitStruct.Pin 			= Touch_IIC_SCL_PIN;				// SCL引脚
 	GPIO_InitStruct.Mode 		= GPIO_MODE_OUTPUT_OD;			// 开漏输出
-	GPIO_InitStruct.Pull 		= GPIO_NOPULL;						// 不带上下拉
+	GPIO_InitStruct.Pull 		= GPIO_PULLUP;						// weak pull-up for extended touch FPC
 	GPIO_InitStruct.Speed 		= GPIO_SPEED_FREQ_LOW;			// 速度等级 
 	HAL_GPIO_Init(Touch_IIC_SCL_PORT, &GPIO_InitStruct);
 
@@ -115,7 +115,7 @@ void Touch_INT_In(void)
 	GPIO_InitTypeDef GPIO_InitStruct = {0};
 	
 	GPIO_InitStruct.Mode  = GPIO_MODE_INPUT;      		// 输入模式
-	GPIO_InitStruct.Pull  = GPIO_NOPULL;		 			// 浮空	
+	GPIO_InitStruct.Pull  = GPIO_PULLUP;		 			// weak pull-up to avoid floating INT
 	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;    	// 速度等级
 	GPIO_InitStruct.Pin   = Touch_INT_PIN ;  				// 初始化 INT 引脚
 	

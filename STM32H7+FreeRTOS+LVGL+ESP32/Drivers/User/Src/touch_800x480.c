@@ -22,7 +22,19 @@
 #include "touch_800x480.h"
 #include <stdio.h>
 volatile TouchStructure touchInfo; 			//	触摸信息结构体，在函数 Touch_Scan() 里被调用，存储触摸数据
-volatile static uint8_t Modify_Flag = 0;	// 触摸坐标修改标志位
+volatile static uint8_t Modify_Flag = 0;
+
+#define TOUCH_LCD_WIDTH   800U
+#define TOUCH_LCD_HEIGHT  480U
+#define GT9XX_STATUS_READY 0x80U
+
+static volatile TouchDiagStats g_touch_diag;
+
+static void Touch_SetReleased(void)
+{
+	touchInfo.flag = 0;
+	touchInfo.num = 0;
+}	// 触摸坐标修改标志位
 	
 
 /*************************************************************************************************************************************
@@ -64,21 +76,21 @@ void GT9XX_Reset(void)
 
 uint8_t GT9XX_WriteHandle (uint16_t addr)
 {
-	uint8_t status;		// 状态标志位
+	Touch_IIC_Start();
 
-	Touch_IIC_Start();	// 启动IIC通信
-	if( Touch_IIC_WriteByte(GT9XX_IIC_WADDR) == ACK_OK ) //写数据指令
+	if (Touch_IIC_WriteByte(GT9XX_IIC_WADDR) != ACK_OK)
 	{
-		if( Touch_IIC_WriteByte((uint8_t)(addr >> 8)) == ACK_OK ) //写入16位地址
-		{
-			if( Touch_IIC_WriteByte((uint8_t)(addr)) != ACK_OK )
-			{
-				status = ERROR;	// 操作失败
-			}			
-		}
+		return ERROR;
 	}
-	status = SUCCESS;	// 操作成功
-	return status;	
+	if (Touch_IIC_WriteByte((uint8_t)(addr >> 8)) != ACK_OK)
+	{
+		return ERROR;
+	}
+	if (Touch_IIC_WriteByte((uint8_t)(addr)) != ACK_OK)
+	{
+		return ERROR;
+	}
+	return SUCCESS;
 }
 
 /*************************************************************************************************************************************
@@ -93,20 +105,16 @@ uint8_t GT9XX_WriteHandle (uint16_t addr)
 
 uint8_t GT9XX_WriteData (uint16_t addr,uint8_t value)
 {
-	uint8_t status;
-	
-	Touch_IIC_Start(); //启动IIC通讯
+	uint8_t status = ERROR;
 
-	if( GT9XX_WriteHandle(addr) == SUCCESS)	//写入要操作的寄存器
+	if (GT9XX_WriteHandle(addr) == SUCCESS)
 	{
-		if (Touch_IIC_WriteByte(value) != ACK_OK) //写数据
+		if (Touch_IIC_WriteByte(value) == ACK_OK)
 		{
-			status = ERROR;						
+			status = SUCCESS;
 		}
-	}	
-	Touch_IIC_Stop(); // 停止通讯
-	
-	status = SUCCESS;	// 写入成功
+	}
+	Touch_IIC_Stop();
 	return status;
 }
 
@@ -123,26 +131,23 @@ uint8_t GT9XX_WriteData (uint16_t addr,uint8_t value)
 
 uint8_t GT9XX_WriteReg (uint16_t addr, uint8_t cnt, uint8_t *value)
 {
-	uint8_t status;
+	uint8_t status = ERROR;
 	uint8_t i;
 
-	Touch_IIC_Start();
-
-	if( GT9XX_WriteHandle(addr) == SUCCESS) 	// 写入要操作的寄存器
+	if (GT9XX_WriteHandle(addr) == SUCCESS)
 	{
-		for(i = 0 ; i < cnt; i++)			 	// 计数
+		status = SUCCESS;
+		for (i = 0; i < cnt; i++)
 		{
-			Touch_IIC_WriteByte(value[i]);	// 写入数据
-		}					
-		Touch_IIC_Stop();		// 停止IIC通信
-		status = SUCCESS;		// 写入成功
+			if (Touch_IIC_WriteByte(value[i]) != ACK_OK)
+			{
+				status = ERROR;
+				break;
+			}
+		}
 	}
-	else
-	{
-		Touch_IIC_Stop();		// 停止IIC通信
-		status = ERROR;		// 写入失败
-	}
-	return status;	
+	Touch_IIC_Stop();
+	return status;
 }
 
 /*************************************************************************************************************************************
@@ -158,35 +163,30 @@ uint8_t GT9XX_WriteReg (uint16_t addr, uint8_t cnt, uint8_t *value)
 
 uint8_t GT9XX_ReadReg (uint16_t addr, uint8_t cnt, uint8_t *value)
 {
-	uint8_t status;
+	uint8_t status = ERROR;
 	uint8_t i;
 
-	status = ERROR;
-	Touch_IIC_Start();		// 启动IIC通信
-
-	if( GT9XX_WriteHandle(addr) == SUCCESS) //写入要操作的寄存器
+	if (GT9XX_WriteHandle(addr) == SUCCESS)
 	{
-		Touch_IIC_Start(); //重新启动IIC通讯
-
-		if (Touch_IIC_WriteByte(GT9XX_IIC_RADDR) == ACK_OK)	// 发送读命令
-		{	
-			for(i = 0 ; i < cnt; i++)	// 计数
+		Touch_IIC_Start();
+		if (Touch_IIC_WriteByte(GT9XX_IIC_RADDR) == ACK_OK)
+		{
+			for (i = 0; i < cnt; i++)
 			{
 				if (i == (cnt - 1))
 				{
-					value[i] = Touch_IIC_ReadByte(0);	// 读到最后一个数据时发送 非应答信号
+					value[i] = Touch_IIC_ReadByte(0);
 				}
 				else
 				{
-					value[i] = Touch_IIC_ReadByte(1);	// 发送应答信号
+					value[i] = Touch_IIC_ReadByte(1);
 				}
-			}					
-			Touch_IIC_Stop();	// 停止IIC通信
+			}
 			status = SUCCESS;
 		}
 	}
-	Touch_IIC_Stop();	// 停止IIC通信
-	return (status);	
+	Touch_IIC_Stop();
+	return status;
 }
 
 /*************************************************************************************************************************************
@@ -299,38 +299,101 @@ uint8_t Touch_Init(void)
 
 void Touch_Scan(void)
 {
- 	uint8_t  touchData[2 + 8 * TOUCH_MAX ]; 		// 用于存储触摸数据
-	uint8_t  i = 0;	
-	
-	GT9XX_ReadReg (GT9XX_READ_ADDR,2 + 8 * TOUCH_MAX ,touchData);	// 读数据
-	GT9XX_WriteData (GT9XX_READ_ADDR,0);									//	清除触摸芯片的寄存器标志位
-	touchInfo.num = touchData[0] & 0x0f;									// 取当前的触摸点数
-	
-	if ( (touchInfo.num >= 1) && (touchInfo.num <=5) ) 	//	当触摸数在 1-5 之间时
-	{
-		for(i=0;i<touchInfo.num;i++)		// 取相应的触摸坐标
-		{
-			touchInfo.y[i] = (touchData[5+8*i]<<8) | touchData[4+8*i];	// 获取Y坐标
-			touchInfo.x[i] = (touchData[3+8*i]<<8) | touchData[2+8*i];	//	获取X坐标	
+	uint8_t  touchData[2 + 8 * TOUCH_MAX ];
+	uint16_t x[TOUCH_MAX];
+	uint16_t y[TOUCH_MAX];
+	uint8_t  status;
+	uint8_t  point_count;
+	uint8_t  i;
 
-/*---------版本识别，RGB070M1-800*480 V1.1以及之后的硬件版本或者其它尺寸的屏幕，无需理会此段代码-----*/	
-	
-			// 在 V1.1 之前的硬件版本，触摸屏的分辨率为1024*600，为了程序上的兼容，这里进行判断处理
-			//	该变量标志主要用于判断是否需要软件修改采集到的触摸坐标
-			if( Modify_Flag == 1)
-			{
-				touchInfo.y[i] *= 0.8;		// 将1024*600分辨率的触摸坐标换算成800*480的分辨率
-				touchInfo.x[i] *= 0.78;		// 将1024*600分辨率的触摸坐标换算成800*480的分辨率
-			}		
-/*-------------------------------------------------------------------------------------------------*/			
-			
-		}
-		touchInfo.flag = 1;	// 触摸标志位置1，代表有触摸动作发生
-	}
-	else                       
+	g_touch_diag.raw_reads++;
+
+	if (GT9XX_ReadReg(GT9XX_READ_ADDR, 2 + 8 * TOUCH_MAX, touchData) != SUCCESS)
 	{
-		touchInfo.flag = 0;	// 触摸标志位置0，无触摸动作
+		g_touch_diag.read_fail++;
+		Touch_SetReleased();
+		return;
 	}
+
+	status = touchData[0];
+	if ((status & GT9XX_STATUS_READY) == 0U)
+	{
+		g_touch_diag.not_ready++;
+		Touch_SetReleased();
+		return;
+	}
+
+	if (GT9XX_WriteData(GT9XX_READ_ADDR, 0) != SUCCESS)
+	{
+		g_touch_diag.clear_fail++;
+	}
+
+	point_count = status & 0x0fU;
+	if (point_count == 0U)
+	{
+		Touch_SetReleased();
+		return;
+	}
+	if (point_count > TOUCH_MAX)
+	{
+		g_touch_diag.bad_count++;
+		Touch_SetReleased();
+		return;
+	}
+
+	for (i = 0; i < point_count; i++)
+	{
+		y[i] = (uint16_t)((touchData[5 + 8 * i] << 8) | touchData[4 + 8 * i]);
+		x[i] = (uint16_t)((touchData[3 + 8 * i] << 8) | touchData[2 + 8 * i]);
+
+		if (Modify_Flag == 1)
+		{
+			y[i] = (uint16_t)(y[i] * 0.8f);
+			x[i] = (uint16_t)(x[i] * 0.78f);
+		}
+
+		if ((x[i] >= TOUCH_LCD_WIDTH) || (y[i] >= TOUCH_LCD_HEIGHT))
+		{
+			g_touch_diag.out_of_bounds++;
+			Touch_SetReleased();
+			return;
+		}
+	}
+
+	touchInfo.num = point_count;
+	for (i = 0; i < point_count; i++)
+	{
+		touchInfo.x[i] = x[i];
+		touchInfo.y[i] = y[i];
+	}
+	touchInfo.flag = 1;
+	g_touch_diag.accepted_raw++;
+}
+
+void Touch_GetDiagStats(TouchDiagStats *out)
+{
+	if (out == 0)
+	{
+		return;
+	}
+	out->raw_reads = g_touch_diag.raw_reads;
+	out->read_fail = g_touch_diag.read_fail;
+	out->not_ready = g_touch_diag.not_ready;
+	out->bad_count = g_touch_diag.bad_count;
+	out->out_of_bounds = g_touch_diag.out_of_bounds;
+	out->accepted_raw = g_touch_diag.accepted_raw;
+	out->clear_fail = g_touch_diag.clear_fail;
+}
+
+void Touch_ResetDiagStats(void)
+{
+	g_touch_diag.raw_reads = 0;
+	g_touch_diag.read_fail = 0;
+	g_touch_diag.not_ready = 0;
+	g_touch_diag.bad_count = 0;
+	g_touch_diag.out_of_bounds = 0;
+	g_touch_diag.accepted_raw = 0;
+	g_touch_diag.clear_fail = 0;
 }
 
 /*************************************************************************************************************************************************************************************************FANKE****/

@@ -2,7 +2,7 @@
 API路由蓝图
 处理所有RESTful API请求
 """
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, Response
 from flask_login import login_required
 from datetime import datetime, timedelta
 from edgewind.models import db, Device, DataPoint, WorkOrder, SystemConfig, FaultSnapshot, HistoryData, NodePendingCommand, AIAnalysisTask, FaultEvent
@@ -775,6 +775,28 @@ def _fault_event_public_dict(event: FaultEvent) -> dict:
     return item
 
 
+def _fault_event_device_dict(event: FaultEvent) -> dict:
+    """Small fixed contract for ESP32/STM32 sync. Keep under the ESP32 JSON buffer."""
+    item = event.to_dict()
+    return {
+        'fault_id': item.get('fault_id') or item.get('id') or event.id,
+        'updated_rev': int(item.get('updated_rev') or event.updated_rev or 0),
+        'fault_code': event.fault_code,
+        'severity': event.severity or 'medium',
+        'status': event.state or 'active',
+        'timestamp': item.get('timestamp') or '',
+        'description': _short_text(event.description or _fault_name(event.fault_code), 24),
+        'root_cause': _short_text(event.root_cause or event.description or _fault_name(event.fault_code), 24),
+        'advice_short': _short_text(event.advice_short or _fault_default_advice(event.fault_code), 32),
+        'ai_status': event.ai_status or 'none',
+    }
+
+
+def _compact_json_response(payload: dict, status: int = 200):
+    body = json.dumps(payload, ensure_ascii=False, separators=(',', ':'))
+    return Response(body, status=status, mimetype='application/json; charset=utf-8')
+
+
 def _get_report_mode(node_id: str | None) -> str:
     if not node_id:
         return DEFAULT_REPORT_MODE
@@ -1393,6 +1415,7 @@ def get_node_fault_summary():
     except Exception:
         limit = 10
     limit = max(1, min(limit, 10))
+    compact = str(request.args.get('compact') or '').strip().lower() in ('1', 'true', 'yes', 'on')
 
     latest_rev = db.session.query(func.max(FaultEvent.updated_rev)).filter(
         FaultEvent.device_id == node_id
@@ -1405,16 +1428,27 @@ def get_node_fault_summary():
         **_server_time_fields(),
     }
     if since_rev >= int(latest_rev or 0):
+        if compact:
+            return _compact_json_response({**base, 'not_modified': True, 'items': []}), 200
         return jsonify({**base, 'not_modified': True, 'items': []}), 200
 
     query = FaultEvent.query.filter(FaultEvent.device_id == node_id)
     if since_rev > 0:
         query = query.filter(FaultEvent.updated_rev > since_rev)
     events = query.order_by(FaultEvent.updated_rev.desc()).limit(limit).all()
+    if compact:
+        items = [_fault_event_device_dict(event) for event in events]
+        return _compact_json_response({
+            **base,
+            'not_modified': False,
+            'items': items,
+        })
+    else:
+        items = [_fault_event_public_dict(event) for event in events]
     return jsonify({
         **base,
         'not_modified': False,
-        'items': [_fault_event_public_dict(event) for event in events],
+        'items': items,
     }), 200
 
 
