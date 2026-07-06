@@ -1,5 +1,7 @@
 #include "esp32_spi_debug.h"
 #include "edgewind_units.h"
+#include "../../Core/Inc/edgewind_buzzer.h"
+#include "../EdgeComm/edge_comm.h"
 
 #include <stdbool.h>
 #include <stddef.h>

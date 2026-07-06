@@ -1,23 +1,32 @@
 #ifndef __LED_H
 #define __LED_H
 
-/*------------------------------------------ LEDÅäÖÃºê ----------------------------------*/
+/*------------------------------------------ LEDï¿½ï¿½ï¿½Ãºï¿½ ----------------------------------*/
 
-#define LED1_PIN            			 GPIO_PIN_13        				 	// LED1 Òý½Å      
-#define LED1_PORT           			 GPIOC                 			 	// LED1 GPIO¶Ë¿Ú     
-#define __HAL_RCC_LED1_CLK_ENABLE    __HAL_RCC_GPIOC_CLK_ENABLE() 	// LED1 GPIO¶Ë¿ÚÊ±ÖÓ
+#define LED1_PIN            			 GPIO_PIN_13        				 	// LED1 ï¿½ï¿½ï¿½ï¿½      
+#define LED1_PORT           			 GPIOC                 			 	// LED1 GPIOï¿½Ë¿ï¿½     
+#define __HAL_RCC_LED1_CLK_ENABLE    __HAL_RCC_GPIOC_CLK_ENABLE() 	// LED1 GPIOï¿½Ë¿ï¿½Ê±ï¿½ï¿½
  
 
   
-/*----------------------------------------- LED¿ØÖÆºê ----------------------------------*/
+/*----------------------------------------- LEDï¿½ï¿½ï¿½Æºï¿½ ----------------------------------*/
 						
-#define LED1_ON 	  	HAL_GPIO_WritePin(LED1_PORT, LED1_PIN, GPIO_PIN_RESET)		// Êä³öµÍµçÆ½£¬µãÁÁLED1	
-#define LED1_OFF 	  	HAL_GPIO_WritePin(LED1_PORT, LED1_PIN, GPIO_PIN_SET)			// Êä³ö¸ßµçÆ½£¬¹Ø±ÕLED1	
-#define LED1_Toggle	HAL_GPIO_TogglePin(LED1_PORT,LED1_PIN);							// ·­×ªIO¿Ú×´Ì¬
+#define LED1_ON 	  	HAL_GPIO_WritePin(LED1_PORT, LED1_PIN, GPIO_PIN_RESET)		// ï¿½ï¿½ï¿½ï¿½Íµï¿½Æ½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½LED1	
+#define LED1_OFF 	  	HAL_GPIO_WritePin(LED1_PORT, LED1_PIN, GPIO_PIN_SET)			// ï¿½ï¿½ï¿½ï¿½ßµï¿½Æ½ï¿½ï¿½ï¿½Ø±ï¿½LED1	
+#define LED1_Toggle	HAL_GPIO_TogglePin(LED1_PORT,LED1_PIN);							// ï¿½ï¿½×ªIOï¿½ï¿½×´Ì¬
 			
-/*---------------------------------------- º¯ÊýÉùÃ÷ ------------------------------------*/
+/*---------------------------------------- ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ ------------------------------------*/
+
+typedef enum {
+    LED_MODE_NORMAL = 0,     // Normal: slow blink 1Hz (500ms)
+    LED_MODE_WARNING,        // Warning: fast blink 2Hz (250ms)
+    LED_MODE_CRITICAL,       // Critical: rapid blink 4Hz (125ms)
+    LED_MODE_EMERGENCY       // Emergency: constant on
+} LED_Mode_t;
 
 void LED_Init(void);
+void LED_SetMode(LED_Mode_t mode);
+LED_Mode_t LED_GetMode(void);
 
 #endif //__LED_H
 

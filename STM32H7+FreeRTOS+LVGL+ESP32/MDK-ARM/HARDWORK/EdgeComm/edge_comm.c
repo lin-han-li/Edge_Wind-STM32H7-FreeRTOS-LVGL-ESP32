@@ -18,6 +18,7 @@
 #include "edgewind_ai_preprocess_params.h"
 #include "edgewind_units.h"
 #include "edgewind_buzzer.h"
+#include "led.h"
 #include "ESP32SPI/esp32_spi_debug.h"
 #include "usart.h"
 #include "arm_math.h"
@@ -330,6 +331,7 @@ static osMessageQueueId_t g_fault_log_q = NULL;
 static char g_fault_log_last_status[80] = "等待故障变化";
 static uint8_t g_fault_log_sd_ok = 0U;
 static uint32_t g_fault_log_next_retry_tick = 0U;
+static volatile uint32_t g_fault_log_revision = 0U;
 
 static void ESP_FaultLog_EnsureQueue(void)
 {
@@ -473,6 +475,17 @@ static void ESP_FaultLog_OnCodeChange(const char *old_code, const char *new_code
                  new_code, ESP_FaultNameFromCode(new_code), ESP_FaultLevelTextFromCode(new_code), src);
         ESP_FaultLog_Enqueue(ESP_FaultLevelFromCode(new_code), new_idx, msg);
     }
+
+    /* Phase 4: Set LED mode based on fault code */
+    if (strncmp(new_code, "E00", 3U) == 0) {
+        LED_SetMode(LED_MODE_NORMAL);
+    } else if (strncmp(new_code, "E02", 3U) == 0 || strncmp(new_code, "E05", 3U) == 0) {
+        LED_SetMode(LED_MODE_EMERGENCY);  /* E02: insulation fault, E05: DC bus grounding */
+    } else if (strncmp(new_code, "E01", 3U) == 0 || strncmp(new_code, "E04", 3U) == 0) {
+        LED_SetMode(LED_MODE_CRITICAL);   /* E01: AC intrusion, E04: IGBT open circuit */
+    } else {
+        LED_SetMode(LED_MODE_WARNING);    /* E03: capacitor aging, E06: PWM abnormal */
+    }
 }
 
 static bool ESP_FaultLog_PrepareMounted(uint32_t wait_ms,
@@ -594,6 +607,7 @@ static void ESP_FaultLog_Poll(void)
 
     if (ok) {
         g_fault_log_sd_ok = 1U;
+        g_fault_log_revision++;
         snprintf(g_fault_log_last_status, sizeof(g_fault_log_last_status),
                  "SD已记录 E%02u", (unsigned int)ev.code);
         ESP_Log("[FaultSD] write ok level=%u code=E%02u msg=%s\r\n",
@@ -2343,70 +2357,6 @@ static UART_HandleTypeDef *ESP_GetLogUart(void)
 /**
  * @brief  EdgeComm 初始化主流程
  */
-#if 0
-/* 通用波形生成与FFT计算函数（已停用：改为 ADS131A04 真实采样） */
-static void Process_Channel_Data(int ch_id, float base_dc, float ripple_amp, float noise_level)
-{
-    static float time_t = 0.0f;
-    float noise;
-    int i;
-
-    // 模拟瞬时值波动 (低频慢变化)
-    node_channels[ch_id].current_value = base_dc + ripple_amp * 0.1f * arm_sin_f32(2.0f * PI * 0.5f * time_t);
-
-    // 1. 生成波形 (50Hz + 150Hz谐波 + 噪声)
-    for (i = 0; i < WAVEFORM_POINTS; i++)
-    {
-        // 基础噪声
-        noise = ((float)(rand() % 100) / 100.0f - 0.5f) * noise_level;
-
-        // 漏电流特殊处理：加一些随机尖峰
-        if (ch_id == 3 && (rand() % 100) > 98)
-        {
-            noise += 5.0f; // 突发漏电尖峰
-        }
-
-        // 信号组合：直流基准 + 50Hz纹波 + 150Hz谐波 + 噪声
-        float phase = (float)ch_id * 0.5f; // 不同通道相位错开
-
-        node_channels[ch_id].waveform[i] = node_channels[ch_id].current_value + ripple_amp * arm_sin_f32(2.0f * PI * 50.0f * ((float)i * 0.0005f) + phase) + (ripple_amp * 0.3f) * arm_sin_f32(2.0f * PI * 150.0f * ((float)i * 0.0005f)) + noise;
-    }
-
-    // 2. FFT 计算 (使用 CMSIS-DSP 库)
-    arm_rfft_fast_f32(&S, node_channels[ch_id].waveform, fft_output_buf, 0);
-    arm_cmplx_mag_f32(fft_output_buf, fft_mag_buf, WAVEFORM_POINTS / 2);
-
-    // 3. 填充 FFT (归一化处理)
-    node_channels[ch_id].fft_data[0] = 0; // 去直流分量
-    for (i = 1; i < FFT_POINTS; i++)
-    {
-        // 归一化公式：幅度 = (FFT模值 / (N/2)) * 2
-        node_channels[ch_id].fft_data[i] = (fft_mag_buf[i] / (float)(WAVEFORM_POINTS / 2)) * 2.0f;
-    }
-
-    // 4. 恢复波形 (因为 arm_rfft_fast_f32 是 In-Place 运算，会破坏原 buffer)
-    // 这里为了 JSON 发送原始波形，需要重新生成一遍
-    double sum = 0.0;
-    for (i = 0; i < WAVEFORM_POINTS; i++)
-    {
-        float phase = (float)ch_id * 0.5f;
-        float y = node_channels[ch_id].current_value +
-                  ripple_amp * arm_sin_f32(2.0f * PI * 50.0f * ((float)i * 0.0005f) + phase) +
-                  (ripple_amp * 0.3f) * arm_sin_f32(2.0f * PI * 150.0f * ((float)i * 0.0005f));
-        node_channels[ch_id].waveform[i] = y;
-        sum += (double)y;
-    }
-
-    /* 卡片显示值改为“本帧波形平均值（mean）”
-     * - 之前 current_value 是模拟瞬时值（带慢变化），不是严格平均值
-     * - 这里用 mean 更符合“平均值”语义，并且对噪声/非整周期截断更鲁棒 */
-    node_channels[ch_id].current_value = ESP_SafeFloat((float)(sum / (double)WAVEFORM_POINTS));
-
-    if (ch_id == 3)
-        time_t += 0.05f; // 时间步进
-}
-#endif
-
 void ESP_Update_Data_And_FFT(void)
 {
     static uint32_t last_calc_tick = 0;
@@ -4656,6 +4606,11 @@ bool ESP_UI_FaultLogSdOk(void)
 const char *ESP_UI_FaultLogStatus(void)
 {
     return g_fault_log_last_status;
+}
+
+uint32_t ESP_UI_FaultLogRevision(void)
+{
+    return g_fault_log_revision;
 }
 
 void ESP_UI_InvalidateReg(void)

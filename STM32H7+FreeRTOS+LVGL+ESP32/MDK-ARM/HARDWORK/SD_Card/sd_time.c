@@ -4,6 +4,9 @@
 
 #include <stdio.h>
 
+#define EDGEWIND_RTC_SYNC_MARKER 0x45575431U
+#define EDGEWIND_RTC_MIN_SYNC_UNIX 1704067200UL
+
 static bool sd_time_read(RTC_TimeTypeDef *t, RTC_DateTypeDef *d)
 {
     if (!t || !d) {
@@ -158,7 +161,7 @@ bool SD_Time_SetUnixWithOffset(uint32_t unix_utc, int16_t tz_offset_minutes)
     RTC_TimeTypeDef t = {0};
     RTC_DateTypeDef d = {0};
 
-    if (local_seconds < 0) {
+    if (unix_utc < EDGEWIND_RTC_MIN_SYNC_UNIX || local_seconds < 0) {
         return false;
     }
 
@@ -207,5 +210,7 @@ bool SD_Time_SetUnixWithOffset(uint32_t unix_utc, int16_t tz_offset_minutes)
     if (HAL_RTC_SetDate(&hrtc, &d, RTC_FORMAT_BIN) != HAL_OK) {
         return false;
     }
+    HAL_PWR_EnableBkUpAccess();
+    HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR0, EDGEWIND_RTC_SYNC_MARKER);
     return true;
 }

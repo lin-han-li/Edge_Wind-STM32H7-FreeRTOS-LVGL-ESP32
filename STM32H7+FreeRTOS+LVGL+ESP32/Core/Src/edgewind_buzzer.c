@@ -9,7 +9,7 @@
 #endif
 
 #ifndef EDGEWIND_BUZZER_REPEAT_LIMIT_MS
-#define EDGEWIND_BUZZER_REPEAT_LIMIT_MS 15000U
+#define EDGEWIND_BUZZER_REPEAT_LIMIT_MS 2000U
 #endif
 
 #ifndef EDGEWIND_BUZZER_UI_CLICK_DEBOUNCE_MS
@@ -163,12 +163,33 @@ static void EdgeWind_Buzzer_PlayPattern(EdgeWind_BuzzerEvent_t event)
     static const EdgeWind_BuzzerSegment_t boot_ready[] = {{60U, 80U}, {60U, 0U}};
     static const EdgeWind_BuzzerSegment_t success[] = {{40U, 60U}, {40U, 0U}};
     static const EdgeWind_BuzzerSegment_t error[] = {{180U, 0U}};
-    static const EdgeWind_BuzzerSegment_t fault_e01[] = {{80U, 80U}, {80U, 80U}, {80U, 0U}};
-    static const EdgeWind_BuzzerSegment_t fault_e02[] = {{180U, 120U}, {180U, 0U}};
-    static const EdgeWind_BuzzerSegment_t fault_e03[] = {{120U, 120U}, {120U, 0U}};
-    static const EdgeWind_BuzzerSegment_t fault_e04[] = {{80U, 80U}, {80U, 80U}, {80U, 80U}, {80U, 0U}};
-    static const EdgeWind_BuzzerSegment_t fault_e05[] = {{120U, 100U}, {120U, 100U}, {120U, 0U}};
-    static const EdgeWind_BuzzerSegment_t fault_e06[] = {{80U, 70U}, {80U, 120U}, {220U, 0U}};
+
+    // Redesigned fault patterns: longer and more urgent
+    // E01 (AC intrusion): 5x rapid beeps (820ms, was 400ms)
+    static const EdgeWind_BuzzerSegment_t fault_e01[] = {
+        {100U, 80U}, {100U, 80U}, {100U, 80U}, {100U, 80U}, {100U, 0U}
+    };
+    // E02 (insulation fault): long + 3x rapid (860ms, was 480ms)
+    static const EdgeWind_BuzzerSegment_t fault_e02[] = {
+        {300U, 100U}, {100U, 80U}, {100U, 80U}, {100U, 0U}
+    };
+    // E03 (capacitor aging): 3x medium (480ms, was 360ms)
+    static const EdgeWind_BuzzerSegment_t fault_e03[] = {
+        {150U, 90U}, {150U, 90U}, {150U, 0U}
+    };
+    // E04 (IGBT open): 6x rapid beeps (900ms, was 560ms)
+    static const EdgeWind_BuzzerSegment_t fault_e04[] = {
+        {100U, 50U}, {100U, 50U}, {100U, 50U}, {100U, 50U}, {100U, 50U}, {100U, 0U}
+    };
+    // E05 (DC bus grounding): long + 2x medium (780ms, was 560ms)
+    static const EdgeWind_BuzzerSegment_t fault_e05[] = {
+        {300U, 90U}, {150U, 90U}, {150U, 0U}
+    };
+    // E06 (PWM abnormal): mixed rhythm (730ms, was 570ms)
+    static const EdgeWind_BuzzerSegment_t fault_e06[] = {
+        {100U, 70U}, {100U, 70U}, {150U, 90U}, {220U, 0U}
+    };
+
     static const EdgeWind_BuzzerSegment_t recover[] = {{40U, 80U}, {40U, 0U}};
 
     switch (event)

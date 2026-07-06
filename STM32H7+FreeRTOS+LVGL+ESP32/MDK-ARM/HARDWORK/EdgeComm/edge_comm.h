@@ -170,6 +170,7 @@ const char *ESP_UI_FaultLevelText(void);
 const char *ESP_UI_FaultAdvice(void);
 bool ESP_UI_FaultLogSdOk(void);
 const char *ESP_UI_FaultLogStatus(void);
+uint32_t ESP_UI_FaultLogRevision(void);
 void ESP_UI_InvalidateReg(void);
 
 #ifdef __cplusplus

@@ -109,10 +109,14 @@ static uint32_t s_history_count = 0U;
 static uint32_t s_history_selected = 0U;
 static uint32_t s_history_page = 0U;
 static uint32_t s_history_last_gesture_tick = 0U;
+static uint32_t s_history_seen_log_revision = 0U;
 static uint8_t s_history_recent_mode = 1U;
 static char s_history_date[16] = "---- -- --";
 static char s_history_status_text[96];
+static lv_timer_t *s_history_timer = NULL;
 static lv_obj_t *s_history_row[HISTORY_RECORD_ROWS];
+static lv_obj_t *s_history_row_badge[HISTORY_RECORD_ROWS];
+static lv_obj_t *s_history_row_badge_label[HISTORY_RECORD_ROWS];
 static lv_obj_t *s_history_row_main[HISTORY_RECORD_ROWS];
 static lv_obj_t *s_history_row_sub[HISTORY_RECORD_ROWS];
 static lv_obj_t *s_history_status = NULL;
@@ -814,19 +818,65 @@ static void history_record_code_text(uint8_t code, char *buf, size_t len)
 
 static void history_record_time_text(uint32_t timestamp, char *buf, size_t len)
 {
-    uint32_t sec;
+    uint32_t days, sec, year, month, day, hour, min;
+    uint32_t days_in_month;
     if (buf == NULL || len == 0U) {
         return;
     }
     if (timestamp == 0U) {
-        (void)snprintf(buf, len, "--:--:--");
+        (void)snprintf(buf, len, "----/--/-- --:--:--");
         return;
     }
+
+    /* Convert Unix timestamp to date and time */
+    days = timestamp / 86400U;
     sec = timestamp % 86400U;
-    (void)snprintf(buf, len, "%02lu:%02lu:%02lu",
-                   (unsigned long)(sec / 3600U),
-                   (unsigned long)((sec / 60U) % 60U),
-                   (unsigned long)(sec % 60U));
+    hour = sec / 3600U;
+    min = (sec / 60U) % 60U;
+    sec = sec % 60U;
+
+    /* Fault log timestamps are Unix seconds, so the calendar base is 1970-01-01. */
+    year = 1970U;
+    month = 1U;
+    day = days + 1U;
+
+    while (day > 365U) {
+        bool is_leap = (((year % 4U) == 0U && (year % 100U) != 0U) || ((year % 400U) == 0U));
+        uint32_t days_in_year = is_leap ? 366U : 365U;
+        if (day > days_in_year) {
+            day -= days_in_year;
+            year++;
+        } else {
+            break;
+        }
+    }
+
+    while (day > 28U) {
+        bool is_leap = (((year % 4U) == 0U && (year % 100U) != 0U) || ((year % 400U) == 0U));
+        if (month == 1U || month == 3U || month == 5U || month == 7U ||
+            month == 8U || month == 10U || month == 12U) {
+            days_in_month = 31U;
+        } else if (month == 2U) {
+            days_in_month = is_leap ? 29U : 28U;
+        } else {
+            days_in_month = 30U;
+        }
+
+        if (day > days_in_month) {
+            day -= days_in_month;
+            month++;
+            if (month > 12U) {
+                month = 1U;
+                year++;
+            }
+        } else {
+            break;
+        }
+    }
+
+    (void)snprintf(buf, len, "%04lu/%02lu/%02lu %02lu:%02lu:%02lu",
+                   (unsigned long)year, (unsigned long)month, (unsigned long)day,
+                   (unsigned long)hour, (unsigned long)min, (unsigned long)sec);
 }
 
 static bool history_record_parse_date(const char *date, int *year, int *month, int *day)
@@ -897,21 +947,31 @@ static uint32_t history_record_page_count(void)
     return pages == 0U ? 1U : pages;
 }
 
-static void history_record_reverse_loaded(void)
+static void history_record_sort_newest_first(void)
 {
-    uint32_t left = 0U;
-    uint32_t right = s_history_count;
-    if (right == 0U) {
+    for (uint32_t i = 1U; i < s_history_count; ++i) {
+        FaultEntry_t key = s_history_entries[i];
+        uint32_t j = i;
+        while (j > 0U && s_history_entries[j - 1U].timestamp < key.timestamp) {
+            s_history_entries[j] = s_history_entries[j - 1U];
+            j--;
+        }
+        s_history_entries[j] = key;
+    }
+}
+
+static void history_record_time_short_text(uint32_t timestamp, char *buf, size_t len)
+{
+    char full[24];
+    if (buf == NULL || len == 0U) {
         return;
     }
-    right--;
-    while (left < right) {
-        FaultEntry_t tmp = s_history_entries[left];
-        s_history_entries[left] = s_history_entries[right];
-        s_history_entries[right] = tmp;
-        left++;
-        right--;
+    history_record_time_text(timestamp, full, sizeof(full));
+    if (full[0] == '-' || strlen(full) < 16U) {
+        (void)snprintf(buf, len, "-- --:--");
+        return;
     }
+    (void)snprintf(buf, len, "%.5s %.5s", full + 5, full + 11);
 }
 
 static bool history_record_load(char *status, size_t status_len)
@@ -938,8 +998,9 @@ static bool history_record_load(char *status, size_t status_len)
 
     s_history_count = ok ? count : 0U;
     if (s_history_count > 1U) {
-        history_record_reverse_loaded();
+        history_record_sort_newest_first();
     }
+
     if (s_history_page >= history_record_page_count()) {
         s_history_page = 0U;
     }
@@ -971,7 +1032,7 @@ static bool history_record_load(char *status, size_t status_len)
 static void history_record_show_detail(void)
 {
     char code[8];
-    char time_txt[16];
+    char time_txt[24];
     char line[180];
     const FaultEntry_t *entry;
 
@@ -1026,22 +1087,40 @@ static void history_record_render(lv_ui *ui)
         uint32_t entry_index = page_base + i;
         bool active = (entry_index < s_history_count);
         bool selected = (active && entry_index == s_history_selected);
+        bool newest = (active && entry_index == 0U);
         if (s_history_row[i] != NULL) {
             lv_obj_set_style_bg_color(s_history_row[i],
-                                      selected ? lv_color_hex(0xE0F2FE) : lv_color_hex(0xF8FAFC), 0);
-            lv_obj_set_style_border_color(s_history_row[i], selected ? COL_BLUE : COL_DIV, 0);
-            lv_obj_set_style_border_width(s_history_row[i], selected ? 2 : 1, 0);
+                                      selected ? lv_color_hex(0xE0F2FE) :
+                                      (newest ? lv_color_hex(0xEFF6FF) : lv_color_hex(0xF8FAFC)), 0);
+            lv_obj_set_style_border_color(s_history_row[i], (selected || newest) ? COL_BLUE : COL_DIV, 0);
+            lv_obj_set_style_border_width(s_history_row[i], newest ? 3 : (selected ? 2 : 1), 0);
         }
         if (active) {
             const FaultEntry_t *entry = &s_history_entries[entry_index];
+            char badge[6];
             history_record_code_text(entry->code, code, sizeof(code));
-            history_record_time_text(entry->timestamp, time_txt, sizeof(time_txt));
-            (void)snprintf(line, sizeof(line), "%02lu  %s  %s  %s",
-                           (unsigned long)(entry_index + 1U),
+            history_record_time_short_text(entry->timestamp, time_txt, sizeof(time_txt));
+            (void)snprintf(badge, sizeof(badge), "%lu", (unsigned long)(entry_index + 1U));
+            if (s_history_row_badge[i] != NULL) {
+                lv_obj_clear_flag(s_history_row_badge[i], LV_OBJ_FLAG_HIDDEN);
+                lv_obj_set_style_bg_color(s_history_row_badge[i],
+                                          newest ? COL_BLUE : history_record_level_color(entry->level), 0);
+                lv_obj_set_style_border_color(s_history_row_badge[i],
+                                              newest ? COL_BLUE : lv_color_hex(0xFFFFFF), 0);
+                lv_obj_set_style_border_width(s_history_row_badge[i], newest ? 3 : 1, 0);
+            }
+            fault_monitor_set_label(s_history_row_badge_label[i], badge, lv_color_hex(0xFFFFFF));
+            if (s_history_row_badge_label[i] != NULL) {
+                lv_obj_center(s_history_row_badge_label[i]);
+            }
+            (void)snprintf(line, sizeof(line), "%s  %s  %s",
                            time_txt, code, history_record_level_text(entry->level));
             fault_monitor_set_label(s_history_row_main[i], line, history_record_level_color(entry->level));
             fault_monitor_set_label(s_history_row_sub[i], entry->message[0] ? entry->message : "--", COL_TEXT_DIM);
         } else {
+            if (s_history_row_badge[i] != NULL) {
+                lv_obj_add_flag(s_history_row_badge[i], LV_OBJ_FLAG_HIDDEN);
+            }
             fault_monitor_set_label(s_history_row_main[i], i == 0U ? "无记录" : "--", COL_TEXT_DIM);
             fault_monitor_set_label(s_history_row_sub[i], i == 0U ? "切换日期或等待故障变化写入SD" : "", COL_TEXT_DIM);
         }
@@ -1056,6 +1135,39 @@ static void history_record_refresh(lv_ui *ui)
     (void)history_record_load(status, sizeof(status));
     (void)snprintf(s_history_status_text, sizeof(s_history_status_text), "%s", status);
     history_record_render(ui);
+}
+
+static void history_record_stop_timer(void)
+{
+    if (s_history_timer != NULL) {
+        lv_timer_delete(s_history_timer);
+        s_history_timer = NULL;
+    }
+}
+
+static void history_record_timer_cb(lv_timer_t *timer)
+{
+    lv_ui *ui = (lv_ui *)lv_timer_get_user_data(timer);
+    uint32_t rev;
+
+    if (ui == NULL || ui->HistoryRecord == NULL || !lv_obj_is_valid(ui->HistoryRecord)) {
+        if (timer == s_history_timer) {
+            s_history_timer = NULL;
+        }
+        lv_timer_delete(timer);
+        return;
+    }
+
+    rev = ESP_UI_FaultLogRevision();
+    if (rev == s_history_seen_log_revision) {
+        return;
+    }
+
+    s_history_seen_log_revision = rev;
+    s_history_recent_mode = 1U;
+    s_history_selected = 0U;
+    s_history_page = 0U;
+    history_record_refresh(ui);
 }
 
 static void history_record_change_page(lv_ui *ui, int delta)
@@ -1121,17 +1233,7 @@ static void history_record_row_cb(lv_event_t *e)
     }
     s_history_selected = global_index;
     EdgeWind_Buzzer_Play(EDGEWIND_BUZZER_EVT_UI_CLICK);
-    history_record_show_detail();
-    for (uint8_t i = 0U; i < HISTORY_RECORD_ROWS; ++i) {
-        if (s_history_row[i] != NULL) {
-            uint32_t row_index = (s_history_page * HISTORY_RECORD_ROWS) + i;
-            bool selected = (row_index == s_history_selected && row_index < s_history_count);
-            lv_obj_set_style_bg_color(s_history_row[i],
-                                      selected ? lv_color_hex(0xE0F2FE) : lv_color_hex(0xF8FAFC), 0);
-            lv_obj_set_style_border_color(s_history_row[i], selected ? COL_BLUE : COL_DIV, 0);
-            lv_obj_set_style_border_width(s_history_row[i], selected ? 2 : 1, 0);
-        }
-    }
+    history_record_render(NULL);
 }
 
 static void history_record_recent_cb(lv_event_t *e)
@@ -1214,6 +1316,7 @@ static void history_record_back_cb(lv_event_t *e)
     }
     lv_indev_wait_release(lv_indev_active());
     EdgeWind_Buzzer_Play(EDGEWIND_BUZZER_EVT_UI_CLICK);
+    history_record_stop_timer();
     ui_load_scr_animation(ui, &ui->Main_1, ui->Main_1_del, &ui->HistoryRecord_del,
                           setup_scr_Aurora, LV_SCR_LOAD_ANIM_FADE_ON, 200, 20, false, false);
 }
@@ -1238,7 +1341,10 @@ void setup_scr_HistoryRecord(lv_ui *ui)
     lv_obj_set_style_bg_opa(ui->HistoryRecord, 255, 0);
     lv_obj_add_event_cb(ui->HistoryRecord, history_record_gesture_cb, LV_EVENT_GESTURE, ui);
 
+    history_record_stop_timer();
     memset(s_history_row, 0, sizeof(s_history_row));
+    memset(s_history_row_badge, 0, sizeof(s_history_row_badge));
+    memset(s_history_row_badge_label, 0, sizeof(s_history_row_badge_label));
     memset(s_history_row_main, 0, sizeof(s_history_row_main));
     memset(s_history_row_sub, 0, sizeof(s_history_row_sub));
     s_history_status = NULL;
@@ -1295,9 +1401,26 @@ void setup_scr_HistoryRecord(lv_ui *ui)
         lv_obj_add_flag(s_history_row[i], LV_OBJ_FLAG_GESTURE_BUBBLE);
         lv_obj_clear_flag(s_history_row[i], LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_event_cb(s_history_row[i], history_record_row_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)i);
-        s_history_row_main[i] = fault_monitor_create_label(s_history_row[i], "--", 12, 5, 374, COL_TEXT,
+        s_history_row_badge[i] = lv_obj_create(s_history_row[i]);
+        lv_obj_remove_style_all(s_history_row_badge[i]);
+        lv_obj_set_pos(s_history_row_badge[i], 10, 9);
+        lv_obj_set_size(s_history_row_badge[i], 30, 30);
+        lv_obj_set_style_radius(s_history_row_badge[i], 15, 0);
+        lv_obj_set_style_bg_color(s_history_row_badge[i], COL_BLUE, 0);
+        lv_obj_set_style_bg_opa(s_history_row_badge[i], 255, 0);
+        lv_obj_set_style_border_width(s_history_row_badge[i], 1, 0);
+        lv_obj_set_style_border_color(s_history_row_badge[i], lv_color_hex(0xFFFFFF), 0);
+        lv_obj_clear_flag(s_history_row_badge[i], LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_flag(s_history_row_badge[i], LV_OBJ_FLAG_HIDDEN);
+        s_history_row_badge_label[i] = lv_label_create(s_history_row_badge[i]);
+        lv_label_set_text(s_history_row_badge_label[i], "--");
+        lv_obj_set_style_text_color(s_history_row_badge_label[i], lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_text_font(s_history_row_badge_label[i], gui_assets_get_font_14(), 0);
+        lv_obj_center(s_history_row_badge_label[i]);
+
+        s_history_row_main[i] = fault_monitor_create_label(s_history_row[i], "--", 50, 5, 334, COL_TEXT,
                                                            gui_assets_get_font_16());
-        s_history_row_sub[i] = fault_monitor_create_label(s_history_row[i], "--", 12, 26, 374, COL_TEXT_DIM,
+        s_history_row_sub[i] = fault_monitor_create_label(s_history_row[i], "--", 50, 26, 334, COL_TEXT_DIM,
                                                           gui_assets_get_font_12());
     }
     ui->HistoryRecord_lbl_rows[0] = s_history_row_main[0];
@@ -1324,7 +1447,9 @@ void setup_scr_HistoryRecord(lv_ui *ui)
     ui->HistoryRecord_btn_back = lv_obj_get_parent(ui->HistoryRecord_lbl_back);
 
     lv_obj_update_layout(ui->HistoryRecord);
+    s_history_seen_log_revision = ESP_UI_FaultLogRevision();
     history_record_refresh(ui);
+    s_history_timer = lv_timer_create(history_record_timer_cb, 1000, ui);
 }
 
 /**********************

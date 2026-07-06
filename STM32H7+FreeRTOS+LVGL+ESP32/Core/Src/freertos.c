@@ -109,7 +109,7 @@ void HAL_Delay(uint32_t Delay)
 
 /* 启动阶段同步资源时，暂时挂起 ESP 任务，避免文件系统/总线竞争 */
 #ifndef EW_SUSPEND_ESP_DURING_SYNC
-#define EW_SUSPEND_ESP_DURING_SYNC 1
+#define EW_SUSPEND_ESP_DURING_SYNC 0
 #endif
 
 #ifndef EW_BOOT_QSPI_SYNC_ENABLE
@@ -514,11 +514,38 @@ void LVGL_Task(void *argument)
 void LED_Task(void *argument)
 {
   /* USER CODE BEGIN LED_Task */
+  LED_Mode_t mode = LED_MODE_NORMAL;
+  uint32_t delay_ms = 500;
+
   /* Infinite loop */
   for(;;)
   {
-    LED1_Toggle;
-    osDelay(500);
+    mode = LED_GetMode();
+
+    switch(mode) {
+        case LED_MODE_NORMAL:    // Normal: 1Hz slow blink
+            delay_ms = 500;
+            LED1_Toggle;
+            break;
+        case LED_MODE_WARNING:   // Warning: 2Hz fast blink
+            delay_ms = 250;
+            LED1_Toggle;
+            break;
+        case LED_MODE_CRITICAL:  // Critical: 4Hz rapid blink
+            delay_ms = 125;
+            LED1_Toggle;
+            break;
+        case LED_MODE_EMERGENCY: // Emergency: constant on
+            LED1_ON;
+            delay_ms = 1000;
+            break;
+        default:
+            delay_ms = 500;
+            LED1_Toggle;
+            break;
+    }
+
+    osDelay(delay_ms);
   }
   /* USER CODE END LED_Task */
 }
@@ -535,7 +562,7 @@ void Main_Task(void *argument)
   /* USER CODE BEGIN Main_Task */
 
 #if EW_BOOT_QSPI_SYNC_ENABLE
-#ifdef EW_SUSPEND_ESP_DURING_SYNC
+#if (EW_SUSPEND_ESP_DURING_SYNC != 0)
   if (EdgeCommHandle) {
     osThreadSuspend(EdgeCommHandle);
     printf("[QSPI_FS] suspended ESP task during sync\r\n");
@@ -572,7 +599,7 @@ void Main_Task(void *argument)
     printf("[QSPI_FS] unlocked LVGL mutex\r\n");
   }
 
-#ifdef EW_SUSPEND_ESP_DURING_SYNC
+#if (EW_SUSPEND_ESP_DURING_SYNC != 0)
   if (EdgeCommHandle) {
     osThreadResume(EdgeCommHandle);
     printf("[QSPI_FS] resumed ESP task\r\n");

@@ -73,6 +73,10 @@ typedef struct
 	lv_obj_t *HistoryRecord_btn_back;
 	lv_obj_t *HistoryRecord_lbl_back;
 
+	// DataAnalysis Screen Objects
+	lv_obj_t *DataAnalysis;
+	bool DataAnalysis_del;
+
 	// === Screen 2 (Config) ===
 	lv_obj_t *Main_2;
 	bool Main_2_del;
@@ -265,6 +269,7 @@ void setup_scr_Aurora(lv_ui *ui);
 void setup_scr_RealtimeMonitor(lv_ui *ui);
 void setup_scr_FaultMonitor(lv_ui *ui);
 void setup_scr_HistoryRecord(lv_ui *ui);
+void setup_scr_DataAnalysis(lv_ui *ui);
 void setup_scr_WifiConfig(lv_ui *ui);
 void setup_scr_ServerConfig(lv_ui *ui);
 void setup_scr_ParamConfig(lv_ui *ui);

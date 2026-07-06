@@ -2,17 +2,17 @@
 	*************************************************************************************************
 	*	@version V1.0
 	*  @date    2024-3-29
-	*	@author  ·´¿Í¿Æ¼¼	
+	*	@author  ï¿½ï¿½ï¿½Í¿Æ¼ï¿½	
    *************************************************************************************************
    *  @description
 	*
-	*	ÊµÑéÆ½Ì¨£º·´¿ÍSTM32H750XBH6ºËÐÄ°å £¨ÐÍºÅ£ºFK750M6-XBH6£©
-	*	ÌÔ±¦µØÖ·£ºhttps://shop212360197.taobao.com
-	*	QQ½»Á÷Èº£º536665479
+	*	Êµï¿½ï¿½Æ½Ì¨ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½STM32H750XBH6ï¿½ï¿½ï¿½Ä°ï¿½ ï¿½ï¿½ï¿½ÍºÅ£ï¿½FK750M6-XBH6ï¿½ï¿½
+	*	ï¿½Ô±ï¿½ï¿½ï¿½Ö·ï¿½ï¿½https://shop212360197.taobao.com
+	*	QQï¿½ï¿½ï¿½ï¿½Èºï¿½ï¿½536665479
 	*
->>>>> ÎÄ¼þËµÃ÷£º
+>>>>> ï¿½Ä¼ï¿½Ëµï¿½ï¿½ï¿½ï¿½
 	*
-	*	³õÊ¼»¯LEDµÄIO¿Ú£¬ÅäÖÃÎªÍÆÍìÊä³ö¡¢ÉÏÀ­¡¢ËÙ¶ÈµÈ¼¶2M¡£
+	*	ï¿½ï¿½Ê¼ï¿½ï¿½LEDï¿½ï¿½IOï¿½Ú£ï¿½ï¿½ï¿½ï¿½ï¿½Îªï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ù¶ÈµÈ¼ï¿½2Mï¿½ï¿½
 	*
 	************************************************************************************************
 ***/
@@ -25,18 +25,31 @@ void LED_Init(void)
 {
 	GPIO_InitTypeDef GPIO_InitStruct = {0};
 
-	__HAL_RCC_LED1_CLK_ENABLE;		// ³õÊ¼»¯LED1 GPIOÊ±ÖÓ	
+	__HAL_RCC_LED1_CLK_ENABLE;		// ï¿½ï¿½Ê¼ï¿½ï¿½LED1 GPIOÊ±ï¿½ï¿½	
 
 
-	HAL_GPIO_WritePin(LED1_PORT, LED1_PIN, GPIO_PIN_RESET);		// LED1Òý½ÅÊä³öµÍ£¬¼´µãÁÁLED1
+	HAL_GPIO_WritePin(LED1_PORT, LED1_PIN, GPIO_PIN_RESET);		// LED1ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Í£ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½LED1
 
 
-	GPIO_InitStruct.Pin 		= LED1_PIN;					// LED1Òý½Å
-	GPIO_InitStruct.Mode 	= GPIO_MODE_OUTPUT_PP;	// ÍÆÍìÊä³öÄ£Ê½
-	GPIO_InitStruct.Pull 	= GPIO_NOPULL;				// ²»ÉÏÏÂÀ­
-	GPIO_InitStruct.Speed 	= GPIO_SPEED_FREQ_LOW;	// µÍËÙÄ£Ê½
+	GPIO_InitStruct.Pin 		= LED1_PIN;					// LED1ï¿½ï¿½ï¿½ï¿½
+	GPIO_InitStruct.Mode 	= GPIO_MODE_OUTPUT_PP;	// ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ä£Ê½
+	GPIO_InitStruct.Pull 	= GPIO_NOPULL;				// ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
+	GPIO_InitStruct.Speed 	= GPIO_SPEED_FREQ_LOW;	// ï¿½ï¿½ï¿½ï¿½Ä£Ê½
 	HAL_GPIO_Init(LED1_PORT, &GPIO_InitStruct);
 
 
+}
+
+// LED mode control (Phase 4 optimization)
+static volatile LED_Mode_t s_led_mode = LED_MODE_NORMAL;
+
+void LED_SetMode(LED_Mode_t mode)
+{
+    s_led_mode = mode;
+}
+
+LED_Mode_t LED_GetMode(void)
+{
+    return s_led_mode;
 }
 
