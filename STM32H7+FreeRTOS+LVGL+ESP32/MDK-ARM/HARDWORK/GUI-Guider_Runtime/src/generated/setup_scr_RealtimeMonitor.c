@@ -782,7 +782,15 @@ static void rtmon_refresh(lv_ui *ui, bool update_wave)
 
     if (ui->RealtimeMonitor_lbl_node && lv_obj_is_valid(ui->RealtimeMonitor_lbl_node)) {
         const char *id = ESP_UI_NodeId();
-        lv_label_set_text_fmt(ui->RealtimeMonitor_lbl_node, "NODE:%s", id ? id : "--");
+        const char *fault_code = ESP_UI_FaultCode();
+        bool fault_active = (fault_code != NULL &&
+                             !(fault_code[0] == 'E' && fault_code[1] == '0' && fault_code[2] == '0'));
+        lv_label_set_text_fmt(ui->RealtimeMonitor_lbl_node, "NODE:%s  故障:%s",
+                              id ? id : "--",
+                              fault_code ? fault_code : "E00");
+        lv_obj_set_style_text_color(ui->RealtimeMonitor_lbl_node,
+                                    fault_active ? lv_color_hex(RT_COL_RED) : lv_color_hex(RT_COL_MUTED),
+                                    LV_PART_MAIN);
     }
 
     for (uint32_t i = 0; i < RTMON_CH_COUNT; i++) {
@@ -937,6 +945,8 @@ void setup_scr_RealtimeMonitor(lv_ui *ui)
     lv_label_set_text(ui->RealtimeMonitor_lbl_node, "NODE:--");
     lv_obj_set_style_text_color(ui->RealtimeMonitor_lbl_node, lv_color_hex(RT_COL_MUTED), LV_PART_MAIN);
     lv_obj_set_style_text_font(ui->RealtimeMonitor_lbl_node, gui_assets_get_font_16(), LV_PART_MAIN);
+    lv_obj_set_width(ui->RealtimeMonitor_lbl_node, 452);
+    lv_label_set_long_mode(ui->RealtimeMonitor_lbl_node, LV_LABEL_LONG_CLIP);
     lv_obj_set_pos(ui->RealtimeMonitor_lbl_node, 26, 68);
 
     ui->RealtimeMonitor_lbl_status = lv_label_create(ui->RealtimeMonitor);
